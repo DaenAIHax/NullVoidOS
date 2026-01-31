@@ -16,7 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         recipe:
-          - recipes/recipe.yml
+          - recipe.yml
 
     steps:
       - name: Checkout repo
