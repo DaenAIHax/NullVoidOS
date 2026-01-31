@@ -2,7 +2,7 @@
 name: nullvoidos
 description: Forensic & Pentesting Lab - Immutable Environment
 
-base-image: ghcr.io/ublue-os/silverblue-main
+base-image: ghcr.io/ublue-os/vauxite-main
 image-version: latest 
 
 modules:
@@ -21,6 +21,27 @@ modules:
       - htop
       - rsync
       - python3-pip
+      - words
+      - distrobox
+      - fastfetch
+      #tool pentesting
+      - nmap
+      - nmap.ncat
+      - wireshark
+      - wireshark-cli
+      - python3-impacket
+      - gobuster
+      - samba-client
+      - cifs-utils
+      - sqlmap        
+      - mariadb          
+      - postgresql        
+      - sqlite  
+      - remmina          
+      - freerdp          
+      - openssh-clients 
+      - whois
+      
     remove:
       - firefox 
       - firefox-langpacks
@@ -34,5 +55,11 @@ modules:
           # --- TOOLS ---
           - org.keepassxc.KeePassXC
           - com.visualstudio.code
-
+          
+  - type: files
+    files:
+      - source: files/usr/bin/init-kali  # Il file che hai creato tu
+        destination: /usr/bin/init-kali  # Dove va a finire nel sistema
+        mode: 0755
+        # Lo rende eseguibile
   - type: signing
