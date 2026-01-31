@@ -26,4 +26,4 @@ jobs:
           registry_token: ${{ github.token }}
           pr_event_number: ${{ github.event.number }}
           # QUESTA è la riga magica che dice di fare l'ISO invece del container normale
-          iso_only: true
+          build_iso: true
