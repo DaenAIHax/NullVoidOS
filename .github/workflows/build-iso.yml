@@ -1,7 +1,7 @@
 name: Build ISO
 
 on:
-  workflow_dispatch: # Questo permette di avviarlo manualmente con un click
+  workflow_dispatch: # Permette l'avvio manuale
 
 jobs:
   bluebuild-iso:
@@ -11,22 +11,38 @@ jobs:
       contents: read
       packages: write
       id-token: write
+
     strategy:
       fail-fast: false
       matrix:
         recipe:
-          # Assicurati che questo nome corrisponda al tuo file ricetta!
           - recipe.yml
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-        
-      - name: Build ISO Image
+
+      - name: Build Image
         uses: blue-build/github-action@v1.10
         with:
           recipe: ${{ matrix.recipe }}
           cosign_private_key: ${{ secrets.SIGNING_SECRET }}
           registry_token: ${{ github.token }}
-          pr_event_number: ${{ github.event.number || 0 }}
-          # QUESTA è la riga magica che dice di fare l'ISO invece del container normale
+          push: true
+
+      - name: Generate ISO
+        uses: blue-build/github-action@v1.10
+        with:
+          recipe: ${{ matrix.recipe }}
+          # Usiamo l'input corretto supportato dalla v1.x per generare l'installer
           build_iso: true
+          # Se il warning persiste, assicurati che la recipe sia valida
+          registry_token: ${{ github.token }}
+
+      - name: Upload ISO as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.recipe }}-iso
+          path: |
+            ./*.iso
+            ./*.sha256
