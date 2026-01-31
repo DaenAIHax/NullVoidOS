@@ -13,21 +13,6 @@ modules:
 
   - type: rpm-ostree
     install:
-      # --- PENTESTING & NETWORKING ---
-      - nmap
-      - wireshark
-      - aircrack-ng
-      - gobuster
-      - socat
-      - ncat
-      - john
-      - python3-impacket
-      # --- FORENSIC & ANALYSIS ---
-      - sleuthkit
-      - foremost
-      - binwalk
-      - hashdeep
-      # --- UTILS FONDAMENTALI ---
       - nano
       - wget
       - curl
