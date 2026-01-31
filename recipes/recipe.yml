@@ -50,7 +50,7 @@ modules:
           
   - type: files
     files:
-      - source: files/usr/bin/init-kali  # Il file che hai creato tu
+      - source: /usr/bin/init-kali  # Il file che hai creato tu
         destination: /usr/bin/init-kali  # Dove va a finire nel sistema
         mode: 0755
         # Lo rende eseguibile
