@@ -3,7 +3,7 @@ name: nullvoidos
 description: Forensic & Pentesting Lab - Immutable Environment
 
 base-image: ghcr.io/ublue-os/aurora
-image-version: 43
+image-version: latest
 
 modules:
   - type: files
