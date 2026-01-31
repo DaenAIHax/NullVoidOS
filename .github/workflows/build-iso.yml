@@ -16,7 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         recipe:
-          - recipes/recipe.yml # Nota: il tuo screenshot mostra la cartella 'recipes'
+          - recipes/recipe.yml
 
     steps:
       - name: Checkout repo
@@ -26,24 +26,22 @@ jobs:
         uses: blue-build/github-action@v1
         with:
           recipe: ${{ matrix.recipe }}
+          cosign_private_key: ${{ secrets.SIGNING_SECRET }}
           registry_token: ${{ github.token }}
           push: true
-          # Se non vuoi configurare i segreti ora, aggiungi questa riga:
-          # skip_signing: true 
 
       - name: Generate ISO
         uses: blue-build/github-action@v1
         with:
           recipe: ${{ matrix.recipe }}
-          build_iso: true
           registry_token: ${{ github.token }}
-          # Passiamo esplicitamente la chiave se presente nei secret
+          build_iso: true 
           cosign_private_key: ${{ secrets.SIGNING_SECRET }}
 
       - name: Upload ISO as Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nullvoidos-iso
+          name: NullVoidOS-ISO
           path: |
             ./*.iso
             ./*.sha256
