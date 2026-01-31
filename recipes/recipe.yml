@@ -3,7 +3,7 @@ name: nullvoidos
 description: Forensic & Pentesting Lab - Immutable Environment
 
 base-image: ghcr.io/ublue-os/vauxite
-image-version: latest 
+image-version: 43
 
 modules:
   - type: files
