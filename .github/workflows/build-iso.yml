@@ -18,12 +18,15 @@ jobs:
           # Assicurati che questo nome corrisponda al tuo file ricetta!
           - recipe.yml
     steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        
       - name: Build ISO Image
         uses: blue-build/github-action@v1.10
         with:
           recipe: ${{ matrix.recipe }}
           cosign_private_key: ${{ secrets.SIGNING_SECRET }}
           registry_token: ${{ github.token }}
-          pr_event_number: ${{ github.event.number }}
+          pr_event_number: ${{ github.event.number || 0 }}
           # QUESTA è la riga magica che dice di fare l'ISO invece del container normale
           build_iso: true
