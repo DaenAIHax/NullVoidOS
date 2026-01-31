@@ -22,13 +22,11 @@ modules:
       - ncat
       - john
       - python3-impacket
-      
       # --- FORENSIC & ANALYSIS ---
       - sleuthkit
       - foremost
       - binwalk
       - hashdeep
-      
       # --- UTILS FONDAMENTALI ---
       - nano
       - wget
@@ -38,18 +36,18 @@ modules:
       - htop
       - rsync
       - python3-pip
-      
     remove:
       - firefox 
       - firefox-langpacks
 
   - type: default-flatpaks
-    install:
-      # --- BROWSER ---
-      - com.brave.Browser
-      - com.google.Chrome
-      # --- TOOLS ---
-      - org.keepassxc.KeePassXC
-      - com.visualstudio.code
+    configurations:
+      - install:
+          # --- BROWSER ---
+          - com.brave.Browser
+          - com.google.Chrome
+          # --- TOOLS ---
+          - org.keepassxc.KeePassXC
+          - com.visualstudio.code
 
   - type: signing
