@@ -36,9 +36,7 @@ modules:
       - freerdp           
       - whois
       
-    remove:
-      - firefox 
-      - firefox-langpacks
+    #remove:
 
   - type: default-flatpaks
     configurations:
