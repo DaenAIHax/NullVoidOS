@@ -40,8 +40,7 @@ modules:
       - source: sift-create.sh  
         destination: /usr/bin/init-sift  
         mode: 0755
-        
-    files:
+
       - source: kali-create.sh  
         destination: /usr/bin/init-kali 
         mode: 0755
