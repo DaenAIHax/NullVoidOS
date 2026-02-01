@@ -16,26 +16,13 @@ modules:
       - tmux
       - htop
       - rsync
-      - python3-pip
-      - words
       - distrobox
       - fastfetch
-      #tool pentesting
-      - nmap
-      - nmap-ncat
-      - wireshark
-      - wireshark-cli
-      - python3-impacket
-      - gobuster
       - samba-client
       - cifs-utils      
-      - mariadb          
-      - postgresql        
-      - sqlite  
-      - remmina          
-      - freerdp           
-      - whois
-      
+      - fuse-sshfs
+      - libvirt-client
+      - virt-install
     #remove:
 
   - type: default-flatpaks
@@ -50,8 +37,13 @@ modules:
           
   - type: files
     files:
-      - source: /usr/bin/init-kali  # Il file che hai creato tu
-        destination: /usr/bin/init-kali  # Dove va a finire nel sistema
+      - source: sift-create.sh  
+        destination: /usr/bin/init-sift  
         mode: 0755
-        # Lo rende eseguibile
+        
+    files:
+      - source: kali-create.sh  
+        destination: /usr/bin/init-kali 
+        mode: 0755
+        
   - type: signing
