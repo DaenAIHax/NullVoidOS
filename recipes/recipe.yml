@@ -16,8 +16,8 @@ stages:
           # Creiamo la cartella di output nello stage
           - mkdir -p /out
           # Copiamo i tuoi file dalla cartella config della repo allo stage
-          - cp /tmp/config/sift-create.sh /out/init-sift
-          - cp /tmp/config/kali-create.sh /out/init-kali
+          - cp /tmp/files/files/sift-create.sh /out/init-sift
+          - cp /tmp/files/files/kali-create.sh /out/init-kali
           # Qui il chmod funziona perché non siamo su un filesystem Read-Only
           - chmod 0755 /out/init-sift
           - chmod 0755 /out/init-kali
