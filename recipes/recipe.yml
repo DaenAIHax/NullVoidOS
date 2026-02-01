@@ -18,9 +18,11 @@ stages:
           # Copiamo i tuoi file dalla cartella config della repo allo stage
           - cp $CONFIG_DIRECTORY/sift-create.sh /out/init-sift
           - cp $CONFIG_DIRECTORY/kali-create.sh /out/init-kali
+          - cp $CONFIG_DIRECTORY/remnux-create.sh /out/init-remnux
           # Qui il chmod funziona perché non siamo su un filesystem Read-Only
           - chmod 0755 /out/init-sift
           - chmod 0755 /out/init-kali
+          - chmod 0755 /out/init-remnux
 
 
 
@@ -105,6 +107,10 @@ modules:
     src: /out/init-kali
     dest: /usr/bin/init-kali
 
-  - type: signing
+   - type: copy
+    from: script-prepper
+    src: /out/init-remnux
+    dest: /usr/bin/init-remnux
+
         
   - type: signing
