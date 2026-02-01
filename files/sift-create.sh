@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 1. Define the container name
-CONTAINER_NAME="sift-lab"
+CONTAINER_NAME="sift"
 
 echo "--- Creating Distrobox container: $CONTAINER_NAME ---"
 # We use Ubuntu 22.04 as it is the most stable base for SIFT SaltStack
@@ -11,9 +11,12 @@ echo "--- Starting installation inside the container ---"
 # Execute commands inside the newly created container
 distrobox enter $CONTAINER_NAME -- bash -c "
     sudo apt-get update && sudo apt-get install -y wget curl gnupg2;
+
+    # Ci spostiamo in /tmp per non sporcare la home
+    cd /tmp
     
     echo '--- Downloading CAST v1.0.4 ---';
-    wget https://github.com/teamdfir/cast/releases/download/v1.0.4/cast-v1.0.4-linux-amd64.deb;
+    wget https://github.com/ekristen/cast/releases/tag/v1.0.4/cast-v1.0.4-linux-amd64.deb;
     
     echo '--- Installing CAST ---';
     sudo dpkg -i cast-v1.0.4-linux-amd64.deb || sudo apt-get install -f -y;
