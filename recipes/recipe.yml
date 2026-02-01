@@ -34,7 +34,7 @@ modules:
     install:
       # --- IL CUORE DI AURORA (Container & Terminal) ---
       - ptyxis             # Il terminale perfetto per Distrobox
-      - starship           # Prompt intelligente (ti dice se sei in un container)
+      #- starship           # Prompt intelligente (ti dice se sei in un container)
       - distrobox          # Gestore container (dovrebbe esserci, ma per sicurezza)
       
       # --- RETE & VPN (Per collegarti al lab remoto) ---
@@ -50,7 +50,7 @@ modules:
       - file-roller        # Gestore archivi
       - grim               # Screenshot tool (backend)
       - slurp              # Selezione area screenshot
-      - polkit-gnome       # POPUP PASSWORD (essenziale per GUI sudo)
+      - mate-polkit       # POPUP PASSWORD (essenziale per GUI sudo)
       - pavucontrol        # Controllo volume audio avanzato
 
       # --- UTILITY FORENSI & SYSTEM (Sulla base host) ---
