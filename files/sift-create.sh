@@ -18,7 +18,7 @@ distrobox enter $CONTAINER_NAME -- bash -e -c "
     
     echo '3. Download CAST v1.0.4...'
     cd /tmp
-    wget -c https://github.com/teamdfir/cast/releases/download/v1.0.4/cast-v1.0.4-linux-amd64.deb
+    wget -c https://github.com/ekristen/cast/releases/tag/v1.0.4/cast-v1.0.4-linux-amd64.deb
     
     echo '4. Installazione CAST...'
     sudo dpkg -i cast-v1.0.4-linux-amd64.deb || sudo apt-get install -f -y
