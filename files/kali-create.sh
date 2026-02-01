@@ -1,20 +1,30 @@
 #!/bin/bash
-# Script to initialize a ROOT Kali Linux container on NullVoidOS
 
-echo "🛠️  Preparing your ROOT hacking environment..."
+# 1. Definizione nome del container (Attenzione alla Maiuscola!)
+CONTAINER_NAME="Kali"
 
-# 1. Create the container with ROOT privileges
-# Abbiamo aggiunto --root: questo è il segreto per far andare Nmap e VPN
-distrobox create --image docker.io/kalilinux/kali-rolling --name kali --root -Y
+echo "🛠️  Preparing your ROOT hacking environment ($CONTAINER_NAME)..."
 
-# 2. Install Kali Headless metapackage
-echo "🚀 Installing Kali Headless..."
+# 2. Creazione del container con privilegi ROOT
+# Fondamentale per far funzionare Nmap, OpenVPN e Wireshark
+distrobox create --image docker.io/kalilinux/kali-rolling --name $CONTAINER_NAME --root -Y
 
-# Non serve 'sudo' dentro il comando bash -c perché siamo già root
-distrobox enter --root kali -- bash -c "
-    apt-get update && \
-    apt-get install -y kali-linux-headless && \
-    apt-get clean
+echo "🚀 Installing Kali Headless (Metapackages)..."
+echo "⚠️  ATTENZIONE: Questo pacchetto scarica ~3GB di dati. Assicurati di avere spazio!"
+
+# 3. Installazione dei pacchetti
+# Usiamo 'bash -e -c' per fermarci se c'è un errore.
+# Aggiunto 'sudo' davanti ai comandi apt perché entri come utente normale.
+distrobox enter --root $CONTAINER_NAME -- bash -e -c "
+    echo '--- Aggiornamento lista pacchetti ---'
+    sudo apt-get update
+    
+    echo '--- Installazione Kali Headless ---'
+    # Ti chiederà la password la prima volta
+    sudo apt-get install -y kali-linux-headless
+    
+    echo '--- Pulizia cache ---'
+    sudo apt-get clean
 "
 
-echo "✅ Done! To enter your Kali environment, type: distrobox enter --root kali"
+echo "✅ Done! To enter your Kali environment, type: distrobox enter --root $CONTAINER_NAME"
