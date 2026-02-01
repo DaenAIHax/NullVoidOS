@@ -13,7 +13,6 @@ echo "🚀 Installing Kali Headless (Metapackages) and Core Tools..."
 distrobox enter kali -- bash -c "
     sudo apt-get update && \
     sudo apt-get install -y kali-linux-headless && \
-    sudo apt-get install -y metasploit-framework enum4linux seclists wordlists exploitdb && \
     sudo apt-get clean
 "
 
