@@ -1,31 +1,29 @@
 #!/bin/bash
 
-# 1. Define the container name
-CONTAINER_NAME="sift"
+CONTAINER_NAME="sift-custom"
 
-echo "--- Creating Distrobox container: $CONTAINER_NAME ---"
-# We use Ubuntu 22.04 as it is the most stable base for SIFT SaltStack
-distrobox create --name $CONTAINER_NAME --image ubuntu:22.04 --yes
+echo "--- Creating Custom Forensic Container ---"
+# AGGIUNTO --root: Fondamentale per mount e accessi raw
+distrobox create --name $CONTAINER_NAME --image ubuntu:22.04 --root --yes
 
 echo "--- Avvio installazione interna ---"
-# Usiamo -e per fermarci al primo errore e vedere cosa succede
-distrobox enter $CONTAINER_NAME -- bash -e -c "
-    echo '1. Aggiornamento repository...'
-    sudo apt-get update
-    
-    echo '2. Installazione dipendenze base...'
-    sudo apt-get install -y wget curl gnupg2 ca-certificates
-    
-    echo '3. Download CAST v1.0.4...'
-    cd /tmp
-    wget -c https://github.com/ekristen/cast/releases/download/v1.0.4/cast-v1.0.4-linux-amd64.deb
-    
-    echo '4. Installazione CAST...'
-    sudo dpkg -i cast-v1.0.4-linux-amd64.deb || sudo apt-get install -f -y
-    
-    echo '5. Installazione SIFT (Server Mode)...'
-    sudo cast install teamdfir/sift-saltstack --mode=server
+
+# Rimosso 'sudo' perché con --root siamo già root dentro
+distrobox enter --root $CONTAINER_NAME -- bash -e -c "
+    echo '1. Aggiornamento e tool base...'
+    apt-get update && apt-get install -y wget curl gnupg2 ca-certificates lsb-release
+
+    echo '2. Download CAST v0.10.6 (Versione stabile per 22.04)...'
+    # Nota: a volte le versioni nuove di cast rompono le dipendenze, controlla sempre
+    wget -O /tmp/cast.deb https://github.com/ekristen/cast/releases/download/v0.10.6/cast_0.10.6_linux_amd64.deb
+
+    echo '3. Installazione CAST...'
+    dpkg -i /tmp/cast.deb || apt-get install -f -y
+
+    echo '4. Installazione SIFT (Modalità Server - Più leggera)...'
+    # Questo passaggio impiegherà MOLTO tempo su USB
+    cast install teamdfir/sift-saltstack --mode=server --user=root
 "
 
 echo "--- Setup Finished! ---"
-echo "To enter your forensic lab, run: distrobox enter $CONTAINER_NAME"
+echo "To enter run: distrobox enter --root $CONTAINER_NAME"
