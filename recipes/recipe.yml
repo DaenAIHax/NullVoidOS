@@ -107,7 +107,7 @@ modules:
     src: /out/init-kali
     dest: /usr/bin/init-kali
 
-   - type: copy
+  - type: copy
     from: script-prepper
     src: /out/init-remnux
     dest: /usr/bin/init-remnux
