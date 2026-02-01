@@ -22,7 +22,7 @@ stages:
           # Qui il chmod funziona perché non siamo su un filesystem Read-Only
           - chmod 0755 /out/init-sift
           - chmod 0755 /out/init-kali
-          - chmod 0755 /out/init-kali
+          - chmod 0755 /out/init-remnux
 
 
 
