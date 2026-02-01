@@ -2,7 +2,7 @@
 name: nullvoidos
 description: Forensic & Pentesting Lab - Immutable Environment
 
-base-image: ghcr.io/ublue-os/sway-atomic-main
+base-image: ghcr.io/ublue-os/vauxite-main
 image-version: latest
 
 # --- STAGE DI PREPARAZIONE ---
