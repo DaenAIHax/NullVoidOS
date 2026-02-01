@@ -5,6 +5,25 @@ description: Forensic & Pentesting Lab - Immutable Environment
 base-image: ghcr.io/ublue-os/aurora
 image-version: latest
 
+# --- STAGE DI PREPARAZIONE ---
+# Qui prepariamo gli script in un ambiente non protetto per dare i permessi
+stages:
+  - name: script-prepper
+    from: docker.io/library/ubuntu:22.04
+    modules:
+      - type: script
+        snippets:
+          # Creiamo la cartella di output nello stage
+          - mkdir -p /out
+          # Copiamo i tuoi file dalla cartella config della repo allo stage
+          - cp /tmp/config/sift-create.sh /out/init-sift
+          - cp /tmp/config/kali-create.sh /out/init-kali
+          # Qui il chmod funziona perché non siamo su un filesystem Read-Only
+          - chmod 0755 /out/init-sift
+          - chmod 0755 /out/init-kali
+
+
+
 modules:
   - type: files
     files:
@@ -44,5 +63,19 @@ modules:
       - source: kali-create.sh  
         destination: /usr/bin/init-kali 
         mode: 0755
+
+  # --- COPIA DEGLI SCRIPT PRONTI ---
+  # Copiamo i file dallo stage 'script-prepper' a /usr/bin
+  - type: copy
+    from: script-prepper
+    src: /out/init-sift
+    dest: /usr/bin/init-sift
+    
+  - type: copy
+    from: script-prepper
+    src: /out/init-kali
+    dest: /usr/bin/init-kali
+
+  - type: signing
         
   - type: signing
