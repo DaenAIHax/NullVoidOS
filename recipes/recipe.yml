@@ -2,7 +2,7 @@
 name: nullvoidos
 description: Forensic & Pentesting Lab - Immutable Environment
 
-base-image: ghcr.io/ublue-os/aurora
+base-image: ghcr.io/ublue-os/sway-atomic-main
 image-version: latest
 
 # --- STAGE DI PREPARAZIONE ---
@@ -32,16 +32,38 @@ modules:
 
   - type: rpm-ostree
     install:
-      - tmux
-      - htop
-      - rsync
-      - distrobox
-      - fastfetch
-      - samba-client
-      - cifs-utils      
-      - fuse-sshfs
-      - libvirt-client
-      - virt-install
+      # --- IL CUORE DI AURORA (Container & Terminal) ---
+      - ptyxis             # Il terminale perfetto per Distrobox
+      - starship           # Prompt intelligente (ti dice se sei in un container)
+      - distrobox          # Gestore container (dovrebbe esserci, ma per sicurezza)
+      
+      # --- RETE & VPN (Per collegarti al lab remoto) ---
+      - tailscale          # VPN Mesh
+      - network-manager-applet # Icona WiFi nella barra (FONDAMENTALE su Sway)
+      - blueman            # Gestore Bluetooth
+
+      # --- SWAY ESSENTIALS (Per rendere l'interfaccia usabile) ---
+      - wofi               # Menu avvio app (simile a Spotlight/Krunner)
+      - waybar             # La barra in alto (ora, batteria, workspace)
+      - thunar             # File Manager leggero (alternativa a Dolphin)
+      - thunar-archive-plugin # Per aprire zip/tar.gz con tasto destro
+      - file-roller        # Gestore archivi
+      - grim               # Screenshot tool (backend)
+      - slurp              # Selezione area screenshot
+      - polkit-gnome       # POPUP PASSWORD (essenziale per GUI sudo)
+      - pavucontrol        # Controllo volume audio avanzato
+
+      # --- UTILITY FORENSI & SYSTEM (Sulla base host) ---
+      - rclone             # Per montare cloud storage (Google Drive, S3)
+      - restic             # Per backup criptati
+      - testdisk           # Recupero partizioni (meglio averlo sull'host)
+      - wireshark          # Analisi pacchetti (GUI)
+      - htop               # Monitor risorse
+      - fastfetch          # Per vedere le info sistema (stile neofetch)
+
+      # --- SUPPORTO VPN (Specifico per Proving Grounds/HTB) ---
+      - NetworkManager-openvpn # <--- FONDAMENTALE per importare i file .ovpn
+      - NetworkManager-openvpn-gnome # Plugin grafico per l'applet
     #remove:
 
   - type: default-flatpaks
@@ -64,6 +86,13 @@ modules:
         destination: /usr/bin/init-kali 
         mode: 0755
 
+  # --- SERVIZI DI SISTEMA ---
+  - type: systemd
+    system:
+      enabled:
+        - podman.socket    # Tienilo, serve a Distrobox per funzionare bene
+        # - tailscaled     <--- RIMOSSO (lo lasciamo spento)
+  
   # --- COPIA DEGLI SCRIPT PRONTI ---
   # Copiamo i file dallo stage 'script-prepper' a /usr/bin
   - type: copy
