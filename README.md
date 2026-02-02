@@ -1,4 +1,4 @@
-# NullVoidOS 
+# NullVoidOS &nbsp; [![bluebuild build badge](https://github.com/daenaihax/nullvoidos/actions/workflows/build.yml/badge.svg)](https://github.com/daenaihax/nullvoidos/actions/workflows/build.yml)
 
 A modular cybersecurity workbench
 
@@ -171,9 +171,6 @@ Future improvements (tool discovery, orchestration helpers, manifests) will buil
 > Use containers to **organize toolsets**, not to hide them.  
 > Use the host as **infrastructure**, not as a workstation.  
 > Optimize for professionals who need **one environment that can do everything**.
-
-
-# NullVoidOS &nbsp; [![bluebuild build badge](https://github.com/daenaihax/nullvoidos/actions/workflows/build.yml/badge.svg)](https://github.com/daenaihax/nullvoidos/actions/workflows/build.yml)
 
 See the [BlueBuild docs](https://blue-build.org/how-to/setup/) for quick setup instructions for setting up your own repository based on this template.
 
