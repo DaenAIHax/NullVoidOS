@@ -89,7 +89,7 @@ modules:
         mode: 0755
         
       - source: nullvoid_background.png
-        destination: /usr/share/backgrounds/nullvoidos/wallpaper.png
+        destination: /usr/share/backgrounds/nullvoidos/nullvoid_background.png
         mode: 0644
 
   
