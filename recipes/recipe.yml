@@ -62,7 +62,7 @@ modules:
       - wireshark          # Analisi pacchetti (GUI)
       - htop               # Monitor risorse
       - fastfetch          # Per vedere le info sistema (stile neofetch)
-
+      - spice-vdagent
       # --- SUPPORTO VPN (Specifico per Proving Grounds/HTB) ---
       - NetworkManager-openvpn # <--- FONDAMENTALE per importare i file .ovpn
       - NetworkManager-openvpn-gnome # Plugin grafico per l'applet
