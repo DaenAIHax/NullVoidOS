@@ -1,4 +1,4 @@
 [org/gnome/desktop/background]
-picture-uri='file:///usr/share/backgrounds/nullvoidos/nullvoid_background.png'
-picture-uri-dark='file:///usr/share/backgrounds/nullvoidos/nullvoid_background.png'
+picture-uri='file:///usr/share/backgrounds/nullvoidos/nullvoid_background_chatgpt.png'
+picture-uri-dark='file:///usr/share/backgrounds/nullvoidos/nullvoid_background_chatgpt.png'
 picture-options='zoom'
