@@ -88,6 +88,14 @@ modules:
         destination: /usr/bin/init-kali 
         mode: 0755
 
+      - source: nullvoid_background.png
+        destination: /usr/share/backgrounds/nullvoidos/nullvoid_background.png
+        mode: 0644
+
+      - source: dconf
+        destination: /etc/dconf/db
+
+      
   # --- SERVIZI DI SISTEMA ---
   - type: systemd
     system:
@@ -107,7 +115,10 @@ modules:
     src: /out/init-kali
     dest: /usr/bin/init-kali
 
- 
+  - type: script
+    snippets:
+      - dconf update
+
 
         
   - type: signing
