@@ -1,30 +1,43 @@
 #!/bin/bash
 
-# 1. Definizione nome del container (Attenzione alla Maiuscola!)
+# -------------------------------------------------------------------------
+# Null Void OS
+# Kali Linux (Rolling) — Root-Enabled Distrobox Environment
+# -------------------------------------------------------------------------
+# Thank you for testing Null Void OS.
+# This script prepares a privileged Kali Linux container intended for
+# security research, penetration testing, and advanced networking tasks.
+# -------------------------------------------------------------------------
+
+# 1. Container name definition (case-sensitive)
 CONTAINER_NAME="Kali"
 
-echo "🛠️  Preparing your ROOT hacking environment ($CONTAINER_NAME)..."
+echo "Initializing Null Void OS environment..."
+echo "Target container: ${CONTAINER_NAME}"
+echo "This process may take several minutes."
 
-# 2. Creazione del container con privilegi ROOT
-# Fondamentale per far funzionare Nmap, OpenVPN e Wireshark
+# 2. Create the container with ROOT privileges
+# Required for tools such as Nmap, OpenVPN, and Wireshark
 distrobox create --image docker.io/kalilinux/kali-rolling --name $CONTAINER_NAME --root -Y
 
-echo "🚀 Installing Kali Headless (Metapackages)..."
-echo "⚠️  ATTENZIONE: Questo pacchetto scarica ~3GB di dati. Assicurati di avere spazio!"
+echo "Container successfully created."
+echo "Proceeding with Kali Linux headless installation."
+echo "NOTICE: Approximately 3 GB of data will be downloaded."
 
-# 3. Installazione dei pacchetti
-# Usiamo 'bash -e -c' per fermarci se c'è un errore.
-# Aggiunto 'sudo' davanti ai comandi apt perché entri come utente normale.
+# 3. Package installation
+# 'bash -e -c' ensures the process stops on any error.
+# 'sudo' is required because the session may start as a non-root user.
 distrobox enter --root $CONTAINER_NAME -- bash -e -c "
-    echo '--- Aggiornamento lista pacchetti ---'
+    echo 'Updating package index...'
     sudo apt-get update
     
-    echo '--- Installazione Kali Headless ---'
-    # Ti chiederà la password la prima volta
+    echo 'Installing kali-linux-headless metapackage...'
     sudo apt-get install -y kali-linux-headless
     
-    echo '--- Pulizia cache ---'
+    echo 'Cleaning package cache...'
     sudo apt-get clean
 "
 
-echo "✅ Done! To enter your Kali environment, type: distrobox enter --root $CONTAINER_NAME"
+echo "Null Void OS environment setup completed successfully."
+echo "You may now enter the system using the following command:"
+echo "distrobox enter --root ${CONTAINER_NAME}"
