@@ -91,7 +91,10 @@ modules:
       - source: nullvoid_background.png
         destination: /usr/share/backgrounds/nullvoidos/nullvoid_background.png
         mode: 0644
-
+        
+      - source: nullvoid_background_chatgpt.png
+        destination: /usr/share/backgrounds/nullvoidos/nullvoid_background_chatgpt.png
+        mode: 0644
   
   - type: bling
     install:
