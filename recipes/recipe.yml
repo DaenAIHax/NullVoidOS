@@ -20,10 +20,11 @@ stages:
           # Copiamo i tuoi file dalla cartella config della repo allo stage
           - cp $CONFIG_DIRECTORY/sift-create.sh /out/init-sift
           - cp $CONFIG_DIRECTORY/kali-create.sh /out/init-kali
-
+          - cp $CONFIG_DIRECTORY/dbx-cmd /out/dbx-cmd
           # Qui il chmod funziona perché non siamo su un filesystem Read-Only
           - chmod 0755 /out/init-sift
           - chmod 0755 /out/init-kali
+          - chmod 0755 /out/dbx-cmd
 
 modules:
   - type: files
@@ -130,5 +131,10 @@ modules:
     from: script-prepper
     src: /out/init-kali
     dest: /usr/bin/init-kali
+
+  - type: copy
+    from: script-prepper
+    src: /out/dbx-cmd
+    dest: /usr/local/bin/dbx-cmd
 
   - type: signing
