@@ -66,6 +66,13 @@ modules:
         mkdir -p /usr/share/backgrounds/nullvoidos
         mkdir -p /etc/bashrc.d
         mkdir -p /etc/profile.d
+     
+        # Forza permessi di esecuzione (robusto anche se "mode" non viene rispettato)
+        chmod 0755 /usr/bin/init-sift /usr/bin/init-kali /usr/bin/dbx-cmd || true
+
+        # Se SELinux è presente, prova a sistemare i context (non fallire se manca restorecon)
+        command -v restorecon >/dev/null 2>&1 && restorecon -v /usr/bin/init-sift /usr/bin/init-kali /usr/bin/dbx-cmd || true
+
 
   # --- Copia file nell'immagine (dalla repo) ---
   - type: files
@@ -111,5 +118,7 @@ modules:
     system:
       enabled:
         - podman.socket
+
+  
 
   - type: signing
