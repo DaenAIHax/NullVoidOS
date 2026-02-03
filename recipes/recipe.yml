@@ -5,89 +5,81 @@ description: Forensic & Pentesting Lab - Immutable Environment
 base-image: ghcr.io/ublue-os/budgie-atomic-main
 image-version: latest
 
-# --- STAGE DI PREPARAZIONE ---
-# Qui prepariamo gli script in un ambiente non protetto per dare i permessi
-stages:
-  - name: script-prepper
-    from: docker.io/library/ubuntu:22.04
-    modules:
-      - type: script
-        snippets:
-          # Creiamo la cartella di output nello stage
-          - mkdir -p /out
-          # Copiamo i tuoi file dalla cartella config della repo allo stage
-          - cp $CONFIG_DIRECTORY/sift-create.sh /out/init-sift
-          - cp $CONFIG_DIRECTORY/kali-create.sh /out/init-kali
-          
-          # Qui il chmod funziona perché non siamo su un filesystem Read-Only
-          - chmod 0755 /out/init-sift
-          - chmod 0755 /out/init-kali
-          
-
-
-
 modules:
+  # --- (OPZIONALE) Copia contenuto della cartella system/ nella root dell'immagine ---
+  # ATTENZIONE: se in system/ hai system/usr/local/* puoi rompere la build.
+  # Se ti ha già dato errori, commenta questo blocco.
   - type: files
     files:
       - source: system
         destination: /
 
+  # --- Pacchetti host via rpm-ostree ---
   - type: rpm-ostree
     install:
-      # --- IL CUORE DI AURORA (Container & Terminal) ---
-      - ptyxis             # Il terminale perfetto per Distrobox
-      #- starship           # Prompt intelligente (ti dice se sei in un container)
-      - distrobox          # Gestore container (dovrebbe esserci, ma per sicurezza)
-      
-      # --- RETE & VPN (Per collegarti al lab remoto) ---
-      - tailscale          # VPN Mesh
-      - network-manager-applet # Icona WiFi nella barra (FONDAMENTALE su Sway)
-      - blueman            # Gestore Bluetooth
+      # Container & Terminal
+      - ptyxis
+      - distrobox
 
-      # --- SWAY ESSENTIALS (Per rendere l'interfaccia usabile) ---
-      - wofi               # Menu avvio app (simile a Spotlight/Krunner)
-      - waybar             # La barra in alto (ora, batteria, workspace)
-      - thunar             # File Manager leggero (alternativa a Dolphin)
-      - thunar-archive-plugin # Per aprire zip/tar.gz con tasto destro
-      - file-roller        # Gestore archivi
-      - grim               # Screenshot tool (backend)
-      - slurp              # Selezione area screenshot
-      - mate-polkit       # POPUP PASSWORD (essenziale per GUI sudo)
-      - pavucontrol        # Controllo volume audio avanzato
+      # Rete & VPN
+      - tailscale
+      - network-manager-applet
+      - blueman
 
-      # --- UTILITY FORENSI & SYSTEM (Sulla base host) ---
-      - rclone             # Per montare cloud storage (Google Drive, S3)
-      - restic             # Per backup criptati
-      - testdisk           # Recupero partizioni (meglio averlo sull'host)
-      - wireshark          # Analisi pacchetti (GUI)
-      - htop               # Monitor risorse
-      - fastfetch          # Per vedere le info sistema (stile neofetch)
+      # Budgie/Sway essentials (come li avevi)
+      - wofi
+      - waybar
+      - thunar
+      - thunar-archive-plugin
+      - file-roller
+      - grim
+      - slurp
+      - mate-polkit
+      - pavucontrol
+
+      # Utility forensi / system
+      - rclone
+      - restic
+      - testdisk
+      - wireshark
+      - htop
+      - fastfetch
       - spice-vdagent
-      # --- SUPPORTO VPN (Specifico per Proving Grounds/HTB) ---
-      - NetworkManager-openvpn # <--- FONDAMENTALE per importare i file .ovpn
-      - NetworkManager-openvpn-gnome # Plugin grafico per l'applet
-    #remove:
 
+      # OpenVPN support
+      - NetworkManager-openvpn
+      - NetworkManager-openvpn-gnome
+
+  # --- Flatpaks di default ---
   - type: default-flatpaks
     configurations:
       - install:
-          # --- BROWSER ---
           - com.brave.Browser
           - com.google.Chrome
-          # --- TOOLS ---
           - org.keepassxc.KeePassXC
           - com.visualstudio.code
-          
+
+  # --- Crea directory target (il modulo files NON fa mkdir -p) ---
+  - type: script
+    snippets:
+      - |
+        mkdir -p /usr/share/backgrounds/nullvoidos
+        mkdir -p /etc/bashrc.d
+        mkdir -p /etc/profile.d
+
+  # --- Copia file nell'immagine (dalla repo) ---
   - type: files
     files:
-      - source: sift-create.sh  
-        destination: /usr/bin/init-sift  
+      # Init scripts per creare i container (rootful)
+      - source: sift-create.sh
+        destination: /usr/bin/init-sift
         mode: 0755
 
-      - source: kali-create.sh  
-        destination: /usr/bin/init-kali 
+      - source: kali-create.sh
+        destination: /usr/bin/init-kali
         mode: 0755
-        
+
+      # Wallpaper
       - source: nullvoid_background.png
         destination: /usr/share/backgrounds/nullvoidos/nullvoid_background.png
         mode: 0644
@@ -95,31 +87,29 @@ modules:
       - source: nullvoid_background_chatgpt.png
         destination: /usr/share/backgrounds/nullvoidos/nullvoid_background_chatgpt.png
         mode: 0644
-  
+
+      # DBX wrapper + shell functions/hook
+      # Metto dbx-cmd in /usr/bin per evitare conflitti con /usr/local sulle basi uBlue
+      - source: dbx-cmd
+        destination: /usr/bin/dbx-cmd
+        mode: 0755
+
+      - source: dbx.sh
+        destination: /etc/bashrc.d/dbx.sh
+        mode: 0644
+
+      - source: dbx.sh
+        destination: /etc/profile.d/dbx.sh
+        mode: 0644
+
+  # --- Bling / servizi ---
   - type: bling
     install:
       - dconf-update-service
-      
-  # --- SERVIZI DI SISTEMA ---
+
   - type: systemd
     system:
       enabled:
-        - podman.socket    # Tienilo, serve a Distrobox per funzionare bene
-        # - tailscaled     <--- RIMOSSO (lo lasciamo spento)
-  
-  # --- COPIA DEGLI SCRIPT PRONTI ---
-  # Copiamo i file dallo stage 'script-prepper' a /usr/bin
-  - type: copy
-    from: script-prepper
-    src: /out/init-sift
-    dest: /usr/bin/init-sift
-    
-  - type: copy
-    from: script-prepper
-    src: /out/init-kali
-    dest: /usr/bin/init-kali
+        - podman.socket
 
- 
-
-        
   - type: signing
