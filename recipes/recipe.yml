@@ -95,6 +95,20 @@ modules:
       - source: nullvoid_background_chatgpt.png
         destination: /usr/share/backgrounds/nullvoidos/nullvoid_background_chatgpt.png
         mode: 0644
+
+      - source: dbx-cmd
+        destination: /usr/bin/dbx-cmd
+        mode: 0755
+
+      - source: dbx.sh
+        destination: /etc/bashrc.d/dbx.sh
+        mode: 0644
+
+      - source: dbx.sh
+        destination: /etc/profile.d/dbx.sh
+        mode: 0644
+
+      
   
   - type: bling
     install:
