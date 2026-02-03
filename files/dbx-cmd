@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+KALI="Kali"
+SIFT="sift-lab"
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/dbx-cmd-cache.tsv"
+
+usage() { echo "Uso: dbx-cmd <comando> [args...]" >&2; exit 2; }
+[[ $# -ge 1 ]] || usage
+
+cmd="$1"; shift || true
+args=("$@")   # <-- salva gli argomenti originali
+
+# host first (se lo lanci manualmente e il comando esiste davvero sull'host)
+if command -v -- "$cmd" >/dev/null 2>&1; then
+  exec "$cmd" "${args[@]}"
+fi
+
+cache_get() {
+  [[ -f "$CACHE" ]] || return 1
+  awk -F'\t' -v c="$cmd" '$1==c {print $2; exit}' "$CACHE"
+}
+
+cache_set() {
+  local target="$1"
+  mkdir -p "$(dirname "$CACHE")"
+  if [[ -f "$CACHE" ]]; then
+    awk -F'\t' -v c="$cmd" '$1!=c' "$CACHE" > "${CACHE}.tmp" || true
+    mv -f "${CACHE}.tmp" "$CACHE"
+  fi
+  printf "%s\t%s\n" "$cmd" "$target" >> "$CACHE"
+}
+
+cache_del() {
+  [[ -f "$CACHE" ]] || return 0
+  awk -F'\t' -v c="$cmd" '$1!=c' "$CACHE" > "${CACHE}.tmp" || true
+  mv -f "${CACHE}.tmp" "$CACHE"
+}
+
+is_valid_container() {
+  case "$1" in
+    "$KALI"|"$SIFT") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+in_container_has_cmd() {
+  local target="$1"
+  distrobox-enter --root "$target" -- sh -lc "command -v '$cmd' >/dev/null 2>&1"
+}
+
+run_in_container() {
+  local target="$1"
+  exec distrobox-enter --root "$target" -- "$cmd" "${args[@]}"   # <-- usa args salvati
+}
+
+# 1) cache hit (se valida)
+target="$(cache_get 2>/dev/null || true)"
+if [[ -n "${target:-}" ]] && is_valid_container "$target"; then
+  if in_container_has_cmd "$target"; then
+    run_in_container "$target"
+  else
+    cache_del
+  fi
+fi
+
+# 2) resolve: Kali -> SIFT
+if in_container_has_cmd "$KALI"; then
+  cache_set "$KALI"
+  run_in_container "$KALI"
+fi
+
+if in_container_has_cmd "$SIFT"; then
+  cache_set "$SIFT"
+  run_in_container "$SIFT"
+fi
+
+echo "Comando '$cmd' non trovato su host, n� in $KALI, n� in $SIFT." >&2
+exit 127
