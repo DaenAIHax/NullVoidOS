@@ -21,10 +21,12 @@ stages:
           - cp $CONFIG_DIRECTORY/sift-create.sh /out/init-sift
           - cp $CONFIG_DIRECTORY/kali-create.sh /out/init-kali
           - cp $CONFIG_DIRECTORY/dbx-cmd /out/dbx-cmd
+          - cp $CONFIG_DIRECTORY/dbx-destroy /out/dbx-destroy
           # Qui il chmod funziona perché non siamo su un filesystem Read-Only
           - chmod 0755 /out/init-sift
           - chmod 0755 /out/init-kali
           - chmod 0755 /out/dbx-cmd
+          - chmod 0755 /out/dbx-destroy
 
 modules:
   - type: files
@@ -131,6 +133,11 @@ modules:
     from: script-prepper
     src: /out/init-kali
     dest: /usr/bin/init-kali
+    
+  - type: copy
+    from: script-prepper
+    src: /out/dbx-destroy
+    dest: /usr/bin/dbx-destroy
 
   - type: copy
     from: script-prepper
