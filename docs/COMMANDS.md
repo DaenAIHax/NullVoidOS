@@ -46,10 +46,10 @@ nmap -h
 ```
 
 Container Kali
-![[kali_nmap.png]]
+![nmap kali](docs/assets/kali_nmap.png)
 
 Host
-![[host_nmap.png]]
+![nmap host](docs/assets/host_nmap.png)
 
 ## nvx
 
@@ -107,9 +107,9 @@ $ nvx airmon-ng
 ```
 
 Container Kali
-![[kali_airmon.png]]
+![kali airmon](docs/assets/kali_airmon.png)
 Host
-![[host_airmon.png]]
+![host_airmon](docs/assets/host_airmon.png)
 
 
 
@@ -126,7 +126,7 @@ dbx-destroy
 ```
 
 Host
-![[dbx-destroy.png]]
+![dbx-destroy](docs/assets/dbx-destroy.png)
 
 
 ```bash
