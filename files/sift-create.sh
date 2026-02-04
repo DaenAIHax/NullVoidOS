@@ -56,6 +56,13 @@ EOF
 
   sudo chmod 0440 /etc/sudoers.d/nvx-nopasswd
 
+  # Fix common broken sudoers.d permissions (some images ship with wrong modes)
+if [[ -f /etc/sudoers.d/sudoers ]]; then
+  sudo chown root:root /etc/sudoers.d/sudoers
+  sudo chmod 0440 /etc/sudoers.d/sudoers
+fi
+
+
   # Validate sudoers configuration
   sudo visudo -c
 
