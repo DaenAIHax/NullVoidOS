@@ -1,21 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-KALI="Kali"
-SIFT="sift-lab"
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/dbx-cmd-cache.tsv"
 
-usage() { echo "Uso: dbx-cmd <comando> [args...]" >&2; exit 2; }
+usage() {
+  echo "Usage: dbx-cmd <command> [args...]" >&2
+  exit 2
+}
+
 [[ $# -ge 1 ]] || usage
 
-cmd="$1"; shift || true
-args=("$@")   # <-- salva gli argomenti originali
+cmd="$1"
+shift || true
+args=("$@")
 
-# host first (se lo lanci manualmente e il comando esiste davvero sull'host)
+# ------------------------------------------------------------
+# 0) Host first
+# If the command exists on the host, run it directly.
+# ------------------------------------------------------------
 if command -v -- "$cmd" >/dev/null 2>&1; then
   exec "$cmd" "${args[@]}"
 fi
 
+# ------------------------------------------------------------
+# Cache helpers (command -> container)
+# ------------------------------------------------------------
 cache_get() {
   [[ -f "$CACHE" ]] || return 1
   awk -F'\t' -v c="$cmd" '$1==c {print $2; exit}' "$CACHE"
@@ -37,43 +46,72 @@ cache_del() {
   mv -f "${CACHE}.tmp" "$CACHE"
 }
 
-is_valid_container() {
-  case "$1" in
-    "$KALI"|"$SIFT") return 0 ;;
-    *) return 1 ;;
-  esac
+# ------------------------------------------------------------
+# Discover rootful distrobox containers
+# ------------------------------------------------------------
+discover_containers() {
+  distrobox list --root --no-color 2>/dev/null | awk '
+    NR==1 {
+      for (i=1; i<=NF; i++) if ($i=="NAME") name_col=i
+      next
+    }
+    NR>1 && name_col>0 && $name_col!="" {
+      print $name_col
+    }
+  ' | sed '/^$/d'
 }
 
+mapfile -t DBX_CONTAINERS < <(discover_containers || true)
+
+container_exists() {
+  local target="$1"
+  local c
+  for c in "${DBX_CONTAINERS[@]}"; do
+    [[ "$c" == "$target" ]] && return 0
+  done
+  return 1
+}
+
+# ------------------------------------------------------------
+# Check if a command exists inside a container
+# ------------------------------------------------------------
 in_container_has_cmd() {
   local target="$1"
+  container_exists "$target" || return 1
   distrobox-enter --root "$target" -- sh -lc "command -v '$cmd' >/dev/null 2>&1"
 }
 
 run_in_container() {
   local target="$1"
-  exec distrobox-enter --root "$target" -- "$cmd" "${args[@]}"   # <-- usa args salvati
+  exec distrobox-enter --root "$target" -- "$cmd" "${args[@]}"
 }
 
-# 1) cache hit (se valida)
+# ------------------------------------------------------------
+# 1) Cache hit (safe with set -e)
+# ------------------------------------------------------------
 target="$(cache_get 2>/dev/null || true)"
-if [[ -n "${target:-}" ]] && is_valid_container "$target"; then
-  if in_container_has_cmd "$target"; then
-    run_in_container "$target"
+
+if [[ -n "${target:-}" ]]; then
+  if container_exists "$target"; then
+    if in_container_has_cmd "$target"; then
+      run_in_container "$target"
+    else
+      cache_del
+    fi
   else
     cache_del
   fi
 fi
 
-# 2) resolve: Kali -> SIFT
-if in_container_has_cmd "$KALI"; then
-  cache_set "$KALI"
-  run_in_container "$KALI"
-fi
+# ------------------------------------------------------------
+# 2) Full scan (only once per command)
+# ------------------------------------------------------------
+for c in "${DBX_CONTAINERS[@]}"; do
+  if in_container_has_cmd "$c"; then
+    cache_set "$c"
+    run_in_container "$c"
+  fi
+done
 
-if in_container_has_cmd "$SIFT"; then
-  cache_set "$SIFT"
-  run_in_container "$SIFT"
-fi
-
-echo "Comando '$cmd' non trovato su host, n� in $KALI, n� in $SIFT." >&2
+echo "Command '$cmd' not found on host or in any rootful distrobox container." >&2
 exit 127
