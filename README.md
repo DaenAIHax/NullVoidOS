@@ -1,6 +1,5 @@
 # NullVoidOS &nbsp; [![bluebuild build badge](https://github.com/daenaihax/nullvoidos/actions/workflows/build.yml/badge.svg)](https://github.com/daenaihax/nullvoidos/actions/workflows/build.yml)
 
-
 > ⚠️ **Experimental / Testing Phase**
 >
 > NullVoidOS is currently under active development and testing.
