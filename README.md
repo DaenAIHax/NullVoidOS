@@ -7,7 +7,7 @@
 > Features, workflows, and interfaces may change or break.
 > This project is intended for testing, experimentation, and early adopters only.
 
-![Desktop](docs/assets/Desktop.png)
+<img width="1280" height="800" alt="Desktop" src="https://github.com/user-attachments/assets/bf59068f-0f95-4d83-bbd3-f249d6b4bd68" />
 
 
 ## Mission
