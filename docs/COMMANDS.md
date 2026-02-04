@@ -127,7 +127,7 @@ dbx-destroy
 ```
 
 Host
-![dbx-destroy](docs/assets/dbx-destroy.png)
+<img width="1280" height="800" alt="dbx-destroy" src="https://github.com/user-attachments/assets/e489ac69-7a91-448a-a114-5b49ed17368d" />
 
 
 ```bash
