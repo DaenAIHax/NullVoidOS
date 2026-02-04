@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  echo "Usage: destroy-dbx [--all] [--force]" >&2
+  echo "  --all    Remove ALL Distrobox containers (rootless + rootful), with confirmation" >&2
+  echo "  --force  Force removal (passes --force to distrobox rm)" >&2
+  exit 2
+}
+
+ALL=0
+FORCE=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --all) ALL=1; shift ;;
+    --force) FORCE=1; shift ;;
+    -h|--help) usage ;;
+    *) echo "Unknown option: $1" >&2; usage ;;
+  esac
+done
+
+# Extract container names from the "NAME" column of `distrobox list` output.
+discover_containers() {
+  # Accepts optional args, e.g. --root
+  distrobox list --no-color "$@" 2>/dev/null | awk '
+    NR==1 {
+      for (i=1; i<=NF; i++) if ($i=="NAME") name_col=i
+      next
+    }
+    NR>1 && name_col>0 && $name_col!="" {
+      print $name_col
+    }
+  ' | sed '/^$/d'
+}
+
+mapfile -t ROOTLESS < <(discover_containers || true)
+mapfile -t ROOTFUL  < <(discover_containers --root || true)
+
+# Build a unified list with mode prefix to avoid ambiguity
+CANDIDATES=()
+for n in "${ROOTLESS[@]}"; do CANDIDATES+=("rootless:$n"); done
+for n in "${ROOTFUL[@]}";  do CANDIDATES+=("rootful:$n");  done
+
+if [[ ${#CANDIDATES[@]} -eq 0 ]]; then
+  echo "No Distrobox containers found (rootless or rootful)." >&2
+  exit 0
+fi
+
+confirm() {
+  local prompt="$1"
+  read -r -p "$prompt [y/N] " ans
+  [[ "${ans,,}" == "y" || "${ans,,}" == "yes" ]]
+}
+
+remove_candidate() {
+  local cand="$1"
+  local mode="${cand%%:*}"
+  local name="${cand#*:}"
+
+  local rm_args=()
+  [[ "$mode" == "rootful" ]] && rm_args+=(--root)
+  [[ "$FORCE" == "1" ]] && rm_args+=(--force)
+
+  echo "Removing ($mode) container: $name"
+  distrobox rm "${rm_args[@]}" "$name"
+}
+
+print_inventory() {
+  if [[ ${#ROOTLESS[@]} -gt 0 ]]; then
+    echo "Rootless containers:"
+    printf " - %s\n" "${ROOTLESS[@]}"
+  else
+    echo "Rootless containers: (none)"
+  fi
+  echo
+  if [[ ${#ROOTFUL[@]} -gt 0 ]]; then
+    echo "Rootful containers:"
+    printf " - %s\n" "${ROOTFUL[@]}"
+  else
+    echo "Rootful containers: (none)"
+  fi
+}
+
+if [[ "$ALL" == "1" ]]; then
+  print_inventory
+  echo
+  if confirm "Remove ALL containers listed above?"; then
+    for cand in "${CANDIDATES[@]}"; do
+      remove_candidate "$cand"
+    done
+    echo "Done."
+    exit 0
+  else
+    echo "Aborted."
+    exit 0
+  fi
+fi
+
+echo "Select a container to remove:"
+echo "Tip: rootless and rootful are shown explicitly."
+echo
+PS3="Enter number (or 'q' to quit): "
+
+select choice in "${CANDIDATES[@]}" "__Quit__"; do
+  if [[ "$REPLY" == "q" || "$choice" == "__Quit__" || -z "${choice:-}" ]]; then
+    echo "Aborted."
+    exit 0
+  fi
+
+  echo
+  echo "You selected: $choice"
+  echo "This will permanently delete the container."
+  if confirm "Proceed?"; then
+    remove_candidate "$choice"
+    echo "Done."
+    exit 0
+  else
+    echo "Aborted."
+    exit 0
+  fi
+done
