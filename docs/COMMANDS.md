@@ -46,7 +46,7 @@ nmap -h
 ```
 
 Container Kali
-![nmap kali](docs/assets/kali_nmap.png)
+![[docs/assets/kali_nmap.png]]
 
 Host
 ![nmap host](docs/assets/host_nmap.png)
