@@ -3,23 +3,25 @@ set -euo pipefail
 
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/dbx-cmd-cache.tsv"
 
-usage() {
-  echo "Usage: dbx-cmd <command> [args...]" >&2
-  exit 2
-}
-
+usage() { echo "Usage: dbx-cmd <command> [args...]" >&2; exit 2; }
 [[ $# -ge 1 ]] || usage
 
-cmd="$1"
-shift || true
+cmd="$1"; shift || true
 args=("$@")
+
+# If set to 1, run via sudo on host and inside containers.
+SUDO_MODE="${DBX_CMD_SUDO:-0}"
 
 # ------------------------------------------------------------
 # 0) Host first
-# If the command exists on the host, run it directly.
+# If the command exists on the host, run it directly (optionally via sudo).
 # ------------------------------------------------------------
 if command -v -- "$cmd" >/dev/null 2>&1; then
-  exec "$cmd" "${args[@]}"
+  if [[ "$SUDO_MODE" == "1" ]]; then
+    exec sudo "$cmd" "${args[@]}"
+  else
+    exec "$cmd" "${args[@]}"
+  fi
 fi
 
 # ------------------------------------------------------------
@@ -34,6 +36,90 @@ cache_set() {
   local target="$1"
   mkdir -p "$(dirname "$CACHE")"
   if [[ -f "$CACHE" ]]; then
+    awk -F'\t' -v c="$cmd" '$1!=c' "$CACHE" > "${CACHE}.tmp" || true
+    mv -f "${CACHE}.tmp" "$CACHE"
+  fi
+  printf "%s\t%s\n" "$cmd" "$target" >> "$CACHE"
+}
+
+cache_del() {
+  [[ -f "$CACHE" ]] || return 0
+  awk -F'\t' -v c="$cmd" '$1!=c' "$CACHE" > "${CACHE}.tmp" || true
+  mv -f "${CACHE}.tmp" "$CACHE"
+}
+
+# ------------------------------------------------------------
+# Discover rootful distrobox containers (Podman rootful)
+# ------------------------------------------------------------
+discover_containers() {
+  distrobox list --root --no-color 2>/dev/null | awk '
+    NR==1 {
+      for (i=1; i<=NF; i++) if ($i=="NAME") name_col=i
+      next
+    }
+    NR>1 && name_col>0 && $name_col!="" {
+      print $name_col
+    }
+  ' | sed '/^$/d'
+}
+
+mapfile -t DBX_CONTAINERS < <(discover_containers || true)
+
+container_exists() {
+  local target="$1" c
+  for c in "${DBX_CONTAINERS[@]}"; do
+    [[ "$c" == "$target" ]] && return 0
+  done
+  return 1
+}
+
+# ------------------------------------------------------------
+# Check if the command exists inside a container
+# ------------------------------------------------------------
+in_container_has_cmd() {
+  local target="$1"
+  container_exists "$target" || return 1
+  distrobox-enter --root "$target" -- sh -lc "command -v '$cmd' >/dev/null 2>&1"
+}
+
+run_in_container() {
+  local target="$1"
+  if [[ "$SUDO_MODE" == "1" ]]; then
+    exec distrobox-enter --root "$target" -- sudo "$cmd" "${args[@]}"
+  else
+    exec distrobox-enter --root "$target" -- "$cmd" "${args[@]}"
+  fi
+}
+
+# ------------------------------------------------------------
+# 1) Cache hit (safe with set -e)
+# ------------------------------------------------------------
+target="$(cache_get 2>/dev/null || true)"
+
+if [[ -n "${target:-}" ]]; then
+  if container_exists "$target"; then
+    if in_container_has_cmd "$target"; then
+      run_in_container "$target"
+    else
+      cache_del
+    fi
+  else
+    cache_del
+  fi
+fi
+
+# ------------------------------------------------------------
+# 2) Full scan (only once per command)
+# ------------------------------------------------------------
+for c in "${DBX_CONTAINERS[@]}"; do
+  if in_container_has_cmd "$c"; then
+    cache_set "$c"
+    run_in_container "$c"
+  fi
+done
+
+echo "Command '$cmd' not found on host or in any rootful distrobox container." >&2
+exit 127
     awk -F'\t' -v c="$cmd" '$1!=c' "$CACHE" > "${CACHE}.tmp" || true
     mv -f "${CACHE}.tmp" "$CACHE"
   fi
