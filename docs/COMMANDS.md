@@ -46,10 +46,11 @@ nmap -h
 ```
 
 Container Kali
-![[docs/assets/kali_nmap.png]]
+<img width="1280" height="800" alt="kali_nmap" src="https://github.com/user-attachments/assets/1f2690f8-cbb2-4e7e-b93b-65a3bb5d2f60" />
+
 
 Host
-![nmap host](docs/assets/host_nmap.png)
+<img width="1280" height="800" alt="host_nmap" src="https://github.com/user-attachments/assets/73b24849-effe-4c37-bbaa-482028b5104f" />
 
 ## nvx
 
@@ -107,9 +108,9 @@ $ nvx airmon-ng
 ```
 
 Container Kali
-![kali airmon](docs/assets/kali_airmon.png)
+<img width="1283" height="802" alt="kali_airmon" src="https://github.com/user-attachments/assets/547e7f0b-2a5e-48c6-ab98-2b80595376d2" />
 Host
-![host_airmon](docs/assets/host_airmon.png)
+<img width="1283" height="802" alt="host_airmon" src="https://github.com/user-attachments/assets/392cc3c2-de3c-4e27-ac63-3168c8130378" />
 
 
 
