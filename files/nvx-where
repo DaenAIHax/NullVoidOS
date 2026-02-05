@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ---- anti-recursion guard ----
+# Anti-loop guard
 if [[ "${NVX_WHERE_GUARD:-}" == "1" ]]; then
   exit 0
 fi
@@ -10,51 +10,22 @@ export NVX_WHERE_GUARD=1
 needle="${1:-}"
 [[ -n "$needle" ]] || { echo "Usage: nvx-where <command>" >&2; exit 2; }
 
-print_header() { printf "TARGET\tFOUND\tPATH\n"; }
-print_header
-
+printf "TARGET\tFOUND\tPATH\n"
 any=0
 
-# ---- host check ----
-if p="$(command -v -- "$needle" 2>/dev/null)"; then
+# HOST: prefer which if present, else command -v
+if command -v which >/dev/null 2>&1; then
+  p="$(which "$needle" 2>/dev/null || true)"
+else
+  p="$(command -v -- "$needle" 2>/dev/null || true)"
+fi
+
+if [[ -n "$p" ]]; then
   printf "HOST\tyes\t%s\n" "$p"
   any=1
 else
   printf "HOST\tno\t-\n"
 fi
-
-# Choose a "clean shell" command (prefer bash without rc files)
-clean_shell_cmd() {
-  # print a command that can execute: <shell> <args...> -lc "<string>"
-  if command -v bash >/dev/null 2>&1; then
-    printf '%s' "bash --noprofile --norc"
-  else
-    printf '%s' "sh"
-  fi
-}
-
-# Run inside container but try hard to not source user rc / not trigger handlers
-run_in_box() {
-  local mode="$1" box="$2"
-  local shell
-  shell="$(clean_shell_cmd)"
-
-  # disable command_not_found_handle if present, and avoid ENV/BASH_ENV sourcing
-  local inner="
-    unset -f command_not_found_handle 2>/dev/null || true
-    export BASH_ENV=/dev/null
-    export ENV=/dev/null
-    command -v '$needle' 2>/dev/null || true
-  "
-
-  if [[ "$mode" == "rootful" ]]; then
-    distrobox-enter --root "$box" -- env -i HOME="$HOME" PATH="/usr/sbin:/usr/bin:/sbin:/bin" \
-      NVX_WHERE_GUARD=1 $shell -lc "$inner" 2>/dev/null || true
-  else
-    distrobox-enter "$box" -- env -i HOME="$HOME" PATH="/usr/sbin:/usr/bin:/sbin:/bin" \
-      NVX_WHERE_GUARD=1 $shell -lc "$inner" 2>/dev/null || true
-  fi
-}
 
 list_names() {
   local mode="$1"
@@ -71,11 +42,38 @@ list_names() {
   fi
 }
 
+where_in_box() {
+  local mode="$1" box="$2"
+
+  # shell "pulita" se c'è bash, altrimenti sh
+  local shell='sh'
+  local has_bash=""
+  if [[ "$mode" == "rootful" ]]; then
+    has_bash="$(distrobox-enter --root "$box" -- sh -lc 'command -v bash >/dev/null 2>&1 && echo yes || echo no' 2>/dev/null || true)"
+  else
+    has_bash="$(distrobox-enter "$box" -- sh -lc 'command -v bash >/dev/null 2>&1 && echo yes || echo no' 2>/dev/null || true)"
+  fi
+  [[ "$has_bash" == "yes" ]] && shell='bash --noprofile --norc'
+
+  # Ambiente sterile + disattiva handler
+  # Usa which se esiste, altrimenti command -v
+  local inner
+  inner=$'unset -f command_not_found_handle 2>/dev/null || true\nexport BASH_ENV=/dev/null\nexport ENV=/dev/null\n'\
+$'if command -v which >/dev/null 2>&1; then which '"$needle"$' 2>/dev/null || true; else command -v -- '"$needle"$' 2>/dev/null || true; fi\n'
+
+  if [[ "$mode" == "rootful" ]]; then
+    distrobox-enter --root "$box" -- env -i HOME="$HOME" PATH="/usr/sbin:/usr/bin:/sbin:/bin" NVX_WHERE_GUARD=1 \
+      $shell -lc "$inner" 2>/dev/null | head -n1 || true
+  else
+    distrobox-enter "$box" -- env -i HOME="$HOME" PATH="/usr/sbin:/usr/bin:/sbin:/bin" NVX_WHERE_GUARD=1 \
+      $shell -lc "$inner" 2>/dev/null | head -n1 || true
+  fi
+}
+
 check_box() {
   local mode="$1" box="$2"
   local p=""
-  p="$(run_in_box "$mode" "$box" | head -n1 || true)"
-
+  p="$(where_in_box "$mode" "$box")"
   if [[ -n "$p" ]]; then
     printf "%s\tyes\t%s\n" "$box" "$p"
     any=1
@@ -84,13 +82,13 @@ check_box() {
   fi
 }
 
-# rootless containers
+# rootless
 while IFS= read -r box; do
   [[ -n "$box" ]] || continue
   check_box "rootless" "$box"
 done < <(list_names rootless | sed '/^$/d')
 
-# rootful containers
+# rootful
 while IFS= read -r box; do
   [[ -n "$box" ]] || continue
   check_box "rootful" "$box"
@@ -100,8 +98,3 @@ if [[ "$any" -ne 1 ]]; then
   echo "❌ '$needle' not found on host or in any distrobox container." >&2
   exit 127
 fi
-
-
-  nvx-where "$1" || true
-  dbx-cmd "$@"
-}
