@@ -27,6 +27,7 @@ stages:
           - cp $CONFIG_DIRECTORY/nvx-install /out/nvx-install
           - cp $CONFIG_DIRECTORY/nvx-update /out/nvx-update
           - cp $CONFIG_DIRECTORY/nvx-shield /out/nvx-shield
+          - cp $CONFIG_DIRECTORY/nvx-remove /out/nvx-remove
           # Qui il chmod funziona perché non siamo su un filesystem Read-Only
           - chmod 0755 /out/init-sift
           - chmod 0755 /out/init-kali
@@ -37,6 +38,7 @@ stages:
           - chmod 0755 /out/nvx-install
           - chmod 0755 /out/nvx-update
           - chmod 0755 /out/nvx-shield
+          - chmod 0755 /out/nvx-remove
 
 modules:
   - type: files
@@ -136,6 +138,10 @@ modules:
       - source: nvx-shield
         destination: /usr/local/bin/nvx-shield
         mode: 0755
+        
+      - source: nvx-remove
+        destination: /usr/local/bin/nvx-remove
+        mode: 0755
 
 
   - type: bling
@@ -195,5 +201,10 @@ modules:
     from: script-prepper
     src: /out/nvx-shield
     dest: /usr/local/bin/nvx-shield
+    
+  - type: copy
+    from: script-prepper
+    src: /out/nvx-remove
+    dest: /usr/local/bin/nvx-remove
 
   - type: signing
