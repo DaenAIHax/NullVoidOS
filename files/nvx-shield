@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: nvx-shield {on|off|status}
+
+  on     : SELinux enforcing + firewalld ON   (secure / Fedora-like)
+  off    : SELinux permissive + firewalld OFF (offsec / Kali-like)
+  status : show current shield state
+EOF
+  exit 2
+}
+
+[[ $# -eq 1 ]] || usage
+
+case "$1" in
+  on)
+    echo "[+] Shield ON  (secure mode)"
+    sudo systemctl start firewalld || true
+    if command -v setenforce >/dev/null 2>&1; then
+      sudo setenforce 1
+    fi
+    echo "[+] Shield enabled"
+    ;;
+  off)
+    echo "[-] Shield OFF (offsec mode)"
+    if command -v setenforce >/dev/null 2>&1; then
+      sudo setenforce 0
+    fi
+    sudo systemctl stop firewalld || true
+    echo "[-] Shield disabled"
+    ;;
+  status)
+    echo "Shield status:"
+    echo "  SELinux   : $(getenforce 2>/dev/null || echo 'not present')"
+    echo "  firewalld : $(systemctl is-active firewalld 2>/dev/null || echo 'inactive')"
+    ;;
+  *)
+    usage
+    ;;
+esac

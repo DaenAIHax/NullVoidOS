@@ -3,11 +3,10 @@ set -euo pipefail
 
 pkg="${1:-}"
 if [[ -z "$pkg" ]]; then
-  echo "Usage: nvx-install <package>" >&2
+  echo "Usage: nvx-remove <package>" >&2
   exit 2
 fi
 
-# -------- list containers --------
 mapfile -t ITEMS < <(
   distrobox list --no-color 2>/dev/null | awk '
     NR==1 { for (i=1;i<=NF;i++) if ($i=="NAME") col=i; next }
@@ -37,13 +36,6 @@ enter() {
   fi
 }
 
-# -------- already installed? --------
-if enter sh -lc "command -v '$pkg' >/dev/null 2>&1"; then
-  echo "✔ '$pkg' già presente in $name ($mode)"
-  exit 0
-fi
-
-# -------- detect package manager --------
 mgr="$(enter sh -lc '
   if command -v apt-get >/dev/null 2>&1; then echo apt;
   elif command -v dnf >/dev/null 2>&1; then echo dnf;
@@ -56,14 +48,14 @@ mgr="$(enter sh -lc '
 [[ "$mgr" != "unknown" ]] || { echo "Unknown package manager in $name"; exit 1; }
 
 case "$mgr" in
-  apt)     cmd="apt-get update && apt-get install -y '$pkg'" ;;
-  dnf)     cmd="dnf install -y '$pkg'" ;;
-  pacman)  cmd="pacman -Sy --noconfirm '$pkg'" ;;
-  apk)     cmd="apk add '$pkg'" ;;
-  zypper)  cmd="zypper install -y '$pkg'" ;;
+  apt)     cmd="apt-get remove -y '$pkg'" ;;
+  dnf)     cmd="dnf remove -y '$pkg'" ;;
+  pacman)  cmd="pacman -Rns --noconfirm '$pkg'" ;;
+  apk)     cmd="apk del '$pkg'" ;;
+  zypper)  cmd="zypper remove -y '$pkg'" ;;
 esac
 
-echo "nvx-install $pkg in $name ($mode) [$mgr]..."
+echo "nvx-remove $pkg from $name ($mode) [$mgr]..."
 
 enter sh -lc "
   if command -v sudo >/dev/null 2>&1; then

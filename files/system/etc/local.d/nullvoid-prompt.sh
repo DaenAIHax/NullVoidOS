@@ -15,7 +15,7 @@ __prompt() {
   local GRAY='\[\e[38;2;200;200;200m\]'
   local RESET='\[\e[0m\]'
 
-  PS1="\n${PURPLE}\u@${target}${RESET} ${GOLD}(${WHITE}\w${GOLD})${RESET}\n${GOLD}\u2514\u2500\u2205${RESET} "
+  PS1="\n${PURPLE}\u@${target}${RESET} ${GOLD}(${WHITE}\w${GOLD})${RESET}\n${GOLD}└─∅${RESET} "
 }
 
 PROMPT_COMMAND="__prompt"

@@ -1,48 +1,67 @@
-nvx-where() {
-  local cmd="$1"
-  [[ -n "${cmd:-}" ]] || { echo "Usage: nvx-where <command>" >&2; return 2; }
+#!/usr/bin/env bash
+set -euo pipefail
 
-  local any=0
-  local p
+cmd="${1:-}"
+[[ -n "$cmd" ]] || { echo "Usage: nvx-where <command>" >&2; exit 2; }
 
-  if p="$(command -v -- "$cmd" 2>/dev/null)"; then
-    printf "HOST\tyes\t%s\n" "$p"
-    any=1
-  else
-    printf "HOST\tno\t-\n"
-  fi
+printf "TARGET\tFOUND\tPATH\n"
+any=0
 
-  mapfile -t NVX_CONTAINERS < <(
+if p="$(command -v -- "$cmd" 2>/dev/null)"; then
+  printf "HOST\tyes\t%s\n" "$p"
+  any=1
+else
+  printf "HOST\tno\t-\n"
+fi
+
+list_names() {
+  local mode="$1"
+  if [[ "$mode" == "rootful" ]]; then
     distrobox list --root --no-color 2>/dev/null | awk '
-      NR==1 {
-        for (i=1; i<=NF; i++) if ($i=="NAME") name_col=i
-        next
-      }
-      NR>1 && name_col>0 && $name_col!="" {
-        print $name_col
-      }
-    ' | sed '/^$/d'
-  )
-
-  local c
-  for c in "${NVX_CONTAINERS[@]}"; do
-    p="$(distrobox-enter --root "$c" -- sh -lc "command -v '$cmd' 2>/dev/null || true")"
-    if [[ -n "$p" ]]; then
-      printf "%s\tyes\t%s\n" "$c" "$p"
-      any=1
-    else
-      printf "%s\tno\t-\n" "$c"
-    fi
-  done
-
-  [[ "$any" -eq 1 ]] || {
-    echo "❌ '$cmd' is not installed on the host or in any rootful distrobox container." >&2
-    return 127
-  }
+      NR==1 { for (i=1;i<=NF;i++) if ($i=="NAME") col=i; next }
+      NR>1 && col>0 && $col!="" { print $col }
+    '
+  else
+    distrobox list --no-color 2>/dev/null | awk '
+      NR==1 { for (i=1;i<=NF;i++) if ($i=="NAME") col=i; next }
+      NR>1 && col>0 && $col!="" { print $col }
+    '
+  fi
 }
 
+check_in_box() {
+  local mode="$1" box="$2" p=""
+  if [[ "$mode" == "rootful" ]]; then
+    p="$(distrobox-enter --root "$box" -- sh -lc "command -v '$cmd' 2>/dev/null || true" 2>/dev/null || true)"
+  else
+    p="$(distrobox-enter "$box" -- sh -lc "command -v '$cmd' 2>/dev/null || true" 2>/dev/null || true)"
+  fi
 
-command_not_found_handle() {
+  if [[ -n "$p" ]]; then
+    printf "%s\tyes\t%s\n" "$box" "$p"
+    any=1
+  else
+    printf "%s\tno\t-\n" "$box"
+  fi
+}
+
+# rootless
+while IFS= read -r box; do
+  [[ -n "$box" ]] || continue
+  check_in_box "rootless" "$box"
+done < <(list_names rootless | sed '/^$/d')
+
+# rootful
+while IFS= read -r box; do
+  [[ -n "$box" ]] || continue
+  check_in_box "rootful" "$box"
+done < <(list_names rootful | sed '/^$/d')
+
+if [[ "$any" -ne 1 ]]; then
+  echo "❌ '$cmd' not found on host or in any distrobox container." >&2
+  exit 127
+fi
+
   nvx-where "$1" || true
   dbx-cmd "$@"
 }
