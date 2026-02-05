@@ -10,6 +10,12 @@ The following commands are used to install the Kali and SIFT containers:
 - `init-kali` – installs the Kali Linux offensive security environment
 - `init-sift` – installs the SIFT forensic analysis environment
 
+For detailed documentation about Kali and SIFT tools and usage, refer to the official documentations:
+
+https://www.kali.org/docs/containers/official-kalilinux-docker-images/
+
+
+
 
 ## Command Resolution
 
