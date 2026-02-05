@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Keep it simple: delegate to ujust (system-wide update policy)
+exec ujust update "$@"
