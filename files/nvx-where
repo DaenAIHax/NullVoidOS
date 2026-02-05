@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-set -uo pipefail
+set -euo pipefail
 
 cmd="${1:-}"
-[[ -n "${cmd}" ]] || { echo "Usage: nvx-where <command>" >&2; exit 2; }
+[[ -n "$cmd" ]] || { echo "Usage: nvx-where <command>" >&2; exit 2; }
 
 printf "TARGET\tFOUND\tPATH\n"
-
 any=0
 
 if p="$(command -v -- "$cmd" 2>/dev/null)"; then
@@ -31,8 +30,7 @@ list_names() {
 }
 
 check_in_box() {
-  local mode="$1" box="$2"
-  local p=""
+  local mode="$1" box="$2" p=""
   if [[ "$mode" == "rootful" ]]; then
     p="$(distrobox-enter --root "$box" -- sh -lc "command -v '$cmd' 2>/dev/null || true" 2>/dev/null || true)"
   else
@@ -47,26 +45,23 @@ check_in_box() {
   fi
 }
 
-# rootless containers
+# rootless
 while IFS= read -r box; do
   [[ -n "$box" ]] || continue
   check_in_box "rootless" "$box"
 done < <(list_names rootless | sed '/^$/d')
 
-# rootful containers
+# rootful
 while IFS= read -r box; do
   [[ -n "$box" ]] || continue
   check_in_box "rootful" "$box"
 done < <(list_names rootful | sed '/^$/d')
 
-[[ "$any" -eq 1 ]] || { echo "❌ '$cmd' not found on host or in any distrobox container." >&2; exit 127; }
-EOF
+if [[ "$any" -ne 1 ]]; then
+  echo "❌ '$cmd' not found on host or in any distrobox container." >&2
+  exit 127
+fi
 
-sudo chmod 0755 /usr/local/bin/nvx-where
-}
-
-
-command_not_found_handle() {
   nvx-where "$1" || true
   dbx-cmd "$@"
 }
