@@ -60,9 +60,19 @@ operational assumptions.
 - Beginner-friendly abstractions or guided workflows
 - Strong isolation against a malicious local user
 
-## Installation
+## Installation & Usage
 
 NullVoidOS is installed by rebasing an existing Fedora Atomic system.
 
-For detailed installation instructions, see:
-- [Installation Guide](docs/INSTALLATION.md)
+The installation process provides only the immutable base system.
+All security environments and toolsets are provisioned explicitly
+by the user after installation.
+
+### Documentation
+
+- **[Installation Guide](docs/INSTALLATION.md)**  
+  Base system installation and rebase instructions.
+
+- **[Commands Reference](docs/COMMANDS.md)**  
+  User-facing commands for provisioning security environments,
+  command resolution, privileged execution, and container lifecycle management.
