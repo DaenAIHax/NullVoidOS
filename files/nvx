@@ -4,11 +4,7 @@ set -euo pipefail
 usage() { echo "Usage: nvx <command> [args...]" >&2; exit 2; }
 [[ $# -ge 1 ]] || usage
 
-# Enable sudo mode for both host and container execution.
+# Run via sudo on host and inside containers (dbx-cmd handles this)
 export DBX_CMD_SUDO=1
 
 exec dbx-cmd "$@"
-fi
-
-echo "Comando '$cmd' non trovato su host, n� in $KALI, n� in $SIFT." >&2
-exit 127
