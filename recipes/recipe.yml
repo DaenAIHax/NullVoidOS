@@ -23,12 +23,18 @@ stages:
           - cp $CONFIG_DIRECTORY/dbx-cmd /out/dbx-cmd
           - cp $CONFIG_DIRECTORY/dbx-destroy /out/dbx-destroy
           - cp $CONFIG_DIRECTORY/nvx /out/nvx
+          - cp $CONFIG_DIRECTORY/nvx-where /out/nvx-where
+          - cp $CONFIG_DIRECTORY/nvx-install /out/nvx-install
+          - cp $CONFIG_DIRECTORY/nvx-update /out/nvx-update
           # Qui il chmod funziona perché non siamo su un filesystem Read-Only
           - chmod 0755 /out/init-sift
           - chmod 0755 /out/init-kali
           - chmod 0755 /out/dbx-cmd
           - chmod 0755 /out/dbx-destroy
           - chmod 0755 /out/nvx
+          - chmod 0755 /out/nvx-where
+          - chmod 0755 /out/nvx-install
+          - chmod 0755 /out/nvx-update
 
 modules:
   - type: files
@@ -112,14 +118,19 @@ modules:
       - source: nvx
         destination: /usr/local/bin/nvx
         mode: 0755
+        
+      - source: nvx-where
+        destination: /usr/local/bin/nvx-where
+        mode: 0755
+        
+      - source: nvx-install
+        destination: /usr/local/bin/nvx-install
+        mode: 0755
+        
+      - source: nvx-update
+        destination: /usr/local/bin/nvx-update
+        mode: 0755
 
-      - source: dbx.sh
-        destination: /etc/bashrc.d/dbx.sh
-        mode: 0644
-
-      - source: dbx.sh
-        destination: /etc/profile.d/dbx.sh
-        mode: 0644
 
   - type: bling
     install:
@@ -158,5 +169,20 @@ modules:
     from: script-prepper
     src: /out/nvx
     dest: /usr/local/bin/nvx
+    
+  - type: copy
+    from: script-prepper
+    src: /out/nvx-where
+    dest: /usr/local/bin/nvx-where
+    
+  - type: copy
+    from: script-prepper
+    src: /out/nvx-install
+    dest: /usr/local/bin/nvx-install
+    
+  - type: copy
+    from: script-prepper
+    src: /out/nvx-update
+    dest: /usr/local/bin/nvx-update
 
   - type: signing

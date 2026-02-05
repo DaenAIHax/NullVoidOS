@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+level="${1:-full}"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: nvx-update [full|minimal|prompt|help]
+  full    Show full output
+  minimal Quiet output, show success/failure
+  prompt  Ask before each step
+EOF
+}
+
+[[ "$level" == "help" ]] && { usage; exit 0; }
+
+run_step() {
+  local cmd="$1"
+
+  case "$level" in
+    full)
+      echo "Running: $cmd"
+      eval "$cmd"
+      ;;
+    minimal)
+      echo "Running: $cmd"
+      eval "$cmd" >/dev/null 2>&1 || { echo "Failed: $cmd" >&2; exit 1; }
+      echo "OK: $cmd"
+      ;;
+    prompt)
+      read -r -p "Run: $cmd ? [Y/n] " ans
+      ans="${ans:-Y}"
+      if [[ "$ans" =~ ^[Yy]$ ]]; then
+        echo "Running: $cmd"
+        eval "$cmd"
+      else
+        echo "Skipped: $cmd"
+      fi
+      ;;
+    *)
+      echo "Invalid level: $level" >&2
+      usage
+      exit 2
+      ;;
+  esac
+}
+
+# If ublue timer exists/enabled, start the service (same spirit as ujust)
+if systemctl is-enabled ublue-update.timer >/dev/null 2>&1; then
+  echo "Starting ublue-update.service"
+  exec sudo systemctl start ublue-update.service
+fi
+
+run_step "rpm-ostree upgrade"
+run_step "flatpak update -y"
+run_step "distrobox upgrade -a"
+
