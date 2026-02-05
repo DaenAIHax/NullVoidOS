@@ -1,1 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
 
+pkg="${1:-}"
+if [[ -z "$pkg" ]]; then
+  echo "Usage: nvx-remove <package>" >&2
+  exit 2
+fi
+
+mapfile -t ITEMS < <(
+  distrobox list --no-color 2>/dev/null | awk '
+    NR==1 { for (i=1;i<=NF;i++) if ($i=="NAME") col=i; next }
+    NR>1 && col>0 && $col!="" { print "rootless\t"$col }
+  '
+  distrobox list --root --no-color 2>/dev/null | awk '
+    NR==1 { for (i=1;i<=NF;i++) if ($i=="NAME") col=i; next }
+    NR>1 && col>0 && $col!="" { print "rootful\t"$col }
+  '
+)
+
+[[ "${#ITEMS[@]}" -gt 0 ]] || { echo "No distrobox containers found."; exit 1; }
+
+echo "Which container?"
+select sel in "${ITEMS[@]}"; do
+  [[ -n "${sel:-}" ]] && break
+done
+
+mode="${sel%%$'\t'*}"
+name="${sel#*$'\t'}"
+
+enter() {
+  if [[ "$mode" == "rootful" ]]; then
+    distrobox-enter --root "$name" -- "$@"
+  else
+    distrobox-enter "$name" -- "$@"
+  fi
+}
+
+mgr="$(enter sh -lc '
+  if command -v apt-get >/dev/null 2>&1; then echo apt;
+  elif command -v dnf >/dev/null 2>&1; then echo dnf;
+  elif command -v pacman >/dev/null 2>&1; then echo pacman;
+  elif command -v apk >/dev/null 2>&1; then echo apk;
+  elif command -v zypper >/dev/null 2>&1; then echo zypper;
+  else echo unknown; fi
+')"
+
+[[ "$mgr" != "unknown" ]] || { echo "Unknown package manager in $name"; exit 1; }
+
+case "$mgr" in
+  apt)     cmd="apt-get remove -y '$pkg'" ;;
+  dnf)     cmd="dnf remove -y '$pkg'" ;;
+  pacman)  cmd="pacman -Rns --noconfirm '$pkg'" ;;
+  apk)     cmd="apk del '$pkg'" ;;
+  zypper)  cmd="zypper remove -y '$pkg'" ;;
+esac
+
+echo "nvx-remove $pkg from $name ($mode) [$mgr]..."
+
+enter sh -lc "
+  if command -v sudo >/dev/null 2>&1; then
+    sudo sh -lc \"$cmd\"
+  elif command -v doas >/dev/null 2>&1; then
+    doas sh -lc \"$cmd\"
+  elif [ \"\$(id -u)\" -eq 0 ]; then
+    sh -lc \"$cmd\"
+  else
+    echo 'No sudo/doas available and not root.' >&2
+    exit 1
+  fi
+"
