@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cmd="${1:-}"
+[[ -n "$cmd" ]] || { echo "Usage: nvx-where <command>" >&2; exit 2; }
+
+echo -e "TARGET\tFOUND"
+
+command -v "$cmd" >/dev/null 2>&1 \
+  && echo -e "HOST\tyes" \
+  || echo -e "HOST\tno"
+
+distrobox list --no-color 2>/dev/null | awk '
+NR==1 { for (i=1;i<=NF;i++) if ($i=="NAME") col=i; next }
+NR>1 && col>0 { print "rootless\t"$col }
+'
+
+distrobox list --root --no-color 2>/dev/null | awk '
+NR==1 { for (i=1;i<=NF;i++) if ($i=="NAME") col=i; next }
+NR>1 && col>0 { print "rootful\t"$col }
+' | while read -r mode name; do
+  if [[ "$mode" == "rootful" ]]; then
+    distrobox-enter --root "$name" -- sh -lc "command -v '$cmd' >/dev/null 2>&1" \
+      && echo -e "$name\tyes" || echo -e "$name\tno"
+  else
+    distrobox-enter "$name" -- sh -lc "command -v '$cmd' >/dev/null 2>&1" \
+      && echo -e "$name\tyes" || echo -e "$name\tno"
+  fi
+done
