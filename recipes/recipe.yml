@@ -131,13 +131,6 @@ modules:
         destination: /usr/local/bin/nvx-update
         mode: 0755
 
-      - source: dbx.sh
-        destination: /etc/bashrc.d/dbx.sh
-        mode: 0644
-
-      - source: dbx.sh
-        destination: /etc/profile.d/dbx.sh
-        mode: 0644
 
   - type: bling
     install:
