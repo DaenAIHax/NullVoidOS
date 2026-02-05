@@ -76,3 +76,23 @@ by the user after installation.
 - **[Commands Reference](docs/COMMANDS.md)**  
   User-facing commands for provisioning security environments,
   command resolution, privileged execution, and container lifecycle management.
+
+## Upstream Documentation
+
+NullVoidOS is built on top of Fedora Atomic technologies and relies on
+upstream tooling for system management and updates.
+
+For detailed documentation on the underlying platform, refer to:
+
+- Fedora Atomic Desktops documentation  
+  https://docs.fedoraproject.org/en-US/fedora-silverblue/
+
+- rpm-ostree documentation  
+  https://coreos.github.io/rpm-ostree/
+
+- Distrobox documentation  
+  https://distrobox.it/
+
+These resources describe system-level commands and workflows that are
+outside the scope of NullVoidOS-specific tooling.
+
