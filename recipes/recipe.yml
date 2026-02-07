@@ -85,6 +85,7 @@ modules:
 
   - type: default-flatpaks
     configurations:
+    notify: false
       - install:
           - org.keepassxc.KeePassXC
           - org.gnome.Evince
