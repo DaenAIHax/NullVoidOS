@@ -86,12 +86,11 @@ modules:
   - type: default-flatpaks
     configurations:
       - install:
-          # --- BROWSER ---
-          - com.brave.Browser
-          - com.google.Chrome
-          # --- TOOLS ---
           - org.keepassxc.KeePassXC
-          - com.visualstudio.code
+          - org.gnome.Evince
+          - org.gnome.Calculator
+          - org.gnome.Characters
+          - com.github.tchx84.Flatseal
 
   - type: files
     files:
