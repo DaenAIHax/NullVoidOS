@@ -84,7 +84,6 @@ modules:
     # remove:
 
   - type: default-flatpaks
-    notify: false
     configurations:
       - install:
           - org.keepassxc.KeePassXC
