@@ -84,19 +84,23 @@ in_container_has_cmd() {
 
 run_in_container() {
   local target="$1"
-  local enter_args=(--root "$target")
 
-  # Se l'host è in un terminale, forza TTY nel container (serve per REPL tipo mysql)
-  if [[ -t 0 && -t 1 ]]; then
-    enter_args+=(--tty)
-  fi
+  # comando che vuoi eseguire nel container
+  local base=(distrobox-enter --root "$target" -- "$cmd" "${args[@]}")
 
   if [[ "$SUDO_MODE" == "1" ]]; then
-    exec distrobox-enter "${enter_args[@]}" -- sudo "$cmd" "${args[@]}"
+    base=(distrobox-enter --root "$target" -- sudo "$cmd" "${args[@]}")
+  fi
+
+  # Se NON ho una TTY vera, ma sono in una sessione "interattiva",
+  # provo a crearla con script(1) per far felice mysql/reverse shell.
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    exec script -q /dev/null -c "$(printf '%q ' "${base[@]}")"
   else
-    exec distrobox-enter "${enter_args[@]}" -- "$cmd" "${args[@]}"
+    exec "${base[@]}"
   fi
 }
+
 
 
 # ------------------------------------------------------------
