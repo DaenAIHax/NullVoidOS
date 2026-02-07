@@ -84,12 +84,20 @@ in_container_has_cmd() {
 
 run_in_container() {
   local target="$1"
+  local enter_args=(--root "$target")
+
+  # Se l'host è in un terminale, forza TTY nel container (serve per REPL tipo mysql)
+  if [[ -t 0 && -t 1 ]]; then
+    enter_args+=(--tty)
+  fi
+
   if [[ "$SUDO_MODE" == "1" ]]; then
-    exec distrobox-enter --root "$target" -- sudo "$cmd" "${args[@]}"
+    exec distrobox-enter "${enter_args[@]}" -- sudo "$cmd" "${args[@]}"
   else
-    exec distrobox-enter --root "$target" -- "$cmd" "${args[@]}"
+    exec distrobox-enter "${enter_args[@]}" -- "$cmd" "${args[@]}"
   fi
 }
+
 
 # ------------------------------------------------------------
 # 1) Cache hit (safe with set -e)
