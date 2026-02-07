@@ -1,3 +1,5 @@
+# ---------------- PROMPT ----------------
+
 __prompt() {
   local target
 
@@ -12,22 +14,84 @@ __prompt() {
   local PURPLE='\[\e[38;2;189;147;249m\]'
   local GOLD='\[\e[38;2;255;215;0m\]'
   local WHITE='\[\e[38;2;248;248;242m\]'
-  local GRAY='\[\e[38;2;200;200;200m\]'
   local RESET='\[\e[0m\]'
 
-  local path_colored
-  path_colored="$(printf '%s' "$PWD" | sed "s|/|${GOLD}/${WHITE}|g")"
+# --- Python venv prefix [venv] ---
+  local venv=""
+  if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+    local venv_name
+    venv_name="$(basename -- "$VIRTUAL_ENV")"
+    venv="${GOLD}[${WHITE}${venv_name}${GOLD}]${RESET} ${PURPLE}"
+  fi
 
-  PS1="\n${PURPLE}\u@${target}${RESET} ${GOLD}(${WHITE}\w${GOLD})${RESET}\n${GOLD}└─∅${RESET} "
+  # --- Path con / gialli (NO sed) ---
+  local path_colored=""
+  local p="${PWD}"
+
+  # home abbreviata stile \w
+  if [[ -n "${HOME:-}" && "$p" == "$HOME"* ]]; then
+    p="~${p#$HOME}"
+  fi
+
+  # costruzione: ogni "/" GOLD, il resto WHITE
+  # gestiamo caso root "/" e percorsi normali
+  if [[ "$p" == "/" ]]; then
+    path_colored="${GOLD}/${WHITE}"
+  else
+    local rest="$p"
+    # se inizia con "/" o "~/" mettiamo il primo separatore
+    if [[ "$rest" == /* ]]; then
+      path_colored="${GOLD}/${WHITE}"
+      rest="${rest#/}"
+    elif [[ "$rest" == "~/" ]]; then
+      path_colored="${WHITE}~${GOLD}/${WHITE}"
+      rest="${rest#~/}"
+    elif [[ "$rest" == "~" ]]; then
+      path_colored="${WHITE}~"
+      rest=""
+    fi
+
+    IFS='/' read -r -a parts <<< "$rest"
+    local i
+    for (( i=0; i<${#parts[@]}; i++ )); do
+      [[ -z "${parts[i]}" ]] && continue
+      path_colored+="${WHITE}${parts[i]}"
+      # aggiungi "/" tra segmenti
+      if (( i < ${#parts[@]}-1 )); then
+        path_colored+="${GOLD}/${WHITE}"
+      fi
+    done
+  fi
+
+  # RESET all'inizio per evitare "sbavature" colori da output/hook precedenti
+  PS1="${RESET}\n${PURPLE}${venv}\u@${target}${RESET} ${GOLD}(${path_colored}${GOLD})${RESET}\n${GOLD}\u2514\u2500\u2205${RESET} "
 }
 
-PROMPT_COMMAND="__prompt"
+# Non sopprimere altri PROMPT_COMMAND gi� presenti: chain + __prompt per ultimo
+__NVX_PRE_PROMPT_COMMAND="${PROMPT_COMMAND:-}"
 
+__nvx_prompt_wrapper() {
+  local ec=$?
+
+  if [[ -n "${__NVX_PRE_PROMPT_COMMAND:-}" ]]; then
+    eval "$__NVX_PRE_PROMPT_COMMAND"
+  fi
+
+  __prompt
+  return $ec
+}
+
+PROMPT_COMMAND="__nvx_prompt_wrapper"
+
+
+# ---------------- ALIAS / COLORS ----------------
 
 alias ls='ls --color=auto'
 export LS_COLORS='di=38;2;241;250;140:fi=38;2;200;200;200:ex=38;2;241;250;140:ln=38;2;189;147;249:or=38;2;255;85;85:mi=38;2;255;85;85'
 
+
 # ---- NVX automatic command lookup & exec ----
+
 command_not_found_handle() {
   local cmd="$1"; shift || true
 
@@ -44,7 +108,7 @@ command_not_found_handle() {
 
   [[ -n "$hits" ]] || return 127
 
-  # se un solo container → esegui subito
+  # se un solo container \u2192 esegui subito
   local count
   count="$(printf "%s\n" "$hits" | wc -l | tr -d ' ')"
 
@@ -59,7 +123,7 @@ command_not_found_handle() {
     return $?
   fi
 
-  # più container → chiedi
+  # pi� container \u2192 chiedi
   echo "Command '$cmd' found in multiple containers:"
   local i=1
   printf "%s\n" "$hits" | while read -r b; do
