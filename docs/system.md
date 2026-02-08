@@ -28,7 +28,8 @@ This layer:
 
 The user never interacts with this layer directly.
 
-<img width="1377" height="860" alt="image" src="https://github.com/user-attachments/assets/430bea8f-ed30-4b87-a6e4-9c9f703a7feb" />
+<img width="1377" height="857" alt="image" src="https://github.com/user-attachments/assets/46e7fb0a-8d54-47fd-9a96-d907f532ef13" />
+
 
 
 ### Command Caching
@@ -55,6 +56,8 @@ privileges when required.
 ```bash
 nvx <command>
 ```
+<img width="1377" height="857" alt="image" src="https://github.com/user-attachments/assets/fc02d0cc-c834-45e4-afc2-88afe60e81eb" />
+
 
 The `nvx` wrapper enforces a privileged execution model:
 - commands are executed via `sudo` on the host
@@ -136,6 +139,10 @@ nvx-where <command>
 ```
 locate a tool across host and containers
 
+<img width="1377" height="857" alt="image" src="https://github.com/user-attachments/assets/09f77cb2-cdbf-4a93-8d69-6f104ed2f620" />
+
+
+
 ```bash
 nvx-install <package>
 ```
@@ -193,6 +200,7 @@ The command manages the following components:
 #### Secure Mode
 
 Activated with:
+
 ```bash
 nvx-shield on
 ```
@@ -205,6 +213,7 @@ Intended for daily use, development, and general-purpose operation.
 #### Offensive Mode
 
 Activated with:
+
 ```bash
 nvx-shield off
 ```
