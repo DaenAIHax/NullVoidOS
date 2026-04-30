@@ -1,100 +1,84 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Anti-loop guard
-if [[ "${NVX_WHERE_GUARD:-}" == "1" ]]; then
-  exit 0
-fi
-export NVX_WHERE_GUARD=1
-
-needle="${1:-}"
-[[ -n "$needle" ]] || { echo "Usage: nvx-where <command>" >&2; exit 2; }
+cmd="${1:-}"
+[[ -n "$cmd" ]] || { echo "Usage: nvx-where <command>" >&2; exit 2; }
 
 printf "TARGET\tFOUND\tPATH\n"
 any=0
 
-# HOST: prefer which if present, else command -v
+# HOST lookup
+host_p=""
 if command -v which >/dev/null 2>&1; then
-  p="$(which "$needle" 2>/dev/null || true)"
+  host_p="$(which "$cmd" 2>/dev/null || true)"
 else
-  p="$(command -v -- "$needle" 2>/dev/null || true)"
+  host_p="$(command -v -- "$cmd" 2>/dev/null || true)"
 fi
 
-if [[ -n "$p" ]]; then
-  printf "HOST\tyes\t%s\n" "$p"
+if [[ -n "$host_p" ]]; then
+  printf "HOST\tyes\t%s\n" "$host_p"
   any=1
 else
   printf "HOST\tno\t-\n"
 fi
 
-list_names() {
-  local mode="$1"
-  if [[ "$mode" == "rootful" ]]; then
-    distrobox list --root --no-color 2>/dev/null | awk '
-      NR==1 { for (i=1;i<=NF;i++) if ($i=="NAME") col=i; next }
-      NR>1 && col>0 && $col!="" { print $col }
-    '
-  else
-    distrobox list --no-color 2>/dev/null | awk '
-      NR==1 { for (i=1;i<=NF;i++) if ($i=="NAME") col=i; next }
-      NR>1 && col>0 && $col!="" { print $col }
-    '
-  fi
+# "which" if available, else "command -v" \u2014 inside container
+inner_lookup() {
+  cat <<'SH'
+if command -v which >/dev/null 2>&1; then
+  which "$1" 2>/dev/null || true
+else
+  command -v -- "$1" 2>/dev/null || true
+fi
+SH
 }
 
-where_in_box() {
-  local mode="$1" box="$2"
+lookup_in_box() {
+  local mode="$1" name="$2"
+  local out p rc
 
-  # shell "pulita" se c'è bash, altrimenti sh
-  local shell='sh'
-  local has_bash=""
+  # IMPORTANT: do not let failures abort the whole script
+  set +e
   if [[ "$mode" == "rootful" ]]; then
-    has_bash="$(distrobox-enter --root "$box" -- sh -lc 'command -v bash >/dev/null 2>&1 && echo yes || echo no' 2>/dev/null || true)"
+    out="$(distrobox-enter --root "$name" -- sh -lc "$(inner_lookup)" sh "$cmd" </dev/null 2>/dev/null)"
+    rc=$?
   else
-    has_bash="$(distrobox-enter "$box" -- sh -lc 'command -v bash >/dev/null 2>&1 && echo yes || echo no' 2>/dev/null || true)"
+    out="$(distrobox-enter "$name" -- sh -lc "$(inner_lookup)" sh "$cmd" </dev/null 2>/dev/null)"
+    rc=$?
   fi
-  [[ "$has_bash" == "yes" ]] && shell='bash --noprofile --norc'
+  set -e
 
-  # Ambiente sterile + disattiva handler
-  # Usa which se esiste, altrimenti command -v
-  local inner
-  inner=$'unset -f command_not_found_handle 2>/dev/null || true\nexport BASH_ENV=/dev/null\nexport ENV=/dev/null\n'\
-$'if command -v which >/dev/null 2>&1; then which '"$needle"$' 2>/dev/null || true; else command -v -- '"$needle"$' 2>/dev/null || true; fi\n'
-
-  if [[ "$mode" == "rootful" ]]; then
-    distrobox-enter --root "$box" -- env -i HOME="$HOME" PATH="/usr/sbin:/usr/bin:/sbin:/bin" NVX_WHERE_GUARD=1 \
-      $shell -lc "$inner" 2>/dev/null | head -n1 || true
-  else
-    distrobox-enter "$box" -- env -i HOME="$HOME" PATH="/usr/sbin:/usr/bin:/sbin:/bin" NVX_WHERE_GUARD=1 \
-      $shell -lc "$inner" 2>/dev/null | head -n1 || true
+  # If enter failed, mark as no and continue
+  if [[ "$rc" -ne 0 ]]; then
+    printf "%s\tno\t-\n" "$name"
+    return 0
   fi
-}
 
-check_box() {
-  local mode="$1" box="$2"
-  local p=""
-  p="$(where_in_box "$mode" "$box")"
+  p="$(printf "%s" "$out" | head -n1 | tr -d '\r')"
   if [[ -n "$p" ]]; then
-    printf "%s\tyes\t%s\n" "$box" "$p"
+    printf "%s\tyes\t%s\n" "$name" "$p"
     any=1
   else
-    printf "%s\tno\t-\n" "$box"
+    printf "%s\tno\t-\n" "$name"
   fi
 }
 
-# rootless
-while IFS= read -r box; do
-  [[ -n "$box" ]] || continue
-  check_box "rootless" "$box"
-done < <(list_names rootless | sed '/^$/d')
+# ROOTFUL first
+while IFS='|' read -r id name status image; do
+  name="$(echo "${name:-}" | xargs)"
+  [[ -n "$name" ]] || continue
+  lookup_in_box rootful "$name"
+done < <(distrobox list --root --no-color 2>/dev/null | tail -n +2)
 
-# rootful
-while IFS= read -r box; do
-  [[ -n "$box" ]] || continue
-  check_box "rootful" "$box"
-done < <(list_names rootful | sed '/^$/d')
+# ROOTLESS second
+while IFS='|' read -r id name status image; do
+  name="$(echo "${name:-}" | xargs)"
+  [[ -n "$name" ]] || continue
+  lookup_in_box rootless "$name"
+done < <(distrobox list --no-color 2>/dev/null | tail -n +2)
 
 if [[ "$any" -ne 1 ]]; then
-  echo "❌ '$needle' not found on host or in any distrobox container." >&2
+  echo "\u274c '$cmd' not found on host or in any distrobox container." >&2
   exit 127
 fi
+

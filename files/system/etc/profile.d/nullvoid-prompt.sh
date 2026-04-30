@@ -64,7 +64,7 @@ __prompt() {
   fi
 
   # RESET all'inizio per evitare "sbavature" colori da output/hook precedenti
-  PS1="${RESET}\n${PURPLE}${venv}\u@${target}${RESET} ${GOLD}(${path_colored}${GOLD})${RESET}\n${GOLD}\u2514\u2500\u2205${RESET} "
+  PS1="${RESET}\n${PURPLE}${venv}\u@${target}${RESET} ${GOLD}(${path_colored}${GOLD})${RESET}\n${GOLD}└─∅${RESET} "
 }
 
 # Non sopprimere altri PROMPT_COMMAND gi� presenti: chain + __prompt per ultimo
