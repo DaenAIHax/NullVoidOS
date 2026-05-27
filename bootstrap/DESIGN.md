@@ -1,0 +1,232 @@
+# NullVoidOS Bootstrap — Design Document
+
+> Experimental research alpha. Not production-targeted.
+
+## What this is
+
+An LFS-bootstrap path toward an operating system designed from boot moment 0
+around the assumption that the primary user is an AI agent, not a human at a
+terminal.
+
+This is exploratory work. The goal is a demonstrable prototype, not a
+shippable distribution.
+
+## Thesis
+
+Every general-purpose OS in use today inherited the assumption that the
+primary user is a human logging in via terminal — a 1970s timeshare model.
+Containers, sandboxing, security-hardened distros, "AI assistants on the
+desktop" are all patches above that base assumption.
+
+In the AI era this assumption is wrong. Increasingly, the entity *driving*
+computation is an agent, with humans supervising at a higher level. The OS
+that fits this world has four architectural primitives baked in, not added:
+
+1. **Capability** as the authorization model — not UID/groups, which encode
+   "human identity logged in via shell"
+2. **Audit** as structured machine-readable trace — not freeform text logs
+   meant for humans to grep
+3. **Provenance** for every artifact — who or what created it, from which
+   inputs, with which model, under which capability grants
+4. **CAS** (content-addressable storage) — identity by content hash, so the
+   agent reasons about artifacts the way it composes (not by filesystem
+   location)
+
+None of the four are individually novel. The bet is that combining all four
+**as the OS's native primitives**, with the agent as primary user from the
+boot moment, produces a coherent system nobody has built yet.
+
+## Why LFS-bootstrap (vs NixOS-based)
+
+Two paths were considered.
+
+**NixOS-based:** Use NixOS as substrate, build the agent layer above as Nix
+modules. Time to bootable agent layer: 2-4 hours. Inherits NixOS's
+declarative model, atomic generations, rollback, store.
+
+**LFS-bootstrap:** Build the minimum (kernel + libc + tiny userland + Zero +
+LLM runtime) by hand. From the boot moment, the AI takes over and builds
+the rest of the upper stack from within the system itself. Time to minimum
+bootable: 5-7 focused days.
+
+The LFS path was chosen because:
+
+- **Demo narrative.** *"We gave the AI a kernel, the Zero compiler, and a
+  local LLM. From boot, it built every layer above."* This is memorable and
+  precedent-free. The NixOS-based version reads as "we configured NixOS to
+  run an agent layer."
+- **Thesis fidelity.** AI is primary user from boot moment 0, not from
+  "after NixOS finishes setting up the system."
+- **Self-hosting pattern.** Precedents exist (Lisp machines, Smalltalk
+  image, self-hosting compilers). The pattern works; nobody has applied it
+  to AI-as-primary-user.
+
+The cost is 5-7 days of low-level work before the AI can take over. The
+user has prior toy-kernel experience (mio-kernel boots Hello World in
+QEMU), so this is within reach.
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────┐
+│ Layer 4: Apps                                    │
+│   distributed as (prompt + spec + capabilities)  │
+│   AI rebuilds locally per substrate              │
+├──────────────────────────────────────────────────┤
+│ Layer 3: DSL + activation engine                 │
+│   declarative system state in agent-native DSL   │
+│   evaluator emits JSON manifest                  │
+│   activation engine renders systemd-units/nspawn │
+├──────────────────────────────────────────────────┤
+│ Layer 2: Agent runtime                           │
+│   Zero binary hosting the agent loop             │
+│   LLM client (local or remote)                   │
+│   Capability sandbox for AI-generated code       │
+├──────────────────────────────────────────────────┤
+│ Layer 1: Substrate (~30 curated packages)        │
+│   C libraries (crypto, codec, sqlite, etc.)      │
+│   wrapped with capability-typed Zero APIs        │
+│   AI never sees C directly                       │
+├──────────────────────────────────────────────────┤
+│ Layer 0: Minimum bootstrap                       │
+│   Linux kernel + musl libc + busybox             │
+│   ZeroLang compiler + llama.cpp runtime          │
+│   sh-based init that launches the agent          │
+└──────────────────────────────────────────────────┘
+```
+
+Layers 0-1 are built by the human (Phase 0-1). Layers 2-4 are built by the
+agent from inside the running system.
+
+## Distribution model — prompt as package
+
+Apps are not distributed as compiled binaries. The distributable unit is:
+
+```
+mrblunder.app/
+├── intent.prompt        # what the app does, structured NL
+├── spec.test            # behavioral specification the impl must pass
+├── capabilities.cap     # which substrate primitives the app needs
+├── substrate.dep        # minimum substrate version required
+└── provenance.sig       # author, signature, hash of the prompt
+```
+
+When user X receives `mrblunder.app`:
+
+1. X's agent reads `intent.prompt`
+2. Agent generates implementation matching X's substrate
+3. Generated code is executed against `spec.test` to validate behavior
+4. App runs sandboxed per `capabilities.cap`
+5. Provenance is recorded: prompt hash + model version + capability grants
+
+Two users' implementations of `mrblunder.app` are **behaviorally equivalent
+but textually distinct**. Reproducibility is behavior-exact (via tests),
+not bit-exact (via binaries).
+
+This inverts how shared infrastructure scales. Instead of "package binary
+N times for N users," the AI generates per-user. Updates are prompt
+updates; the AI rebuilds.
+
+## Language choice — ZeroLang
+
+Implementation language for layers 1-4 (and tooling for Layer 0) is
+ZeroLang (Vercel Labs, currently v0.1.4, Apache 2.0, May 2026).
+
+**Why Zero:**
+
+- Capability-based I/O native (matches thesis primitive #1)
+- JSON-structured compiler diagnostics with stable error codes and
+  typed repair plans (`fix --plan --json`)
+- Designed for AI agents as consumers from day one
+- Compiles to small native musl binaries (~10KB target range)
+- Apache 2.0, forkable if vendor abandons
+
+**Vendor risk handling:**
+
+- For research alpha, vendor risk is acceptable
+- If Vercel pivots or kills Zero: fork (Apache 2.0) or migrate to other
+  emerging AI-native languages (Roc, Unison, future entrants)
+- **No fallback to Rust/Go** — using human-designed languages for the
+  agent runtime would contradict the thesis
+
+## What the substrate covers (the irreducible C layer)
+
+The agent does not regenerate cryptography, codecs, kernel drivers, or SQL
+engines. These took decades of expert work and AI cannot reproduce them
+with confidence. The substrate is the small set of C libraries that fit
+this profile, wrapped behind Zero capability-typed APIs.
+
+Tentative substrate (~30 packages — to be finalized in Phase 1):
+
+- **Crypto:** openssl, libsodium
+- **Codec:** ffmpeg
+- **Storage:** sqlite
+- **Network:** curl
+- **LLM runtime:** llama.cpp (or alternative)
+- **Filesystem:** existing kernel FS via libc
+- **Process management:** systemd or runit
+- **JS engine:** V8 (if browser-class apps in scope)
+- **TLS:** rustls or openssl
+- (final list TBD)
+
+The agent calls these only through Zero wrappers that declare capability
+requirements explicitly. C is hidden infrastructure — invisible to the
+agent the way microcode is invisible to Rust.
+
+## Phase plan
+
+| Phase | Owner | Deliverable | Duration |
+|-------|-------|-------------|----------|
+| **0** | Human | Bootable VM: kernel + musl + busybox + Zero + LLM + agent loop alive | 5-7 focused days |
+| **1** | Human, AI-assisted | Substrate package selection + Zero capability wrappers | 3-5 days |
+| **2** | Agent in-system | Agent runtime, LLM client, sandbox builder | 1-2 weeks |
+| **3** | Agent in-system | DSL parser/evaluator + activation engine | 2-3 weeks |
+| **4** | Agent in-system | First app end-to-end (prompt → built → sandboxed → running) | 2-3 days |
+
+Total to first demonstrable wow: **6-10 weeks of focused work** with
+serious AI assistance throughout.
+
+## What's NOT in scope
+
+- **Production readiness.** No SLA, no security warranty, no stability
+  guarantees. Alpha research.
+- **Replacing nixpkgs / apt / homebrew.** The substrate is intentionally
+  small; the AI generates everything above it per-user.
+- **Daily-driver OS.** Booting in a VM is the goal. Bare metal much later,
+  maybe never.
+- **Replacing the main branch direction.** The Fedora Atomic + container
+  cybersecurity workbench in `main` is a separate concern with its own
+  scope. The two directions coexist; the user decides over time.
+
+## Existing landscape (what this is not)
+
+| Project | What it actually is |
+|---------|---------------------|
+| ZeroLang (Vercel Labs) | Language. We *use* it; we are not Vercel. |
+| AIOS / Qualixar OS | Academic agent orchestrators at application layer on top of existing OSes. |
+| rabbit OS | Failed AI hardware device with custom UI; not an OS rewrite. |
+| Anthropic Claude Cowork | SaaS product, not an installable OS. |
+| Open Interpreter, Agent-S | Frameworks running on existing OS. |
+| Microsoft Copilot+ PCs / Apple AI / Google Gemini | AI features added to existing consumer OSes. |
+| NixOS, Guix | Declarative OS, but human-primary, not agent-primary. |
+| Genode, seL4, Fuchsia | Capability-based OSes but not designed for AI as primary user. |
+
+No project combines: bootable Linux + LFS-bootstrap + capability+audit+
+provenance+CAS as primitives + agent as primary user + prompt-as-distribution.
+
+The combination is the bet.
+
+## Open decisions (Phase 0 entry)
+
+These must be resolved before the first build script runs:
+
+1. **libc:** musl (matches Zero's target, statically linkable) vs glibc
+2. **Init:** sh-based custom (smallest), s6, runit, or systemd-minimal
+3. **Initial LLM runtime:** llama.cpp (statically built) vs ollama vs remote API only
+4. **Build environment:** Nix-based cross-compile on host (cleanest) vs Alpine container vs manual toolchain
+5. **VM image:** initramfs only (fastest boot) vs disk image (more realistic)
+6. **Kernel:** vanilla Linux LTS vs custom .config minimized vs alpine-kernel reuse
+
+Recommended defaults for first iteration (revisable):
+- musl, sh-based init, llama.cpp static, Nix-based cross-compile, initramfs,
+  Linux LTS with minimal .config.

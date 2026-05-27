@@ -1,3 +1,11 @@
 cosign.key
 cosign.private
 /Containerfile
+
+# Nix build outputs
+result
+result-*
+.direnv/
+
+# Zero compiler cache
+.zero/
