@@ -254,3 +254,35 @@ Default is `ClaudeCodeBackend` because the user already runs Claude Code
 daily and it provides the most capable agent loop without rebuilding one.
 Swap to local backends when sovereignty/offline matters, or for benchmark
 testing across models.
+
+## Deferred: graphical UI / desktop
+
+Current Phase 0-4 plan ends at a TTY console. The agent lives in the
+shell and apps it generates default to CLI or headless web servers. This
+is invisible to non-technical observers — they see a black terminal.
+
+Whether to add a graphical layer (and which one) is **deferred**, not
+ruled out. Options to revisit once the base boots and the agent loop
+is alive:
+
+| Option | Substrate added | What the user sees | Effort |
+|--------|-----------------|--------------------|--------|
+| (a) TTY only | none | console with text | 0 (current plan) |
+| (b) Browser-as-desktop kiosk | Wayland + sway minimal + Chromium | full-screen Chromium serving agent's web UI | 3-5 days |
+| (c) Minimal Wayland desktop | + bar + terminal emulator + font | sway with floating windows | 1-2 weeks |
+| (d) Full DE (GNOME/KDE) | massive | traditional desktop | 3-4 weeks; substrate explodes |
+
+**Provisional preference** (revisit when Phase 0-1 done): option (b).
+Reasoning: the AI is already strong at generating web UIs (HTML/CSS/JS),
+substrate stays small, browser becomes the window manager, converges
+with how user's other apps (Cullis, mrblunder) already look. ChromeOS
+is essentially this pattern at consumer level — without the AI generating
+the apps.
+
+**Honest constraint on what the AI can build at this layer:** the
+compositor (Wayland protocol, sway/hyprland) is irreducible — like
+crypto and codecs, it lives in the substrate. The AI can configure it,
+generate apps that render to it, design UI/layout, but cannot
+meaningfully rewrite the compositor itself.
+
+Decision deferred until Phase 0-1 base is demonstrably booting.
