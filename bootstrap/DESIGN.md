@@ -78,9 +78,11 @@ QEMU), so this is within reach.
 │   evaluator emits JSON manifest                  │
 │   activation engine renders systemd-units/nspawn │
 ├──────────────────────────────────────────────────┤
-│ Layer 2: Agent runtime                           │
-│   Zero binary hosting the agent loop             │
-│   LLM client (local or remote)                   │
+│ Layer 2: Agent backend (pluggable)               │
+│   agent_backend interface: send(prompt, caps)    │
+│   default impl: ClaudeCodeBackend (hosted)       │
+│   alt impls: OllamaBackend, LlamaCppBackend,     │
+│              AnthropicAPIBackend                  │
 │   Capability sandbox for AI-generated code       │
 ├──────────────────────────────────────────────────┤
 │ Layer 1: Substrate (~30 curated packages)        │
@@ -216,17 +218,39 @@ provenance+CAS as primitives + agent as primary user + prompt-as-distribution.
 
 The combination is the bet.
 
-## Open decisions (Phase 0 entry)
+## Phase 0 decisions (LOCKED 2026-05-28)
 
-These must be resolved before the first build script runs:
+| # | Decision | Choice | Rationale |
+|---|----------|--------|-----------|
+| 1 | libc | **musl** | Static linking, ~5MB, matches Zero target, Alpine-proven |
+| 2 | Init | **sh-based custom** | Smallest, easiest to modify, no service supervision needed |
+| 3 | Agent backend | **Pluggable** (default Claude Code) | Try multiple models; ClaudeCode/Ollama/LlamaCpp/AnthropicAPI swappable via config |
+| 4 | Build env | **Nix cross-compile on host** | Reproducible, integrates with existing flake, no host pollution |
+| 5 | VM image | **initramfs + qcow2 /var** | Fast boot from RAM + persistence for agent memory/generated apps |
+| 6 | Kernel | **Vanilla Linux LTS, minimal .config** | Stable, small attack surface, predictable behavior |
 
-1. **libc:** musl (matches Zero's target, statically linkable) vs glibc
-2. **Init:** sh-based custom (smallest), s6, runit, or systemd-minimal
-3. **Initial LLM runtime:** llama.cpp (statically built) vs ollama vs remote API only
-4. **Build environment:** Nix-based cross-compile on host (cleanest) vs Alpine container vs manual toolchain
-5. **VM image:** initramfs only (fastest boot) vs disk image (more realistic)
-6. **Kernel:** vanilla Linux LTS vs custom .config minimized vs alpine-kernel reuse
+These are revisable but lock the starting position. Override later via
+config or by replacing the relevant subsystem.
 
-Recommended defaults for first iteration (revisable):
-- musl, sh-based init, llama.cpp static, Nix-based cross-compile, initramfs,
-  Linux LTS with minimal .config.
+## Agent backend abstraction
+
+The agent runtime layer exposes a minimal interface so any LLM-driving
+agent can be swapped in:
+
+```
+agent_backend.send(prompt: str, capabilities: CapSet) -> Response
+```
+
+Initial implementations:
+
+| Backend | Description | Network | API key | Cost |
+|---------|-------------|---------|---------|------|
+| `ClaudeCodeBackend` | Invokes `claude` CLI from substrate | Required | Required | Per-token |
+| `OllamaBackend` | REST to localhost:11434 | Local | None | Compute |
+| `LlamaCppBackend` | In-process llama.cpp invocation | Local | None | Compute |
+| `AnthropicAPIBackend` | Direct HTTP to Anthropic API | Required | Required | Per-token |
+
+Default is `ClaudeCodeBackend` because the user already runs Claude Code
+daily and it provides the most capable agent loop without rebuilding one.
+Swap to local backends when sovereignty/offline matters, or for benchmark
+testing across models.
