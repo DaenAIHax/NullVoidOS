@@ -251,6 +251,57 @@ tool-use call fails (silently or with `ENOENT`).
 should now reach a real GNU bash. Git, ripgrep, etc. are still
 absent — add as needed when Claude reports the next missing tool.
 
+### Milestone — Phase 0 (a) lab edition + Phase 1 components scaffolded
+
+The project reframed mid-day, from "rewrite NixOS in Zero" (judged not
+a real thesis) to a research lab for the question **"can an agent
+author a working OS end-to-end?"** — with a path to a small specialised
+model (NullAgent) eventually replacing the big general one on the
+governance side. See DESIGN.md for the new framing.
+
+Two parallel deliverables landed in this session:
+
+**1. Lab substrate.** The initramfs now ships a developer toolchain
+big enough for the agent to compile and package real software:
+python313, rustc+cargo, nodejs_22, gcc, make, git, curl, jq, ripgrep,
+fd, neovim, sqlite, GNU coreutils. Added dropbear (SSH server) and
+e2fsprogs (ext4). A persistent `/var` on a qcow2 disk auto-provisioned
+under `$XDG_CACHE_HOME/nullvoid/var.qcow2` (8 GB sparse) survives
+reboots. Host SSH pubkey shared via 9P, dropbear authorized_keys
+populated at boot, port 22 forwarded to host:2222. VM RAM bumped
+1 GB → 8 GB (needed for compiling Rust + running Node + LLM in-VM).
+Compressed initramfs grew 100 MB → 1.1 GB.
+
+Kernel additions: `BLOCK`, `BLK_DEV`, `VIRTIO_BLK`, `EXT4_FS`. The
+tinyconfig base disables CONFIG_BLOCK, which silently masks every
+block driver and filesystem we tried to `--enable`; turning BLOCK on
+first unblocks the rest. bzImage 1.7 MB → 2.0 MB.
+
+`/etc/{passwd,group,shadow}` minimal stubs so dropbear's getpwnam
+lookup for `root` succeeds.
+
+**2. Phase 1 components built by 3 sub-agents in parallel.** Locked
+the contracts in `bootstrap/system/CONTRACTS.md` so the three could
+work without colliding. Results:
+
+- `bootstrap/system/nv-pkg/` (Rust crate, package manager per
+  CONTRACTS §1). 11 integration tests green. Install / resolve /
+  list / remove / verify. Tarball-hash addressing in the store path,
+  separate content-hash file for tamper detection.
+- `bootstrap/system/null/` (Rust crate, configuration language per
+  CONTRACTS §2). 50 integration tests green. Hand-rolled lexer +
+  recursive-descent parser + single-pass typecheck/eval against the
+  SystemManifest schema. `check` / `eval` / `fmt` / `parse --json`.
+  Diagnostics with PAR/TYP error codes.
+- `bootstrap/system/nv-rebuild/` (Rust crate, activation engine per
+  CONTRACTS §3). 9 integration tests green. Atomic `rename(2)`-based
+  symlink swap. `check` / `build` / `switch` / `rollback` /
+  `generations`.
+
+Each crate is self-contained, targets `x86_64-unknown-linux-musl`
+when shipped. Not yet wired into the initramfs — that integration is
+the next session's work.
+
 ### Polish (from first interactive session)
 
 - `bootstrap/pkgs/initramfs.nix`: replaced the hand-curated busybox

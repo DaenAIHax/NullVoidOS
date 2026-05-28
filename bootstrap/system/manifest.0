@@ -1,0 +1,35 @@
+type Kernel
+  version String
+  bzImageBytes usize
+
+type Initramfs
+  cpioGzBytes usize
+  storePathCount usize
+
+type SystemManifest
+  hostname String
+  kernel Kernel
+  initramfs Initramfs
+
+fn nullvoidSystem SystemManifest
+  let k Kernel . version "6.6.141" bzImageBytes 1781760
+  let i Initramfs . cpioGzBytes 107012096 storePathCount 31
+  ret SystemManifest . hostname "nullvoid" kernel k initramfs i
+
+pub fn main Void world World !
+  let m SystemManifest nullvoidSystem()
+  check world.out.write "NullVoidOS -- system manifest (Phase 0 (a))\n"
+  check world.out.write "  hostname:        "
+  check world.out.write m.hostname
+  check world.out.write "\n"
+  check world.out.write "  kernel.version:  "
+  check world.out.write m.kernel.version
+  check world.out.write "\n"
+
+test "manifest hostname is nullvoid"
+  let m SystemManifest nullvoidSystem()
+  expect (std.mem.eql m.hostname "nullvoid")
+
+test "kernel version matches the LTS pin"
+  let m SystemManifest nullvoidSystem()
+  expect (std.mem.eql m.kernel.version "6.6.141")

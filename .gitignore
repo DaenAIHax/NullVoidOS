@@ -9,3 +9,9 @@ result-*
 
 # Zero compiler cache
 .zero/
+
+# Rust build artifacts (bootstrap/system/*/target/)
+**/target/
+
+# Claude Code worktrees (sub-agent isolation)
+.claude/worktrees/

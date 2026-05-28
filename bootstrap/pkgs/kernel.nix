@@ -107,6 +107,17 @@ stdenv.mkDerivation rec {
       --enable NETDEVICES \
       --enable ETHERNET
 
+    # Block layer + ext4 for the qcow2 /var persistent disk. tinyconfig
+    # explicitly disables CONFIG_BLOCK (no real disk needed to boot from
+    # initramfs), which silently masks every block driver and filesystem
+    # we would --enable: VIRTIO_BLK, EXT4_FS, JBD2 etc. become "not
+    # visible" so olddefconfig drops them.
+    scripts/config \
+      --enable BLOCK \
+      --enable BLK_DEV \
+      --enable EXT4_FS \
+      --enable EXT4_USE_FOR_EXT2
+
     # 9P filesystem over VirtIO — host-shared directories. Phase 0 (a)
     # uses this to mount the host's `~/.config/claude/` into the VM at
     # `/root/.config/claude/`, so Claude Code reuses the Max subscription

@@ -1,0 +1,26 @@
+# Standard agent workstation — the reference system from CONTRACTS §5.
+# This is the manifest an AI agent would write after installing packages.
+{
+  hostname = "nullvoid";
+
+  packages = [
+    "bash-5.3.9"
+    "neovim-mini-0.1.0"
+    "task-tui-0.3.2"
+    "notes-tui-0.1.0"
+  ];
+
+  services = {
+    agent = {
+      exec = "/run/current/bin/claude";
+      restart = "always";
+    };
+  };
+
+  environment = {
+    EDITOR = "nvim-mini";
+    LANG = "en_US.UTF-8";
+    PATH = "/run/current/bin:/bin:/usr/bin";
+    HOME = "/root";
+  };
+}

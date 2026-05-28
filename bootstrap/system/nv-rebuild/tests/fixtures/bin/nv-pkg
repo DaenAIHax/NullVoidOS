@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Stub for `nv-pkg` — the package manager.
+#
+# Environment variables consumed:
+#   NV_FIXTURE_STORE_DIR — path to a directory that acts as the package store.
+#       Sub-directories should be named `<storeHash>-<name>-<version>` and each
+#       must contain a `manifest.json`.
+#   NV_FIXTURE_PKG_MISSING — space-separated list of "<name>-<version>" strings
+#       that this stub should pretend are NOT installed (resolve returns exit 1).
+#
+# Supported subcommands:
+#   resolve <name>-<version>   — print the store path, or exit 1 if missing.
+#   list [--json]              — list installed packages.
+#   install <file>             — always succeeds (no-op in tests).
+#   remove <name>-<version>    — always succeeds (no-op in tests).
+#   verify <name>-<version>    — always succeeds (no-op in tests).
+
+CMD="${1:-}"
+shift || true
+
+STORE_DIR="${NV_FIXTURE_STORE_DIR:-}"
+MISSING_LIST="${NV_FIXTURE_PKG_MISSING:-}"
+
+case "$CMD" in
+  resolve)
+    PKG="${1:-}"
+    if [ -z "$PKG" ]; then
+      echo "nv-pkg stub: missing package argument" >&2
+      exit 1
+    fi
+
+    # Check if this package is in the MISSING list
+    for m in $MISSING_LIST; do
+      if [ "$m" = "$PKG" ]; then
+        echo "nv-pkg stub: package '$PKG' not found" >&2
+        exit 1
+      fi
+    done
+
+    if [ -z "$STORE_DIR" ]; then
+      echo "nv-pkg stub: NV_FIXTURE_STORE_DIR not set" >&2
+      exit 1
+    fi
+
+    # Find a directory whose name ends in "<name>-<version>" (after the hash)
+    FOUND=""
+    for d in "$STORE_DIR"/*/; do
+      # strip trailing slash, take basename
+      base="$(basename "$d")"
+      # The store path format is "<storeHash>-<name>-<version>"
+      # Match: everything after the first dash-segment that equals PKG
+      # We look for directories whose basename ends with "-<PKG>"
+      if [[ "$base" == *"-${PKG}" ]] || [[ "$base" == "${PKG}" ]]; then
+        FOUND="$d"
+        break
+      fi
+    done
+
+    if [ -z "$FOUND" ]; then
+      echo "nv-pkg stub: package '$PKG' not found in store '$STORE_DIR'" >&2
+      exit 1
+    fi
+
+    # Print the store path (no trailing newline issues — printf)
+    printf '%s' "${FOUND%/}"
+    printf '\n'
+    ;;
+
+  list)
+    if [ -z "$STORE_DIR" ]; then
+      echo "nv-pkg stub: NV_FIXTURE_STORE_DIR not set" >&2
+      exit 1
+    fi
+    JSON="${1:-}"
+    if [ "$JSON" = "--json" ]; then
+      echo '[]'
+    else
+      ls "$STORE_DIR" 2>/dev/null || true
+    fi
+    ;;
+
+  install|remove|verify)
+    # No-op in tests
+    exit 0
+    ;;
+
+  *)
+    echo "nv-pkg stub: unknown subcommand '$CMD'" >&2
+    exit 1
+    ;;
+esac

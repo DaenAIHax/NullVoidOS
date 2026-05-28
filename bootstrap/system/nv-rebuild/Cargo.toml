@@ -1,0 +1,25 @@
+[package]
+name = "nv-rebuild"
+version = "0.1.0"
+edition = "2021"
+description = "NullVoidOS activation engine — builds and switches system generations"
+license = "MIT"
+
+[lib]
+name = "nv_rebuild"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nv-rebuild"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+tempfile = "3"
+nix = { version = "0.29", features = ["fs", "signal"] }
+
+[dev-dependencies]
+tempfile = "3"

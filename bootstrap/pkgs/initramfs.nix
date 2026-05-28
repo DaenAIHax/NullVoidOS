@@ -5,6 +5,9 @@
 , claude-code
 , cacert
 , bash
+, dropbear
+, e2fsprogs
+, devSubstrate
 }:
 
 let
@@ -54,6 +57,23 @@ let
     # Silence late kernel info-level messages so they don't disrupt the prompt.
     dmesg -n 1 2>/dev/null || true
 
+    # Persistent /var on the qcow2 attached to virtio-blk (/dev/vda).
+    # First boot: device is unformatted -> mkfs.ext4. Subsequent boots:
+    # mount existing fs. Without this, packages built by the agent and
+    # nv-system generations die on every reboot.
+    VAR_OK=no
+    if [ -b /dev/vda ]; then
+      if ! blkid /dev/vda >/dev/null 2>&1; then
+        echo "Formatting /dev/vda as ext4 (first boot)..."
+        mkfs.ext4 -q -L nv-var /dev/vda 2>/dev/null
+      fi
+      if mount -t ext4 /dev/vda /var 2>/dev/null; then
+        VAR_OK=yes
+        mkdir -p /var/lib /var/log /var/tmp /var/lib/nv-store \
+                 /var/lib/nv-system /var/lib/dropbear
+      fi
+    fi
+
     # 9P share: host's ~/.claude/ → /root/.claude/ (RW).
     # Carries the Max-subscription credentials so `claude` inside the
     # VM authenticates without our owning an API key. Mounted RW so
@@ -89,6 +109,37 @@ let
     [ -s /etc/resolv.conf ] || echo "nameserver 10.0.2.3" > /etc/resolv.conf
     IP=$(ip -4 addr show eth0 2>/dev/null | sed -n 's/.*inet \([^ ]*\).*/\1/p')
 
+    # SSH: mount host's ~/.ssh/ via 9P, grab the first .pub key as
+    # authorized_keys for root, generate host keys on first boot,
+    # start dropbear. Port 22 inside, forwarded to host:2222 by QEMU.
+    SSH_OK=no
+    mkdir -p /root/.ssh
+    chmod 700 /root/.ssh
+    if mount -t 9p -o trans=virtio,version=9p2000.L,ro,msize=131072 \
+         sshfs /mnt 2>/dev/null; then
+      PUB=$(ls /mnt/*.pub 2>/dev/null | head -1)
+      if [ -n "$PUB" ]; then
+        cp "$PUB" /root/.ssh/authorized_keys
+        chmod 600 /root/.ssh/authorized_keys
+      fi
+      umount /mnt 2>/dev/null
+    fi
+    if [ "$VAR_OK" = yes ] && [ -s /root/.ssh/authorized_keys ]; then
+      # Host key generation (persisted in /var so reboots don't reset
+      # them and trigger SSH "host key changed" warnings on host).
+      for kt in rsa ecdsa ed25519; do
+        kp=/var/lib/dropbear/dropbear_''${kt}_host_key
+        if [ ! -f "$kp" ]; then
+          dropbearkey -t "$kt" -f "$kp" >/dev/null 2>&1
+        fi
+      done
+      dropbear -E -R -p 22 -r /var/lib/dropbear/dropbear_rsa_host_key \
+        -r /var/lib/dropbear/dropbear_ecdsa_host_key \
+        -r /var/lib/dropbear/dropbear_ed25519_host_key 2>/dev/null &
+      sleep 0.5
+      pidof dropbear >/dev/null 2>&1 && SSH_OK=yes
+    fi
+
     # Node.js TLS — claude-code's bundled node looks here for the CA bundle.
     export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-bundle.crt
     export SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt
@@ -98,20 +149,23 @@ let
 
     echo ""
     echo "================================================="
-    echo " NullVoidOS bootstrap — Phase 0 variant (a)"
+    echo " NullVoidOS bootstrap -- Phase 0 (a) lab edition"
     echo "================================================="
     echo "kernel:   $(uname -srvm)"
     echo "hostname: $(hostname)"
+    echo "IP:       ''${IP:-none}"
     echo "zero:     $(zero --version 2>/dev/null || echo missing)"
     echo "claude:   $(claude --version 2>/dev/null || echo missing)"
-    echo "IP:       ''${IP:-none}"
+    echo "python:   $(python3 --version 2>/dev/null || echo missing)"
+    echo "rustc:    $(rustc --version 2>/dev/null | awk '{print $1,$2}' || echo missing)"
+    echo "node:     $(node --version 2>/dev/null || echo missing)"
+    echo "gcc:      $(gcc --version 2>/dev/null | head -1 | awk '{print $1,$NF}')"
     echo "creds:    $CREDS_OK"
-    if [ "$CREDS_OK" = "yes" ]; then
-      echo "          $(ls /root/.claude 2>/dev/null | head -3 | tr '\n' ' ')"
-    fi
+    echo "/var:     $VAR_OK ($(df -h /var 2>/dev/null | awk 'NR==2 {print $4" free"}'))"
+    echo "ssh:      $SSH_OK ($([ "$SSH_OK" = yes ] && echo 'host:2222 -> guest:22' || echo 'disabled'))"
     echo ""
     echo "Type 'claude' to start the agent."
-    echo "Or 'zero --help' to explore the language."
+    echo "From host:  ssh -p 2222 root@localhost  (multi-shell)"
     echo "Quit: type 'poweroff -f', or Ctrl-A x from host."
     echo ""
 
@@ -143,8 +197,32 @@ let
   # /nix/store onto the CAS substrate role; we use the real thing
   # here, deferring the LFS-style CAS to Phase 1+.
   agentClosure = closureInfo {
-    rootPaths = [ claude-code bash ];
+    rootPaths = [ claude-code bash dropbear e2fsprogs ] ++ devSubstrate;
   };
+
+  # Minimal /etc/passwd + /etc/group so dropbear and other tools that
+  # look up "root" via getpwnam() succeed. Without this, dropbear logs
+  # "user root has invalid shell, rejected" and refuses connections.
+  passwdFile = writeText "passwd" ''
+    root:x:0:0:root:/root:/bin/bash
+    nobody:x:65534:65534:nobody:/var/empty:/bin/false
+  '';
+  groupFile = writeText "group" ''
+    root:x:0:
+    nobody:x:65534:
+  '';
+  shadowFile = writeText "shadow" ''
+    root::0:0:99999:7:::
+    nobody:!:0:0:99999:7:::
+  '';
+
+  # Compute /bin symlinks for the developer substrate. Each package
+  # contributes whatever it exports in its $out/bin (typically the
+  # `pname`-matching binary, but sometimes a whole family — e.g.
+  # `gcc`, `g++`, `cc`, `cpp`; `coreutils` brings ~100 GNU tools that
+  # override the busybox symlinks for proper GNU semantics).
+  devSubstrateBinPaths = lib.concatMapStringsSep " "
+    (p: "${p}/bin") devSubstrate;
 in
 runCommand "nullvoid-initramfs" {
   nativeBuildInputs = [ cpio gzip ];
@@ -154,7 +232,7 @@ runCommand "nullvoid-initramfs" {
     platforms = [ "x86_64-linux" ];
   };
 } ''
-  mkdir -p root/{bin,dev,proc,sys,tmp,root,etc/ssl/certs,etc/udhcpc,nix/store,usr/bin}
+  mkdir -p root/{bin,dev,proc,sys,tmp,root,var,mnt,etc/ssl/certs,etc/udhcpc,etc/dropbear,nix/store,usr/bin}
 
   cp ${pkgsStatic.busybox}/bin/busybox root/bin/
 
@@ -177,8 +255,41 @@ runCommand "nullvoid-initramfs" {
   ln -s ${bash}/bin/bash root/bin/bash
   ln -s /bin/env root/usr/bin/env
 
+  # SSH + filesystem tools. Some of these overlap with busybox applets
+  # already symlinked above (blkid, ssh) — force-override so we get the
+  # GNU/dropbear versions, which understand more flags and produce more
+  # detailed output than the busybox subset.
+  for src in ${dropbear}/bin/dropbear ${dropbear}/bin/dropbearkey \
+             ${e2fsprogs}/bin/mkfs.ext4 ${e2fsprogs}/bin/blkid \
+             ${e2fsprogs}/bin/e2fsck; do
+    name=$(basename "$src")
+    rm -f "root/bin/$name"
+    ln -s "$src" "root/bin/$name"
+  done
+  rm -f root/bin/ssh
+  ln -s ${dropbear}/bin/dbclient root/bin/ssh
+
+  # Developer substrate: symlink everything exported by each package.
+  # GNU coreutils overrides busybox applets where they overlap
+  # (cp, mv, ls, ...), giving the agent proper GNU semantics.
+  for bindir in ${devSubstrateBinPaths}; do
+    [ -d "$bindir" ] || continue
+    for bin in "$bindir"/*; do
+      name=$(basename "$bin")
+      rm -f "root/bin/$name"
+      ln -s "$bin" "root/bin/$name"
+    done
+  done
+
   # CA bundle for Node.js TLS (Claude Code calls api.anthropic.com).
   cp ${cacert}/etc/ssl/certs/ca-bundle.crt root/etc/ssl/certs/ca-bundle.crt
+
+  # /etc/passwd, group, shadow so getpwnam("root") returns something
+  # and dropbear accepts the login.
+  cp ${passwdFile} root/etc/passwd
+  cp ${groupFile}  root/etc/group
+  cp ${shadowFile} root/etc/shadow
+  chmod 600 root/etc/shadow
 
   cp ${udhcpcScript} root/etc/udhcpc/default.script
   chmod +x root/etc/udhcpc/default.script

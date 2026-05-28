@@ -110,10 +110,50 @@
                 exit 1
               fi
 
+              # Persistent /var on the host: a qcow2 disk under
+              # ~/.cache/nullvoid/var.qcow2 mounted in the VM as /var.
+              # Auto-created (8 GB sparse) on first run. Whatever the
+              # agent builds inside the VM (compiled binaries, packages,
+              # generations, history) survives reboots.
+              VAR_DIR="''${XDG_CACHE_HOME:-$HOME/.cache}/nullvoid"
+              VAR_QCOW2="$VAR_DIR/var.qcow2"
+              mkdir -p "$VAR_DIR"
+              if [ ! -f "$VAR_QCOW2" ]; then
+                echo "  provisioning $VAR_QCOW2 (8 GB sparse)"
+                ${pkgs.qemu_kvm}/bin/qemu-img create -q -f qcow2 \
+                  "$VAR_QCOW2" 8G
+              fi
+
+              # Host SSH public key forwarded into the VM via a RO 9P
+              # share. The init script copies it into the agent's
+              # authorized_keys so `ssh -p 2222 root@localhost` works
+              # from another terminal once the VM is up. If you have
+              # no SSH key, dropbear inside the VM still starts but
+              # logins via key are impossible — generate one with
+              # `ssh-keygen` first.
+              SSH_PUB_DIR=""
+              for cand in "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_rsa.pub"; do
+                if [ -f "$cand" ]; then
+                  SSH_PUB_DIR="$(dirname "$cand")"
+                  break
+                fi
+              done
+              SSH_VIRTFS=""
+              if [ -n "$SSH_PUB_DIR" ]; then
+                SSH_VIRTFS="-virtfs local,path=$SSH_PUB_DIR,mount_tag=sshfs,security_model=mapped-xattr,readonly=on"
+              fi
+
               echo ""
               echo "======================================================"
               echo " Booting NullVoidOS Phase 0 (a) in QEMU"
-              echo " Credentials (RO 9P share): $CRED_DIR"
+              echo " Credentials (RW 9P share): $CRED_DIR"
+              echo " Persistent /var:           $VAR_QCOW2"
+              if [ -n "$SSH_PUB_DIR" ]; then
+                echo " SSH key share (RO):        $SSH_PUB_DIR"
+                echo " SSH from host:             ssh -p 2222 root@localhost"
+              else
+                echo " SSH:                       disabled (no key found in ~/.ssh/)"
+              fi
               echo " Exit the VM:  type 'poweroff -f', or Ctrl-A then x"
               echo "======================================================"
               echo ""
@@ -137,12 +177,14 @@
                 -initrd ${customPkgs.initramfs}/initramfs.cpio.gz \
                 -append "console=ttyS0 quiet" \
                 $ACCEL_ARGS \
-                -netdev user,id=net0 \
+                -netdev user,id=net0,hostfwd=tcp::2222-:22 \
                 -device virtio-net-pci,netdev=net0 \
+                -drive "file=$VAR_QCOW2,if=virtio,format=qcow2,cache=writeback" \
                 -virtfs "local,path=$CRED_DIR,mount_tag=claudefs,security_model=mapped-xattr" \
+                $SSH_VIRTFS \
                 -nographic \
                 -no-reboot \
-                -m 1024 \
+                -m 8192 \
                 "$@"
             '');
           };

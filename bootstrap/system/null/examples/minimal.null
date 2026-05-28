@@ -1,0 +1,8 @@
+# Minimal system — just a hostname and empty collections.
+# Useful as a smoke-test: `null eval examples/minimal.null`
+{
+  hostname = "nullvoid-minimal";
+  packages = [];
+  services = {};
+  environment = {};
+}
