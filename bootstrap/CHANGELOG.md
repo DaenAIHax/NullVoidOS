@@ -48,6 +48,16 @@ applicable.
 - `bootstrap/pkgs/default.nix` added — package set entry point for
   `callPackage` extensibility (next additions: llama.cpp, substrate
   wrappers).
+- `bootstrap/pkgs/kernel.nix` added — minimal Linux 6.6.141 LTS kernel
+  derivation. Starts from `make tinyconfig`, adds curated options via
+  `scripts/config`, reconciles with `make olddefconfig`. Targets
+  x86_64, VirtIO paravirt, serial ttyS0 console, basic TCP/IP, no
+  modules. Build time on host: ~46 s after tarball cached. Result:
+  `bzImage` **1.5 MB**, `.config` 52 KB. Verified: boots in QEMU
+  through to "No working init found" panic — expected (initramfs is
+  task #7). Includes `patchShebangs scripts` workaround for the Nix
+  build sandbox.
+- `bootstrap/pkgs/default.nix`: exposes `kernel` alongside `zerolang`.
 
 ## 2026-05-28
 
