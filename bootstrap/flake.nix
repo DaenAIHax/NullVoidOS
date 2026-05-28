@@ -16,11 +16,13 @@
         # ld-musl as a runtime dependency. Same ABI as ZeroLang's
         # linux-musl-x64 target.
         busyboxStatic = pkgs.pkgsStatic.busybox;
+
+        customPkgs = import ./pkgs { inherit pkgs; };
       in {
         devShells.default = pkgs.mkShell {
           name = "nullvoidos-bootstrap";
 
-          packages = with pkgs; [
+          packages = (with pkgs; [
             # Linux kernel build toolchain
             gcc
             gnumake
@@ -47,6 +49,8 @@
             curl
             file
             tree
+          ]) ++ [
+            customPkgs.zerolang
           ];
 
           shellHook = ''
@@ -54,6 +58,7 @@
             echo "  Cross target:  x86_64-linux-musl (static)"
             echo "  Kernel toolchain: $(gcc --version | head -1)"
             echo "  QEMU: $(qemu-system-x86_64 --version | head -1)"
+            echo "  zero:  $(zero --version 2>/dev/null || echo 'not available')"
             echo ""
             echo "Static musl busybox available at:"
             echo "  ${busyboxStatic}/bin/busybox"
@@ -67,7 +72,7 @@
 
         # Cross-compiled userspace artifacts exposed as packages.
         # Build with: nix build .#busybox-musl
-        packages = {
+        packages = customPkgs // {
           busybox-musl = busyboxStatic;
         };
       });

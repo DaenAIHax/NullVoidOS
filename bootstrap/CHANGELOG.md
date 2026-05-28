@@ -38,6 +38,16 @@ applicable.
   Verified: `statically linked`, `ldd` reports "not a dynamic executable".
   Rationale: initramfs cpio should not depend on shipping `ld-musl` as a
   runtime interpreter.
+- `bootstrap/flake.nix`: dev shell now includes `zerolang` derivation
+  (callPackage from `bootstrap/pkgs/`). Shell hook prints `zero --version`.
+- `bootstrap/pkgs/zerolang.nix` added — ported from `nix-rewrite` branch
+  (commit `d903bae`). Multi-platform derivation fetching Vercel's
+  release binaries for v0.1.4 with SHA256 pinned (linux-musl-x64/arm64,
+  darwin-x64/arm64). Verified: `zero --version` → `zero 0.1.4`. Binary
+  itself is statically-linked musl ELF, ready to drop into the initramfs.
+- `bootstrap/pkgs/default.nix` added — package set entry point for
+  `callPackage` extensibility (next additions: llama.cpp, substrate
+  wrappers).
 
 ## 2026-05-28
 
