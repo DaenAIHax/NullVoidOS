@@ -8,6 +8,73 @@ applicable.
 
 ## [Unreleased]
 
+### Milestone — Phase 1 tooling wired into the initramfs (2026-05-28)
+
+The three Phase 1 crates scaffolded in the previous session
+(`nv-pkg`, `null`, `nv-rebuild`) are now compiled by the Nix flake
+and shipped inside the boot initramfs as standalone musl-static
+binaries. The boot VM gains the full Phase 1 surface end-to-end:
+`nv-pkg install` / `null eval` / `nv-rebuild switch`.
+
+**New derivations:**
+
+- `bootstrap/pkgs/null.nix` — `.null` CLI (1.1 MB stripped).
+- `bootstrap/pkgs/nv-pkg.nix` — package manager (1.1 MB stripped).
+- `bootstrap/pkgs/nv-rebuild.nix` — activation engine (1.6 MB stripped).
+
+Each uses `pkgsStatic.rustPlatform.buildRustPackage`. Verified
+`--version` runs on host; binaries are pure musl statics (no
+`/lib/ld-musl-*` runtime dep, no `/nix/store` closure shipped).
+
+**`bootstrap/pkgs/default.nix`** — exposes `nullLang`, `nv-pkg`,
+`nv-rebuild` attrs (the `nullLang` name avoids the bare-`null` Nix
+keyword clash; the binary on disk is still `null`). All three are
+passed through to `initramfs` via `callPackage`.
+
+**`bootstrap/pkgs/initramfs.nix`** — `cp`s the three binaries into
+`/bin` alongside `zero`. The init script:
+
+- Adds `/var/lib/nv-config/` to the persistent-`/var` mkdir set.
+- Symlinks `/etc/nullvoid` → `/var/lib/nv-config/` on first boot so
+  the agent-authored `system.null` survives reboots.
+- Bootstraps an empty `generation-0/bin/` under
+  `/var/lib/nv-system/` and points `current` at it, so
+  `/run/current/bin` resolves to a real directory before the agent
+  ever runs `nv-rebuild switch`. The first real generation will be
+  `generation-1`.
+- Creates `/run/` and symlinks `/run/current` →
+  `/var/lib/nv-system/current` as specified in CONTRACTS §3.2.
+- Bumps `PATH` to `/run/current/bin:/bin`, so a successful
+  `nv-rebuild switch` immediately shadows the initramfs `/bin`.
+- Banner now reports `null` / `nv-pkg` / `nv-rbld` versions.
+
+**`pkgsStatic.rustPlatform.buildRustPackage` + `cargoLock.lockFile`
+hit a crates.io regression** — the registry API endpoint
+(`crates.io/api/v1/crates/<n>/<v>/download`) now returns HTTP 403
+without a `User-Agent` header, and nixpkgs's `importCargoLock`-based
+per-crate `fetchurl` doesn't set one. Switched to `cargoHash`, which
+runs `cargo fetch` inside a fixed-output derivation — cargo's own
+HTTP client sets a UA, the registry serves the bytes, and the
+vendor tree is hashed as one FOD blob. Trade: a `cargoHash` line
+per crate (set to `lib.fakeHash`, rebuild, paste the `got:` line
+back) instead of an auto-derived hash from the lockfile. The
+mechanism is the nixpkgs ≥25.05 default
+(`useFetchCargoVendor = true` is implicit), no explicit flag
+needed.
+
+**Initramfs growth:** unchanged class — still 1.1 GB compressed.
+The three binaries together add ~4 MB.
+
+**Not yet wired and deferred to a future session:**
+
+- A default `/etc/nullvoid/system.null` template — the agent is
+  expected to author it the first time. Without a file, `nv-rebuild
+  check` will refuse to evaluate; that's the intended starting
+  point of the §5 demo flow.
+- `examples/*.null` (v1-shaped) still present under `null/`, not
+  yet migrated to v2.
+- `null doctor` / `null fix --plan --json` (SPEC §6) still absent.
+
 ### Revised — Layer 3 language decision (2026-05-28, same day as lock)
 
 The 2026-05-28 lock *"Layer 3 DSL is ZeroLang itself, no translator"*

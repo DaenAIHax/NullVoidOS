@@ -2,6 +2,9 @@
 , cpio, gzip
 , pkgsStatic
 , zerolang
+, nullLang
+, nv-pkg
+, nv-rebuild
 , claude-code
 , cacert
 , bash
@@ -70,9 +73,24 @@ let
       if mount -t ext4 /dev/vda /var 2>/dev/null; then
         VAR_OK=yes
         mkdir -p /var/lib /var/log /var/tmp /var/lib/nv-store \
-                 /var/lib/nv-system /var/lib/dropbear
+                 /var/lib/nv-system /var/lib/dropbear /var/lib/nv-config
       fi
     fi
+
+    # Phase 1 system layout (CONTRACTS §3.2). /etc/nullvoid/system.null
+    # is where the agent declares system state; live it on /var so it
+    # survives reboots. Bootstrap an empty generation-0 so /run/current
+    # resolves to a real directory before the agent ever runs
+    # `nv-rebuild switch` (the first real generation is then generation-1).
+    if [ "$VAR_OK" = yes ]; then
+      [ -e /etc/nullvoid ] || ln -s /var/lib/nv-config /etc/nullvoid
+      if [ ! -e /var/lib/nv-system/current ]; then
+        mkdir -p /var/lib/nv-system/generation-0/bin
+        ln -snf generation-0 /var/lib/nv-system/current
+      fi
+    fi
+    mkdir -p /run
+    ln -snf /var/lib/nv-system/current /run/current
 
     # 9P share: host's ~/.claude/ → /root/.claude/ (RW).
     # Carries the Max-subscription credentials so `claude` inside the
@@ -145,7 +163,10 @@ let
     export SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt
     export HOME=/root
     export TERM=xterm-256color
-    export PATH=/bin
+    # /run/current/bin first so a `nv-rebuild switch` immediately shadows
+    # /bin equivalents. Empty on first boot (generation-0 bin/ is empty)
+    # so this is a no-op until the agent activates a real generation.
+    export PATH=/run/current/bin:/bin
 
     echo ""
     echo "================================================="
@@ -156,6 +177,9 @@ let
     echo "IP:       ''${IP:-none}"
     echo "zero:     $(zero --version 2>/dev/null || echo missing)"
     echo "claude:   $(claude --version 2>/dev/null || echo missing)"
+    echo "null:     $(null --version 2>/dev/null || echo missing)"
+    echo "nv-pkg:   $(nv-pkg --version 2>/dev/null || echo missing)"
+    echo "nv-rbld:  $(nv-rebuild --version 2>/dev/null || echo missing)"
     echo "python:   $(python3 --version 2>/dev/null || echo missing)"
     echo "rustc:    $(rustc --version 2>/dev/null | awk '{print $1,$2}' || echo missing)"
     echo "node:     $(node --version 2>/dev/null || echo missing)"
@@ -244,6 +268,12 @@ runCommand "nullvoid-initramfs" {
   done
 
   cp ${zerolang}/bin/zero root/bin/
+
+  # Phase 1 system tooling: copied as standalone musl-static binaries.
+  # No /nix/store dependency, no closure shipping — they just work.
+  cp ${nullLang}/bin/null root/bin/
+  cp ${nv-pkg}/bin/nv-pkg root/bin/
+  cp ${nv-rebuild}/bin/nv-rebuild root/bin/
 
   # Ship the agent runtime closure (claude-code + bash) into /nix/store.
   for p in $(cat ${agentClosure}/store-paths); do
