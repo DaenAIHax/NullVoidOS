@@ -56,6 +56,13 @@ let
     mount -t proc proc /proc 2>/dev/null
     mount -t sysfs sysfs /sys 2>/dev/null
     mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+    # devpts so anything that opens a PTY (dropbear sessions, `script`,
+    # tmux-style multiplexers, …) finds /dev/pts/N slaves. devtmpfs above
+    # only creates /dev/ptmx; the slave nodes need devpts mounted on
+    # /dev/pts. Without this, any PTY-allocating program fails with
+    # ENOENT on the slave open and the operation looks unrelated.
+    mkdir -p /dev/pts
+    mount -t devpts devpts /dev/pts 2>/dev/null || true
 
     # Silence late kernel info-level messages so they don't disrupt the prompt.
     dmesg -n 1 2>/dev/null || true
@@ -250,6 +257,19 @@ let
     root::0:0:99999:7:::
     nobody:!:0:0:99999:7:::
   '';
+  # /etc/shells — the system's whitelist of valid login shells. Looked
+  # up via getusershell(3) by dropbear (and any other service that
+  # validates the shell column in /etc/passwd). When /etc/shells is
+  # missing, glibc returns a hardcoded default of `{/bin/sh, /bin/csh}`,
+  # which does not include `/bin/bash`. Dropbear then rejects every
+  # login with "user 'root' has invalid shell, rejected" — and since
+  # /etc/passwd points root at /bin/bash (Phase 0 (a) ships bash for
+  # claude-code tool-use), SSH from the host is permanently broken
+  # without this file.
+  shellsFile = writeText "shells" ''
+    /bin/sh
+    /bin/bash
+  '';
 
   # Compute /bin symlinks for the developer substrate. Each package
   # contributes whatever it exports in its $out/bin (typically the
@@ -330,6 +350,7 @@ runCommand "nullvoid-initramfs" {
   cp ${passwdFile} root/etc/passwd
   cp ${groupFile}  root/etc/group
   cp ${shadowFile} root/etc/shadow
+  cp ${shellsFile} root/etc/shells
   chmod 600 root/etc/shadow
 
   cp ${udhcpcScript} root/etc/udhcpc/default.script

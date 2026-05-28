@@ -8,42 +8,79 @@ applicable.
 
 ## [Unreleased]
 
-### Added — Phase 1 stretch test scaffolded (2026-05-28)
+### Milestone — Phase 1 stretch test passes (real Rust ELF + pkgs ambient) (2026-05-28)
 
-`bootstrap/system/demos/hello-rust/` is the reproducible follow-up to
-the Phase 1 milestone demo. It's a self-contained shell script
-(`stretch-test.sh`) that, when run inside the booted VM, exercises
-two gaps the original manual demo left open:
+`bootstrap/system/demos/hello-rust/stretch-test.sh` was driven
+end-to-end inside the booted VM. Both gaps the original Phase 1 demo
+left open are now closed:
 
-1. A **real ELF binary** produced by `cargo build --release` inside
-   the VM, not a bash-script payload. The dev substrate (rustc, cargo,
-   coreutils, …) is already shipped in the initramfs closure, so the
-   build runs with no host-side cross-compilation.
-2. The **`pkgs.<name>` ambient** projection (CONTRACTS §5.4) used in
-   `system.null`, instead of the literal `"hello-rust-0.1.0"` string
-   the original demo used. This forces the `.null` evaluator to call
-   `nv-pkg list --json` at eval-start and rebuild the ambient attrset
-   from the live store contents.
+1. **Real ELF binary.** `cargo build --release` (rustc 1.95.0 from the
+   dev substrate, host-target nixpkgs glibc) compiled `hello-rust` in
+   23.97s into a 301KB binary. No bash-script stand-in, no host-side
+   cross-compilation.
+2. **`pkgs.<name>` ambient exercised.** `system.null` referenced the
+   package as `packages = [ pkgs.hello-rust ]`. The `.null` evaluator
+   resolved it against the live `nv-pkg list --json` (which then
+   listed both `hello-nv-0.1.0` from the earlier demo and the new
+   `hello-rust-0.1.0`, confirming the store persists across reboots).
+   The emitted `SystemManifest` carried the resolved literal
+   `"hello-rust-0.1.0"` in its `packages` array.
 
-The script writes its source tree, manifest, and tarball under
-`/tmp/hello-rust-build/`, with `CARGO_HOME=/var/lib/cargo` so the
-registry cache persists across reboots. It is idempotent — re-runs
-produce content-addressed store paths that collapse to the same
-location (CONTRACTS §1.3) and bump the generation counter cleanly.
+The full loop ran clean:
 
-Not yet covered (deliberately deferred, documented in the README):
+```
+cargo build --release             → 301 KB ELF in 23.97s
+tar czf hello-rust-0.1.0.nvpkg    → 147 KB tarball
+nv-pkg install                    → /var/lib/nv-store/b6b0bd5dbdf152d08fe0138fc4cb711c-hello-rust-0.1.0
+null check + null eval            → SystemManifest with pkgs.hello-rust resolved
+nv-rebuild switch                 → /var/lib/nv-system/current -> generation-2
+which hello-rust                  → /run/current/bin/hello-rust
+hello-rust                        → ran, printed pid/argv0/unix_ts/path_head
+```
 
-- Static-musl target — the binary still links against the dev
-  substrate's nixpkgs glibc. A future toolchain bump (musl target
-  added to the substrate) lets this script append
-  `--target x86_64-unknown-linux-musl` and produce a true static ELF.
+The generation counter bumped from 1 (from the previous demo) to 2,
+confirming the activation engine's accumulator is monotonic across
+reboots and the previous package (`hello-nv`) stayed installed but is
+no longer in the active manifest — it's not garbage-collected, just
+absent from `/run/current/bin/`, exactly as CONTRACTS §3.4 specifies.
+
+Still not exercised (deliberately deferred, documented in the demo's
+README):
+
+- Static-musl target — needs `x86_64-unknown-linux-musl` added to the
+  rustc target list in `devSubstrate`.
 - Multi-package `deps` resolution — single-package install here.
-- Runtime capability enforcement — still recorded-only at Phase 1
-  (CONTRACTS §4).
+- Runtime capability enforcement — recorded-only in Phase 1.
 
-Execution of the script is gated on a VM boot, which is a host-side
-action the user controls (the boot mounts host SSH + Claude
-credentials over 9P). The script itself is hermetic from that point on.
+### Fix — `/etc/shells` + `/dev/pts` mount for PTY-aware services (2026-05-28)
+
+Surfaced while driving the stretch test from the host: SSH into the
+VM was failing in two distinct ways that the original Phase 0 (a)
+boot had never tripped on (the interactive console seriale never
+opened a fresh PTY or called `getusershell()`).
+
+- **`/etc/shells` missing.** Dropbear validates each user's login
+  shell against `getusershell(3)`. When `/etc/shells` does not exist,
+  glibc returns a hardcoded `{/bin/sh, /bin/csh}` and dropbear
+  rejects the login with *"user 'root' has invalid shell, rejected"*.
+  Since `/etc/passwd` points root at `/bin/bash` (Phase 0 (a)
+  contingency 1), every SSH from the host was permanently broken.
+  Fixed by shipping `/etc/shells` with `/bin/sh` and `/bin/bash`.
+- **`/dev/pts` not mounted.** `devtmpfs` populates `/dev/ptmx` but
+  the slave nodes (`/dev/pts/N`) only appear under a separate
+  `devpts` mount. Without it, any PTY-allocating program (`script`,
+  interactive ssh sessions, tmux-like multiplexers) fails on the
+  slave-open with ENOENT and the failure surfaces as something
+  unrelated. Init now does `mkdir -p /dev/pts && mount -t devpts
+  devpts /dev/pts` next to the other early filesystem mounts.
+
+Both touch `bootstrap/pkgs/initramfs.nix`. A rebuild
+(`nix build .#initramfs`) is needed before the next boot picks them
+up. Known follow-up: even with these two fixes, dropbear still exits
+with *"Failed to set euid"* after auth — likely a privsep / dropped-
+privilege issue in the nixpkgs build that the in-VM agent never hit
+(it uses the seriale directly). Tracked separately; SSH from host
+is not on the Phase 1 critical path.
 
 ### Milestone — Phase 1 demo passes end-to-end (2026-05-28)
 
