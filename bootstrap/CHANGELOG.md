@@ -8,6 +8,72 @@ applicable.
 
 ## [Unreleased]
 
+### Milestone — Phase 1 demo passes end-to-end (2026-05-28)
+
+The six-step demo from CONTRACTS §5 — author → package → install
+→ declare → switch → use — closes on the first try inside the
+boot VM. The three Rust crates scaffolded by parallel sub-agents
+in the previous session (`nv-pkg`, `null`, `nv-rebuild`) integrate
+cleanly across the contracts they share, with no manual
+glue-fixing between them.
+
+Verified inside `nix run ./bootstrap`:
+
+1. A package `hello-nv-0.1.0` was authored at `/tmp/pkg-src/`
+   (manifest.json + `payload/bin/hello-nv`, a shell-script
+   stand-in for a compiled binary).
+2. `tar czf` produced a 447-byte `.nvpkg`.
+3. `nv-pkg install` placed it at
+   `/var/lib/nv-store/0fd5224c1a7c2b17f48218dcea2e3973-hello-nv-0.1.0/`.
+4. A minimal `system.null` was written to `/etc/nullvoid/`:
+   ```null
+   {
+     hostname = "nullvoid";
+     caps = [ !tty ];
+     packages = [ "hello-nv-0.1.0" ];
+     services = {};
+     environment = {};
+   }
+   ```
+5. `null check` exited 0 silently; `null eval` emitted a clean
+   `SystemManifest` JSON with the `!tty` capability serialised as
+   `{"path":["tty"],"arg":null}`.
+6. `nv-rebuild check` validated:
+   `manifest ok: hostname=nullvoid`
+   `[ok] hello-nv-0.1.0 -> /var/lib/nv-store/...`
+7. `nv-rebuild switch` activated generation 1:
+   `building generation 1...`
+   `activated: /var/lib/nv-system/current -> generation-1`
+8. `nv-rebuild generations` listed `generation-0` and
+   `* generation-1 (current)`.
+9. `/run/current/bin/hello-nv` resolved through the symlink chain
+   to `/var/lib/nv-store/.../payload/bin/hello-nv`, `which`
+   confirmed PATH lookup, and the binary ran:
+   `hello from a package authored at 2026-05-28T18:15:57Z`.
+
+This is the falsifiable test of Phase 1. The declarative loop
+(edit `system.null` + `nv-rebuild switch` → atomic PATH change)
+is closed end-to-end without an agent in the loop.
+
+**Observations from the demo:**
+
+- `null check` is silent on success (Unix convention). For
+  agent-facing affordance, a future `--verbose` or non-JSON
+  human summary on success would reduce "did it do anything?"
+  doubt.
+- `nv-rebuild generations` still lists `generation-0` (the empty
+  bootstrap directory the initramfs creates at first boot).
+  Cosmetic; a Phase 2 `nv-gc` would prune it.
+- The `pkgs` ambient (SPEC §5.4 — populated by
+  `nv-pkg list --json`) was not exercised: the demo references
+  the package as a literal `"hello-nv-0.1.0"` string. Future
+  test should use `packages = [ pkgs.hello-nv ];`.
+- The package payload is a `bash`-script, not a compiled
+  binary. The natural next stretch test is to compile a real
+  Rust binary inside the VM (the dev substrate has rustc/cargo
+  end-to-end), package it, switch, and run it — that exercises
+  the build path inside the lab, not just the install path.
+
 ### Fix — /var probe is mount-first, not blkid-first (2026-05-28)
 
 The smoke-test that verified the Phase 1 wire-up surfaced a latent
