@@ -22,7 +22,9 @@ let
     echo ""
     echo "Pipeline alive. Dropping to busybox sh."
     echo "Try: zero --help"
-    echo "Quit: type 'poweroff' inside, or Ctrl-A x from host."
+    echo "Quit: type 'poweroff -f' inside, or Ctrl-A x from host."
+    echo "      (-f bypasses init and calls reboot(2) directly,"
+    echo "       which our shell-as-PID-1 setup requires)"
     echo ""
 
     # Respawn the shell instead of exec'ing it — otherwise `exit` (or any
