@@ -58,6 +58,27 @@ applicable.
   task #7). Includes `patchShebangs scripts` workaround for the Nix
   build sandbox.
 - `bootstrap/pkgs/default.nix`: exposes `kernel` alongside `zerolang`.
+- `bootstrap/pkgs/initramfs.nix` added — Phase 0 variant (d) initramfs.
+  Assembles cpio.gz from: static-musl busybox + ~40 standard symlinks,
+  the static `zero` binary, and an `/init` sh script that mounts
+  `/proc /sys /dev`, prints kernel/hostname/zero versions, and drops
+  to a busybox shell. Built via `runCommand` with `cpio` + `gzip` from
+  nativeBuildInputs. Final size: **1.2 MB compressed**.
+- `bootstrap/pkgs/default.nix`: exposes `initramfs`, wires it to the
+  in-tree `zerolang` via `inherit (self) zerolang`.
+
+### Milestone — Phase 0 boot pipeline alive (variant d)
+
+End-to-end QEMU boot succeeds: SeaBIOS → kernel (1.5 MB bzImage) →
+initramfs (1.2 MB cpio.gz) → `/init` → busybox shell. `zero --version`
+runs inside the VM and prints `zero 0.1.4`. No AI in the loop yet —
+this proves the kernel + initramfs + userland pipeline before adding
+the agent backend.
+
+Outstanding for full Phase 0 demo:
+- Variant (b): agent loop via curl + Anthropic API. Tracked as task #9.
+- Cosmetic: `can't access tty; job control turned off` warning from
+  busybox sh. Fix later with `setsid cttyhack`.
 
 ## 2026-05-28
 
