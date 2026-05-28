@@ -8,6 +8,43 @@ applicable.
 
 ## [Unreleased]
 
+### Added — Phase 1 stretch test scaffolded (2026-05-28)
+
+`bootstrap/system/demos/hello-rust/` is the reproducible follow-up to
+the Phase 1 milestone demo. It's a self-contained shell script
+(`stretch-test.sh`) that, when run inside the booted VM, exercises
+two gaps the original manual demo left open:
+
+1. A **real ELF binary** produced by `cargo build --release` inside
+   the VM, not a bash-script payload. The dev substrate (rustc, cargo,
+   coreutils, …) is already shipped in the initramfs closure, so the
+   build runs with no host-side cross-compilation.
+2. The **`pkgs.<name>` ambient** projection (CONTRACTS §5.4) used in
+   `system.null`, instead of the literal `"hello-rust-0.1.0"` string
+   the original demo used. This forces the `.null` evaluator to call
+   `nv-pkg list --json` at eval-start and rebuild the ambient attrset
+   from the live store contents.
+
+The script writes its source tree, manifest, and tarball under
+`/tmp/hello-rust-build/`, with `CARGO_HOME=/var/lib/cargo` so the
+registry cache persists across reboots. It is idempotent — re-runs
+produce content-addressed store paths that collapse to the same
+location (CONTRACTS §1.3) and bump the generation counter cleanly.
+
+Not yet covered (deliberately deferred, documented in the README):
+
+- Static-musl target — the binary still links against the dev
+  substrate's nixpkgs glibc. A future toolchain bump (musl target
+  added to the substrate) lets this script append
+  `--target x86_64-unknown-linux-musl` and produce a true static ELF.
+- Multi-package `deps` resolution — single-package install here.
+- Runtime capability enforcement — still recorded-only at Phase 1
+  (CONTRACTS §4).
+
+Execution of the script is gated on a VM boot, which is a host-side
+action the user controls (the boot mounts host SSH + Claude
+credentials over 9P). The script itself is hermetic from that point on.
+
 ### Milestone — Phase 1 demo passes end-to-end (2026-05-28)
 
 The six-step demo from CONTRACTS §5 — author → package → install
