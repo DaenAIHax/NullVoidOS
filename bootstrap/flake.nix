@@ -118,17 +118,25 @@
               echo "======================================================"
               echo ""
 
-              # `-cpu max` exposes the modern x86-64 instruction set
-              # (AVX2, BMI2, FMA, ...) that nixpkgs glibc and the
-              # bundled Node.js are compiled to require — without it
-              # `claude --version` aborts with "Illegal instruction"
-              # inside the VM, because the default `qemu64` CPU is
-              # roughly Athlon 64-era.
+              # Pick KVM if /dev/kvm is usable, fall back to TCG with
+              # -cpu max. KVM is ~10-100x faster than TCG for Node.js
+              # / Claude Code (TCG has to interpret every AVX2 op).
+              # Either way we expose modern x86-64 (AVX2, BMI2, FMA),
+              # because the nixpkgs glibc + bundled Node abort with
+              # "Illegal instruction" on the default `qemu64` CPU.
+              if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+                ACCEL_ARGS="-accel kvm -cpu host"
+                echo "  accel: KVM (-cpu host)"
+              else
+                ACCEL_ARGS="-accel tcg -cpu max"
+                echo "  accel: TCG (-cpu max) — slow, /dev/kvm not usable"
+              fi
+
               exec ${pkgs.qemu_kvm}/bin/qemu-system-x86_64 \
                 -kernel ${customPkgs.kernel}/bzImage \
                 -initrd ${customPkgs.initramfs}/initramfs.cpio.gz \
                 -append "console=ttyS0 quiet" \
-                -cpu max \
+                $ACCEL_ARGS \
                 -netdev user,id=net0 \
                 -device virtio-net-pci,netdev=net0 \
                 -virtfs "local,path=$CRED_DIR,mount_tag=claudefs,security_model=mapped-xattr" \

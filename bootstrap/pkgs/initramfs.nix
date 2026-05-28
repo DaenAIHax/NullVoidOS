@@ -115,9 +115,13 @@ let
     echo ""
 
     # Respawn the shell instead of exec'ing it — otherwise `exit` (or any
-    # accidental death) kills PID 1 and the kernel panics.
+    # accidental death) kills PID 1 and the kernel panics. `setsid
+    # cttyhack` gives the shell a controlling tty so Ctrl-C only
+    # interrupts the foreground program (claude, zero, ...) instead of
+    # leaving the serial in raw mode after the TUI catches SIGINT and
+    # forgets to restore canonical mode.
     while true; do
-      /bin/sh
+      setsid cttyhack /bin/sh
       echo ""
       echo "[shell exited — respawning in 2s, or Ctrl-A x to quit QEMU]"
       sleep 2

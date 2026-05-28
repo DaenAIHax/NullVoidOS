@@ -203,6 +203,33 @@ Fix in two pieces:
   may now mutate the host's `~/.claude/` (token refresh + history
   writes). Accepted for Phase 0; a multi-tenant separation comes later.
 
+### Performance + TTY polish (after first interactive Claude session)
+
+User confirmed Phase 0 (a) works interactively (`claude` answers
+prompts inside the VM), but flagged two issues:
+
+- `claude` writes responses slowly — the boot-vm app was running in
+  TCG (software emulation), which has to interpret every AVX2/BMI2
+  instruction emitted by the nixpkgs glibc + bundled Node.js.
+- Hitting `Ctrl-C` inside the Claude TUI left the serial terminal
+  wedged in raw mode; the user had to close the host terminal window
+  to recover. Symptom of the earlier `can't access tty; job control
+  turned off` warning — the shell had no controlling tty, so signals
+  bypassed its line discipline.
+
+Fixes:
+
+- `bootstrap/flake.nix` (boot-vm app): probes `/dev/kvm` at runtime
+  and switches to `-accel kvm -cpu host` when usable (still falls
+  back to `-accel tcg -cpu max` if not). KVM brings Node.js workloads
+  back to native speed.
+- `bootstrap/pkgs/initramfs.nix`: respawn loop now launches the
+  shell as `setsid cttyhack /bin/sh` instead of bare `/bin/sh`. The
+  `cttyhack` busybox applet grabs the first available tty
+  (`/dev/console` here) and sets it as the controlling terminal, so
+  job control works and TUIs that catch `SIGINT` (Claude Code's Ink
+  UI) can restore the terminal cleanly on exit.
+
 ### Polish (from first interactive session)
 
 - `bootstrap/pkgs/initramfs.nix`: replaced the hand-curated busybox
