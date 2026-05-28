@@ -79,6 +79,15 @@ stdenv.mkDerivation rec {
       --enable NETDEVICES \
       --enable ETHERNET
 
+    # ACPI — so `poweroff` from inside the VM actually powers it off
+    # (without ACPI the kernel halts the CPU but QEMU stays alive).
+    scripts/config \
+      --enable ACPI \
+      --enable ACPI_BUTTON \
+      --enable ACPI_PROCESSOR \
+      --enable PNP \
+      --enable PNPACPI
+
     # Default hostname before init takes over.
     scripts/config --set-str DEFAULT_HOSTNAME nullvoid
 

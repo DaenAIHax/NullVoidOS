@@ -116,6 +116,12 @@ Outstanding for full Phase 0 demo:
   `poweroff` as the in-VM exit command (busybox applet, signals the
   kernel; QEMU `-no-reboot` makes that translate into a clean QEMU
   exit), with `Ctrl-A x` as the host-side fallback.
+- `bootstrap/pkgs/kernel.nix`: enabled `CONFIG_ACPI`, `CONFIG_ACPI_BUTTON`,
+  `CONFIG_ACPI_PROCESSOR`, `CONFIG_PNP`, `CONFIG_PNPACPI`. Without
+  ACPI, busybox `poweroff` puts the kernel in halt but QEMU keeps
+  running (the VM appears frozen). With ACPI, `poweroff` issues S5
+  power-off, QEMU detects it and exits cleanly. bzImage grew from
+  1.5 MB → 1.7 MB.
 
 ## 2026-05-28
 
