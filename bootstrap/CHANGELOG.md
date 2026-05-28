@@ -8,6 +8,31 @@ applicable.
 
 ## [Unreleased]
 
+### Fix — /var probe is mount-first, not blkid-first (2026-05-28)
+
+The smoke-test that verified the Phase 1 wire-up surfaced a latent
+init bug. The /var bootstrap used `blkid /dev/vda` as the gate
+between "mount existing fs" and "format then mount". `blkid` was
+false-negativing on the existing qcow2 — likely because the
+initramfs has no udev and blkid wanted a cache directory under
+`/run` that the init script hadn't created yet — pushing init into
+the mkfs branch every boot. `mkfs.ext4 -q` (no `-F`) then prompted
+`Proceed anyway? (y,N)` on the existing fs and would have blocked
+PID 1 forever; only the test's first piped character ("e" from
+`echo`) accidentally answering "no" let the fs survive.
+
+`bootstrap/pkgs/initramfs.nix`: switched to a mount-first probe.
+The actual measure of "is this a usable ext4 fs?" is whether
+`mount -t ext4` succeeds. Only fall through to `mkfs.ext4 -F` when
+the mount truly failed; `-F` is safe at that point because there
+is nothing to preserve on /dev/vda anyway.
+
+Both branches verified by smoke-boot: existing-fs path mounts
+cleanly with no mkfs noise, fresh-format path (qcow2 deleted)
+runs `mkfs.ext4 -F`, mounts the new fs, and creates all four
+Phase 1 directories under /var/lib/ (`dropbear nv-config nv-store
+nv-system`).
+
 ### Milestone — Phase 1 tooling wired into the initramfs (2026-05-28)
 
 The three Phase 1 crates scaffolded in the previous session
