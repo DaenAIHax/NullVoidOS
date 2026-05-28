@@ -9,6 +9,7 @@ pub mod check;
 pub mod codegen;
 pub mod diagnostics;
 pub mod lexer;
+pub mod package;
 pub mod parser;
 
 use diagnostics::Diag;

@@ -284,6 +284,10 @@ A superset of `.null`'s CLI (`null/SPEC.md` §6):
 null build <file.null>          compile to ELF via C; provenance + CAS
 null run   <file.null>          build (if stale) then execute
 null emit-c <file.null>         dump the generated C (inspection)
+null package <file.null> --name N --version V [--author A] [--install]
+                                build, then emit `<N>-<V>.nvpkg` (manifest +
+                                ELF + recipe.null). Capabilities derive from
+                                main's `uses`. `--install` → `nv-pkg install`.
 
 # Declaration mode (unchanged from .null v2)
 null check <file.null>          typecheck against schema
@@ -399,3 +403,11 @@ agent writes hello.null
 When that loop closes, every later feature in §11 is "turn the crank."
 Discipline that keeps the project alive: **always have a working loop and
 widen it; never build TLS before hello-world runs.**
+
+**Status (2026-05-28):** the loop is green, and `null package` extends it to
+the CAS: it emits a CONTRACTS.md §1.1 `.nvpkg` (manifest + `payload/bin/<name>`
++ `recipe.null`), with `capabilities` derived from `main`'s `uses` and
+provenance (`authoredBy`, `createdAt`, source/C `sha256`) in the manifest.
+`nv-pkg install` then content-addresses it — closing the CAS+provenance half
+of this section. The `.null` source ships inside the package, so the artifact
+carries the exact recipe that produced it.

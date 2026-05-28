@@ -1,6 +1,8 @@
 //! Front-half pipeline tests (parse + check + C emission). The cc/ELF/run
 //! back half (SPEC §13) is exercised by `nullang run examples/hello.null`.
 use nullang::compile_to_c;
+use nullang::package::{capabilities_of_main, Manifest};
+use nullang::parse_only;
 
 const HELLO: &str = r#"
 fn greeting() -> String { "hi" }
@@ -173,4 +175,36 @@ fn main(world: World) -> Int uses !tty { print(world, "x"); 0 }
 "#;
     let err = compile_to_c(src, "dup.null").expect_err("symbol collision");
     assert_eq!(format!("{:?}", err.code), "Sch010");
+}
+
+#[test]
+fn capabilities_derived_from_main_uses() {
+    let src = r#"
+fn main(world: World) -> Int uses !net, !fs.read."/etc", !tty {
+  print(world, "x");
+  0
+}
+"#;
+    let f = parse_only(src, "caps.null").expect("parses");
+    let caps = capabilities_of_main(&f);
+    // Mapped to CONTRACTS.md §4 strings, in declaration order.
+    assert_eq!(caps, vec!["net", "fs:read:/etc", "tty"]);
+}
+
+#[test]
+fn manifest_is_schema_v1_nullang() {
+    let m = Manifest::new(
+        "notes",
+        "0.1.0",
+        "desc",
+        "agent-x",
+        "2026-01-01T00:00:00Z",
+        vec!["tty".to_string()],
+        vec!["nullang 0.1.0".to_string()],
+    );
+    let j = m.to_json();
+    assert!(j.contains("\"schemaVersion\": 1"));
+    assert!(j.contains("\"sourceLanguage\": \"nullang\""));
+    assert!(j.contains("\"exposedBins\""));
+    assert!(j.contains("notes"));
 }

@@ -8,6 +8,24 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang — `null package` closes the CAS+provenance half of §13 (2026-05-28)
+
+`nullang package <file.null> --name N --version V [--author A] [--install]`
+builds the ELF, then emits a CONTRACTS.md §1.1 `.nvpkg` (gzip tar with
+`manifest.json` + `payload/bin/<name>` + `recipe.null`). The package's
+`capabilities` are **derived from `main`'s `uses` clause** — the language's
+static effect set becomes the package's declared capability set, saluting the
+declaration/construction seam. Provenance lives in the manifest: `authoredBy`,
+`createdAt`, `sourceLanguage: "nullang"`, and `buildSteps` carrying the
+`source` and `emitted-c` SHA-256 hashes; the exact `.null` recipe ships inside
+the package. With `--install`, shells out to `nv-pkg install`, which
+content-addresses the tarball (the CAS).
+
+Default is emit-only (Nullang builds, `nv-pkg` owns the store — clean contract
+boundary); `--install` is opt-in. 14 integration tests pass (added capability
+mapping + manifest shape). Verified: `package examples/hello.null` produces a
+valid `.nvpkg` whose manifest lists `capabilities: ["tty"]`.
+
 ### Re-lock — Layer 3 is Nullang (one language, two modes) + Nullang v0.1 (2026-05-28)
 
 Reverses the same-day Layer 3 lock (*".null v2, not Zero"*). The level
