@@ -77,6 +77,9 @@ the agent backend.
 
 Outstanding for full Phase 0 demo:
 - Variant (b): agent loop via curl + Anthropic API. Tracked as task #9.
+  Operational plan written to `bootstrap/PHASE0_B_PLAN.md` — substrate
+  additions, init script, QEMU invocation, edge cases, verification
+  checklist. Delete that file when (b) ships.
 - Cosmetic: `can't access tty; job control turned off` warning from
   busybox sh. Fix later with `setsid cttyhack`.
 
