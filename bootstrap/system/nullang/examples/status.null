@@ -1,0 +1,18 @@
+# nullang — enums, symbols, and exhaustive `match` (SPEC §4.2, §4.5).
+# Exercises: an enum declaration, an enum-typed parameter, a `match` over
+# all variants, a symbol value passed as an argument.
+
+enum Restart = .always | .on_failure | .never;
+
+fn code(r: Restart) -> Int {
+  match r {
+    .always => 0,
+    .on_failure => 1,
+    .never => 2,
+  }
+}
+
+fn main(world: World) -> Int uses !tty {
+  print(world, "selecting restart policy");
+  code(.on_failure)          # → exit 1
+}

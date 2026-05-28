@@ -1,0 +1,401 @@
+# Nullang — Specification v0.1
+
+> Status: design draft. Authored 2026-05-28. Pre-implementation.
+>
+> Scope: the **native construction language** of NullVoidOS. Nullang is
+> *one language with two modes* — **construction** (full: functions,
+> effects, compiles to native code) and **declaration** (restricted: the
+> `.null` profile, eval-only). This document specs the construction core
+> and the agent-native foundation shared by both modes. The declaration
+> profile is `null/SPEC.md` (`.null` v2), re-framed here as a subset (§3).
+
+## 0 — Why Nullang exists
+
+`DESIGN.md` locked *"Layer 3 DSL is not Zero"* on 2026-05-28. That decision
+was right **given Zero**. Nullang changes the premise: NullVoidOS cannot
+depend on an external language (Zero / Vercel Labs) whose death forces a
+rewrite of Layers 1–4. The language must be ours and must grow with the OS.
+
+Two goals, kept deliberately separate — conflating them is how ambitious
+projects fail to ship:
+
+- **Sovereignty.** NullVoidOS owns the spec and the compiler. No external
+  project can kill the OS. *Needed now.*
+- **Self-sufficiency.** The ecosystem (stdlib, TLS, crypto, …) is
+  reimplemented in Nullang, one library at a time, **only when the OS
+  actually needs each piece**. *A destination reached over years, never
+  big-bang.*
+
+Sovereignty does **not** require self-sufficiency. Nullang delivers the
+first immediately. The second is the long arc: when the OS needs a library,
+an agent reads the logical flow of an existing implementation and rebuilds
+it in Nullang — freely for low-risk code (parsers, data structures,
+HTTP/1.1, file formats), and **last, with a verification strategy**, for
+high-risk code (TLS, crypto, anything timing/side-channel sensitive). Until
+then, high-risk capabilities stay wrapped at the substrate (Layer 1).
+
+**One language, not two.** The earlier Zero/`.null` split is preserved as
+two *modes of one grammar*, not two grammars (§3). A declaration is simply
+Nullang with functions, bindings, control flow, and effects forbidden.
+
+## 1 — The five tricks (inherited)
+
+Nullang keeps the recipe that makes a never-seen language usable by an agent:
+
+| Trick | Nullang realization |
+|---|---|
+| Compiler emits structured JSON, never prose-only | NDJSON diagnostics on stderr, both modes (§9) |
+| Stable error codes + typed repair IDs | `DiagCode` namespaces + closed repair set (§9) |
+| `<tool> explain CODE` reads embedded docs | `null explain CODE` from embedded skill bundle |
+| Version-matched skill bundles | `null skills list` / `get` (§8) |
+| Effects in signatures / capabilities visible | `uses` clause + `World`; same `!cap` vocabulary as `.null` §5.5 (§5) |
+| One way to express each concept | §10 anti-features hold even in construction mode |
+| Small surface, no historical baggage | v0.1 omits generics, traits, Float, borrow checker (§11) |
+| Token-efficient | emit C, no heavy backend; small binary, fast startup (§7) |
+
+## 2 — Non-negotiable foundation: agent-native tooling
+
+This is the proven part of the project and it is **load-bearing** — per
+`null/SPEC.md` §10, *"without typed repair IDs the rest of the recipe is
+theater."* Nullang inherits, unchanged:
+
+1. **NDJSON diagnostics** on stderr — one JSON object per diagnostic.
+2. **Stable error codes** in fixed namespaces (§9.2).
+3. **Typed repair IDs** — a repair is an AST transformation applied by
+   `id + args`, never string manipulation. The set is closed and versioned.
+4. **Embedded skills** — the full language model is recoverable from the
+   binary alone, no network (`null skills get language`).
+
+A feature that cannot emit a structured diagnostic with a repair path does
+not ship. This section overrides convenience everywhere it conflicts.
+
+## 3 — Two modes
+
+Nullang has one grammar and one type system. A *mode* is selected by the
+command, and the checker enforces the mode's restrictions:
+
+| | **Declaration mode** (`null eval`, `null check`) | **Construction mode** (`null build`, `null run`) |
+|---|---|---|
+| Output | a value (a `SystemManifest` JSON) | a native ELF on the substrate |
+| Allowed | attrsets, lists, primitives, enums (`.sym`), capability values (`!cap`), field access | everything in declaration + `fn`, `let`, `if`/`match`, function calls |
+| Forbidden | `fn`, `let`, control flow, effects | nothing (full grammar) |
+| Termination | strict, top-down eval against a schema | compiled, then executed |
+
+Declaration mode **is** `.null` v2 (`null/SPEC.md`). Its anti-features
+(no functions, no `let in`, no `if then else`, no recursion, no lazy eval,
+one-way-to-express) are not a separate language — they are the construction
+grammar with the effect/control-flow productions disabled. Using a
+forbidden production in declaration mode is a typed error (`MOD001`,
+repair `extract-to-construction`).
+
+The two modes meet at the **capability vocabulary** (§5): declaration mode
+*grants* capabilities to the system; construction mode *consumes* them via
+`World`. This is the seam that makes one language coherent across Layers 1–4.
+
+## 4 — Surface syntax (construction core, minimal)
+
+### 4.1 Lexical
+
+Extends `.null` lexical (`null/SPEC.md` §3.1) with construction keywords.
+One whitespace policy: significant only as a separator, no indentation rules.
+
+```
+keyword     = fn | let | type | enum | if | else | match | use | return
+identifier  = [a-z][a-z0-9_]*        (snake_case for values/functions)
+typename    = [A-Z][A-Za-z0-9]*      (PascalCase for types)
+string      = "..."                  (\n \t \" \\ escapes; no interpolation)
+int         = -?[0-9]+               (i64; no underscores, no hex/oct/bin)
+bool        = true | false
+symbol      = .identifier            (enum values, as in .null §5.3)
+capability  = !identifier(.identifier)*(."string")?   (.null §5.5)
+```
+
+Separators have **distinct, non-overlapping roles** (this does not violate
+the "one way per concept" rule — `;` and `,` are never interchangeable):
+
+- `;` terminates a statement / a binding / an attrset entry.
+- `,` separates function parameters, call arguments, and `match` arms.
+
+### 4.2 Types
+
+```nullang
+# Primitives (no Float in v0.1 — see §11):
+Int      # i64
+Bool
+String   # UTF-8, owned
+Bytes    # raw byte buffer
+Unit     # the empty result, written ()
+
+# Struct — nominal record:
+type Point = { x: Int, y: Int };
+
+# Enum — closed symbol set, carries no payload in v0.1:
+enum Restart = .always | .on_failure | .never;
+```
+
+No type inference for declarations; each value is checked against its
+expected type by position (inherited from `.null` §5.6). Local `let`
+bindings in construction mode *do* infer from the initializer (§4.4).
+No subtyping, no coercion: `42` is not a `String`.
+
+### 4.3 Functions
+
+```nullang
+fn add(a: Int, b: Int) -> Int {
+  a + b
+}
+```
+
+- `fn name(params) -> ReturnType uses <effects> { body }`.
+- The `uses` clause lists the capabilities the body may exercise (§5).
+  Omitted means **pure** — the function performs no effects, and the
+  checker rejects any effectful call inside it (`EFF001`).
+- The body is an expression; the last expression is the return value.
+  `return expr;` is the single early-exit form.
+- No overloading, no default arguments, no variadics (one way per concept).
+
+### 4.4 Bindings (construction mode only)
+
+```nullang
+let n = add(2, 3);
+let label: String = "count";   # annotation optional, inferred otherwise
+```
+
+- `let name = expr;` introduces an immutable binding in the current block.
+- No `let in`; no shadowing in the same block (`MOD002`, repair `rename-binding`).
+- Mutability is **not** in v0.1 — there is no `mut`, no reassignment.
+  State that must change is rebuilt and rebound (§11 defers `mut`).
+
+### 4.5 Control flow
+
+Exactly one form each — no `then`, no ternary, no `switch`/`case` alias:
+
+```nullang
+if cond { a } else { b }          # both branches required; an expression
+
+match color {
+  .red   => 1,
+  .green => 2,
+  .blue  => 3,
+}                                  # exhaustive; missing arm is TYP020
+```
+
+`if` is an expression (both branches must yield the same type). `match`
+must be exhaustive over the enum; a non-exhaustive match is a type error
+with the missing symbols in `expected`.
+
+### 4.6 The entry point
+
+```nullang
+fn main(world: World) -> Int uses !tty {
+  print(world, "hello from nullang");
+  0
+}
+```
+
+`main` receives a `World` — the runtime token carrying the capabilities the
+*system* granted this process (§5). Its `uses` set must be a subset of what
+`World` was constructed with; the rest of the program threads `world` to
+reach effectful stdlib functions.
+
+## 5 — Capabilities and effects
+
+The heart of the language, and the seam between the two modes.
+
+- A capability is named with the **same vocabulary as `.null` §5.5**:
+  `!net`, `!net.localhost`, `!fs.read."<path>"`, `!fs.write."<path>"`,
+  `!tty`, `!proc.spawn`, `!proc.exec`, `!time`, `!rand`, `!activate.system`.
+- A function declares the capabilities it may exercise in its `uses` clause.
+  This is a *static effect annotation*, checked transitively: a function may
+  only `uses` what its callees `uses` (or a superset it holds via `World`).
+- Calling an effectful function without holding the required capability is
+  `EFF001` (repair `add-uses-clause` on the caller, or `thread-world` if the
+  caller has `World` but did not pass it).
+- `World` is the root capability token. It is **constructed at process
+  start from the `SystemManifest`** — i.e. from the `.null` declaration that
+  granted the system its `caps`. A program can never exercise a capability
+  the declaration did not grant. Effect reasoning is fully local and the
+  grant is visible in the system file.
+
+This unifies Zero's effects-in-signatures with `.null`'s capabilities-as-
+values: in declaration mode capabilities are *values that grant*; in
+construction mode they are *effects that consume*. One vocabulary, two roles.
+
+### 5.1 Runtime representation of `World` (v0.1 — important)
+
+In v0.1, **`World` has no runtime representation.** It is a compile-time
+token only: the checker verifies that every effect a function exercises is
+declared in its `uses` clause, and codegen **erases** every `World`
+parameter and argument (you will not find `world` in the emitted C). The
+effect system is therefore a purely *static* discipline in v0.1.
+
+This is deliberate and consistent with `CONTRACTS.md §4`: capabilities are
+*"declared but not enforced in Phase 1… Phase 2 will wire them to actual
+sandboxing (seccomp / landlock / cgroups)."* So:
+
+- **Who constructs `World` at process start?** In Phase 1, *no one* — it
+  does not exist at runtime. The `.null` manifest's `caps` are the grant
+  *on paper*; the compiler's `uses` check is the enforcement *on paper*.
+- **Phase 2** will make `World` real: the activation engine (`nv-rebuild`)
+  constructs the token from the granted `caps`, init passes it to `main`,
+  and the substrate wrappers refuse syscalls outside the held set. Only
+  then does the static `uses` annotation gain runtime teeth.
+
+Until Phase 2, the value of the effect system is that an agent reading a
+program can see exactly which capabilities it *could* exercise, locally and
+without running it — which is the agent-native property that matters now.
+
+## 6 — Memory model (v0.1)
+
+Deliberately minimal to keep the first compiler small and the C codegen
+trivial:
+
+- Values are owned and copied at binding; no references, no aliasing in
+  user-visible semantics.
+- Allocation is arena/region-scoped per `main` invocation; freed on exit.
+  Long-running services get a region reset hook (deferred detail).
+- **No borrow checker, no `mut`, no manual free in v0.1.** Ownership and
+  lifetimes are §11 deferrals. This trades runtime efficiency for a
+  compiler an agent can fully model today; the effect system (§5), not the
+  memory model, is where v0.1 invests.
+
+## 7 — Codegen: emit C
+
+The single most important sovereignty decision.
+
+- Nullang lowers to **C**, which the substrate's existing C compiler
+  (Layer 0) turns into an ELF. The backend adds **no new third-party
+  dependency that can die** — a C compiler will not disappear. LLVM /
+  Cranelift would reintroduce exactly the external-death risk Nullang
+  exists to escape.
+- Pipeline: `source.null → typed AST → C → cc → ELF`.
+- **CAS + provenance** wrap every stage: the content hash of the source,
+  of the emitted C, and of the resulting ELF are recorded, with provenance
+  noting which agent built it from which inputs (the four OS primitives).
+- Effects (§5) lower to calls into the Layer-1 capability-typed C wrappers.
+  A program physically cannot reach a syscall the wrapper does not expose.
+
+## 8 — CLI surface
+
+A superset of `.null`'s CLI (`null/SPEC.md` §6):
+
+```
+# Construction mode
+null build <file.null>          compile to ELF via C; provenance + CAS
+null run   <file.null>          build (if stale) then execute
+null emit-c <file.null>         dump the generated C (inspection)
+
+# Declaration mode (unchanged from .null v2)
+null check <file.null>          typecheck against schema
+null eval  <file.null>          emit SystemManifest JSON
+
+# Shared
+null fmt   <file.null>          canonical format, in-place
+null parse --json <file.null>   typed AST as JSON
+null explain <code>             docs for an error code (embedded)
+null skills list | get <name>   version-matched skill bundle
+null doctor [--json]            environment check (cc present, substrate
+                                wrappers resolvable, schema loaded)
+null fix --plan --json <file>   machine-readable repair plan, all diagnostics
+```
+
+Exit codes inherit `.null` §6: `0` ok, `1` diagnostic, `2` usage,
+`3` environment error.
+
+## 9 — Diagnostics
+
+### 9.1 Format
+
+Identical to `.null` §7.1 — one NDJSON object per diagnostic on stderr,
+with `code`, `level`, `message`, `expected`, `actual`, `file`, `span`,
+and an optional typed `repair { id, args }`.
+
+### 9.2 Error code namespaces
+
+Inherits `.null`'s `PAR` / `TYP` / `SCH` / `REF` / `CAP`, and adds two for
+construction:
+
+| Prefix | Domain | Examples |
+|---|---|---|
+| `PAR` | lexical / parse | unexpected token, bad string |
+| `TYP` | type mismatch | branch types differ, non-exhaustive match (`TYP020`) |
+| `SCH` | schema (declaration mode) | unknown / missing manifest field |
+| `REF` | reference resolution | unknown `pkgs.X`, undefined binding |
+| `CAP` | capability vocabulary | unknown cap name, service requires ungranted cap |
+| `EFF` | **effect discipline** | effectful call in pure fn (`EFF001`), `uses` not a subset of `World` |
+| `MOD` | **mode violation** | construction production used in declaration mode (`MOD001`), rebinding (`MOD002`) |
+| `CGN` | **codegen** | C emission / `cc` invocation failure |
+
+### 9.3 Repair set (v0.1 additions)
+
+Inherits `.null` §7.3 repairs, adds:
+
+```
+add-uses-clause          {fn: string, cap: capability-name}
+thread-world             {fn: string}
+extract-to-construction  {span}        # move forbidden decl-mode code to a fn
+rename-binding           {from: string, to: string}
+add-missing-arm          {enum: typename, symbol: string}
+```
+
+The set is closed and versioned; adding a repair is a minor bump.
+
+## 10 — Anti-features (hold in both modes)
+
+Even in full construction mode, regularity beats cleverness:
+
+- No mutable variables / reassignment in v0.1 (`mut` deferred, §11).
+- No exceptions / panics as control flow — fallible operations return an
+  enum result; the caller matches it.
+- No global mutable state. No implicit `main` globals.
+- No implicit numeric/string coercion.
+- No operator overloading, no overloading, no default args, no variadics.
+- No macros, no preprocessor, no conditional compilation.
+- No string interpolation (compose explicitly), no multiple list/record
+  syntaxes (one bracket per concept).
+- One control-flow form each (`if`/`match`); no `then`, ternary, or `switch`.
+
+## 11 — What v0.1 deliberately omits (the roadmap)
+
+Each is deferred, not rejected; each ships *only when the OS needs it*:
+
+- **`mut` / mutable state** — needed once services hold evolving state.
+- **Ownership / borrow checker** — when arena allocation stops being enough.
+- **Float** — when a workload needs numeric computation (none in v0.1).
+- **Generics / parametric types** — when stdlib containers demand it.
+- **Traits / interfaces** — when polymorphism over types is unavoidable.
+- **Enum payloads** (`.some(Int)`) — when results need to carry data.
+- **Module / import system** — coordinate with `.null` §12.1 (namespaced,
+  *no* automatic merge).
+- **Self-hosting** — the milestone that certifies sovereignty (§12).
+- **Package model** — "create, don't install": agent declares an internal
+  package built from the substrate, CAS-identified; users consume it.
+
+## 12 — Bootstrap path
+
+Three tempi, each leaving a working closed loop behind:
+
+1. **Host compiler in Rust**, emitting C. Fastest route to a green loop;
+   reuses the existing `.null` crate's lexer/diagnostics/skills discipline.
+2. **Grow** the language + a minimal stdlib until Nullang can express its
+   own compiler — driven strictly by what the OS needs next, never ahead.
+3. **Self-host** — rewrite the compiler in Nullang, bootstrapped by the
+   Rust build, then drop Rust. The only third-party floor that remains is
+   **kernel + libc + C compiler**. That is the honest, minimal, won't-die
+   substrate. "No third-party" is true *above* this floor, never through it.
+
+## 13 — The v0.1 milestone: one closed loop
+
+v0.1 is done when this loop is green — nothing more:
+
+```
+agent writes hello.null
+  → null build emits C
+  → substrate cc compiles it to an ELF
+  → it runs and prints via the !tty wrapper
+  → CAS stores the binary, provenance records (agent, source-hash, c-hash)
+```
+
+When that loop closes, every later feature in §11 is "turn the crank."
+Discipline that keeps the project alive: **always have a working loop and
+widen it; never build TLS before hello-world runs.**

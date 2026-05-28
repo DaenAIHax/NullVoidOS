@@ -131,6 +131,12 @@ updates; the AI rebuilds.
 
 ## Language choices — Zero (programs) + `.null` (system declaration)
 
+> **Superseded 2026-05-28 (later) by the Nullang re-lock** — see the
+> RE-LOCK box in [the Layer 3 section](#layer-3-language-model--null-agent-native-config-dsl-revised-2026-05-28).
+> Both roles below are now one language, Nullang, in two modes; ZeroLang
+> is the *source of ideas*, not an external dependency. The section is
+> kept for history.
+
 Two agent-native languages, two roles, no overlap.
 
 ### ZeroLang — implementation language (layers 1-2, layer 4 apps)
@@ -187,6 +193,38 @@ domain.
 > Zero is for *building software*; a system manifest is *data*. The
 > decision is revised below. Authoritative spec:
 > [`bootstrap/system/null/SPEC.md`](system/null/SPEC.md).
+
+> **RE-LOCK (2026-05-28, later — supersedes everything below in this
+> section).** Layer 3 is now **Nullang declaration mode**, not an
+> isolated `.null` plus an external Zero. Decision and rationale:
+>
+> - **One language, two modes.** Nullang is a single agent-native
+>   language. *Declaration mode* (eval-only, no functions/effects) is
+>   exactly the `.null` profile described below — it does not change.
+>   *Construction mode* (functions, effects, native codegen) replaces
+>   ZeroLang for Layers 1-2 and Layer 4 apps, incrementally. The
+>   `.null`-vs-Zero split below was correct as a *local* call but missed
+>   the level above: both roles are the same language in two modes, and
+>   the seam is the capability vocabulary (declaration *grants*;
+>   construction *consumes* via `World`).
+> - **Sovereignty.** ZeroLang is Vercel Labs' — an external project whose
+>   death would force rewriting Layers 1-4. NullVoidOS cannot stand on
+>   that. Owning the spec + compiler is non-negotiable *now*;
+>   self-sufficiency of the ecosystem (stdlib, TLS, …) is a separate,
+>   incremental, years-long goal. The two must not be conflated.
+> - **Codegen to C.** The substrate already ships a C compiler, so a C
+>   backend adds no new external dependency that can die — unlike
+>   LLVM/Cranelift. Floor = kernel + libc + cc.
+> - **Status (verified 2026-05-28).** Nullang v0.1 exists at
+>   [`bootstrap/system/nullang/SPEC.md`](system/nullang/SPEC.md): the
+>   closed loop `source → C → cc → ELF → run` is green, with functions,
+>   the capability/effect discipline, arithmetic/`if`, and
+>   `enum`/`match`; 12 integration tests pass. Deferred: CAS+provenance
+>   wiring, `mut`/ownership, generics, self-hosting.
+>
+> The text below this box documents the now-superseded two-language
+> model; it is kept for history and because Nullang's *declaration mode*
+> is precisely the `.null` design it describes.
 
 The Layer 3 DSL is `.null` — a small, declarative, Nix-shaped
 configuration language. It is **eval-only**: no functions, no `let`,

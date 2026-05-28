@@ -1,0 +1,257 @@
+//! Abstract syntax tree for Nullang's construction core (v0.1).
+//!
+//! Deliberately small: top-level `fn` items, a block of statements, and a
+//! minimal expression set (literals, identifiers, calls). Arithmetic,
+//! `if`/`match`, structs and enums are SPEC §11 deferrals — the v0.1
+//! milestone (§13) only needs enough to compile `hello.null`.
+use serde::Serialize;
+
+/// Byte-offset span into the source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Span {
+    pub offset: usize,
+}
+
+/// The semantic types Nullang v0.1 understands. `World` is the capability
+/// token (SPEC §5); it is erased at codegen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum Ty {
+    Int,
+    Bool,
+    String,
+    Unit,
+    World,
+    /// A user-declared enum, identified by its index in the enum table.
+    /// Lowers to `long` in C (SPEC §7); identity matters only to the checker.
+    Enum(u32),
+}
+
+impl Ty {
+    /// The C type this lowers to (SPEC §7). `World` never reaches codegen.
+    pub fn c_type(self) -> &'static str {
+        match self {
+            Ty::Int => "long",
+            Ty::Bool => "int",
+            Ty::String => "const char*",
+            Ty::Unit => "void",
+            Ty::World => "void", // erased; should not appear
+            Ty::Enum(_) => "long",
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Ty::Int => "Int",
+            Ty::Bool => "Bool",
+            Ty::String => "String",
+            Ty::Unit => "Unit",
+            Ty::World => "World",
+            Ty::Enum(_) => "enum",
+        }
+    }
+}
+
+/// A user-declared closed symbol set (SPEC §4.2): `enum Restart = .always | …`.
+#[derive(Debug, Clone, Serialize)]
+pub struct EnumDef {
+    pub name: String,
+    pub symbols: Vec<String>,
+    pub span: Span,
+}
+
+/// One arm of a `match`: `.symbol => expr` (SPEC §4.5).
+#[derive(Debug, Clone, Serialize)]
+pub struct MatchArm {
+    pub symbol: String,
+    pub body: Box<Expr>,
+    pub span: Span,
+}
+
+/// A type as written in source: a resolved `Ty` when recognised, plus the
+/// raw name and span so the checker can report unknown types precisely.
+#[derive(Debug, Clone, Serialize)]
+pub struct TypeRef {
+    pub resolved: Option<Ty>,
+    pub name: String,
+    pub span: Span,
+}
+
+/// A capability value, sharing `.null`'s vocabulary (SPEC §5.5):
+/// `!net`, `!fs.read."/etc"`, `!tty`.
+#[derive(Debug, Clone, Serialize)]
+pub struct Capability {
+    pub path: Vec<String>,
+    pub arg: Option<String>,
+    pub span: Span,
+}
+
+impl Capability {
+    /// Canonical key for subset comparison: `fs.read."/etc"`, `tty`, …
+    pub fn key(&self) -> String {
+        let mut k = self.path.join(".");
+        if let Some(a) = &self.arg {
+            k.push_str(&format!(".{:?}", a));
+        }
+        k
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Param {
+    pub name: String,
+    pub ty: TypeRef,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Func {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub ret: TypeRef,
+    /// Declared effects (the `uses` clause). Empty means pure.
+    pub uses: Vec<Capability>,
+    pub body: Block,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "item")]
+pub enum Item {
+    Func(Func),
+    Enum(EnumDef),
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct File {
+    pub items: Vec<Item>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Block {
+    pub stmts: Vec<Stmt>,
+    /// Trailing expression (the block's value), if present.
+    pub tail: Option<Expr>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "stmt")]
+pub enum Stmt {
+    Let {
+        name: String,
+        ty: Option<TypeRef>,
+        value: Expr,
+        span: Span,
+    },
+    Expr(Expr),
+    Return {
+        value: Option<Expr>,
+        span: Span,
+    },
+}
+
+/// Binary operators (SPEC §4: arithmetic, comparison, logical).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    And,
+    Or,
+}
+
+impl BinOp {
+    /// The C operator this lowers to.
+    pub fn c_op(self) -> &'static str {
+        match self {
+            BinOp::Add => "+",
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::Div => "/",
+            BinOp::Mod => "%",
+            BinOp::Eq => "==",
+            BinOp::Ne => "!=",
+            BinOp::Lt => "<",
+            BinOp::Le => "<=",
+            BinOp::Gt => ">",
+            BinOp::Ge => ">=",
+            BinOp::And => "&&",
+            BinOp::Or => "||",
+        }
+    }
+
+    pub fn is_arithmetic(self) -> bool {
+        matches!(self, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod)
+    }
+
+    pub fn is_ordering(self) -> bool {
+        matches!(self, BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge)
+    }
+
+    pub fn is_equality(self) -> bool {
+        matches!(self, BinOp::Eq | BinOp::Ne)
+    }
+
+    pub fn is_logical(self) -> bool {
+        matches!(self, BinOp::And | BinOp::Or)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum UnOp {
+    Neg,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "expr")]
+pub enum Expr {
+    Str { value: String, span: Span },
+    Int { value: i64, span: Span },
+    Bool { value: bool, span: Span },
+    Ident { name: String, span: Span },
+    Call { callee: String, args: Vec<Expr>, span: Span },
+    Unary { op: UnOp, operand: Box<Expr>, span: Span },
+    Binary { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr>, span: Span },
+    /// `if cond { .. } else { .. }` — an expression; both branches required
+    /// (SPEC §4.5).
+    If {
+        cond: Box<Expr>,
+        then_blk: Box<Block>,
+        else_blk: Box<Block>,
+        span: Span,
+    },
+    /// An enum value: `.always` (SPEC §4.2, §5.3).
+    Symbol { name: String, span: Span },
+    /// `match scrutinee { .a => e, .b => e }` — exhaustive over an enum
+    /// (SPEC §4.5).
+    Match {
+        scrutinee: Box<Expr>,
+        arms: Vec<MatchArm>,
+        span: Span,
+    },
+}
+
+impl Expr {
+    pub fn span(&self) -> Span {
+        match self {
+            Expr::Str { span, .. }
+            | Expr::Int { span, .. }
+            | Expr::Bool { span, .. }
+            | Expr::Ident { span, .. }
+            | Expr::Call { span, .. }
+            | Expr::Unary { span, .. }
+            | Expr::Binary { span, .. }
+            | Expr::If { span, .. }
+            | Expr::Symbol { span, .. }
+            | Expr::Match { span, .. } => *span,
+        }
+    }
+}

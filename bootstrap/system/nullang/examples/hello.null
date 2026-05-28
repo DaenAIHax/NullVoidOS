@@ -1,0 +1,12 @@
+# nullang v0.1 — the closed-loop milestone (SPEC §13).
+# Exercises: a pure user function, the !tty-effecting `print` builtin with
+# World erasure, effect discipline, and an Int return from main.
+
+fn greeting() -> String {
+  "hello from nullang"
+}
+
+fn main(world: World) -> Int uses !tty {
+  print(world, greeting());
+  0
+}

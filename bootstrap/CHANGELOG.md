@@ -8,6 +8,46 @@ applicable.
 
 ## [Unreleased]
 
+### Re-lock — Layer 3 is Nullang (one language, two modes) + Nullang v0.1 (2026-05-28)
+
+Reverses the same-day Layer 3 lock (*".null v2, not Zero"*). The level
+above both prior decisions: **Nullang is a single agent-native language
+with two modes** — *declaration mode* (the eval-only `.null` profile,
+unchanged) and *construction mode* (functions, effects, native codegen),
+which replaces external ZeroLang across Layers 1-2 and Layer 4 over time.
+Rationale recorded in `DESIGN.md` (RE-LOCK box, Layer 3 section):
+
+1. **Sovereignty.** ZeroLang is Vercel Labs'; its death would force a
+   rewrite of Layers 1-4. Owning the spec + compiler is non-negotiable
+   now. Self-sufficiency (reimplementing stdlib/TLS) is a separate,
+   incremental goal — not conflated with sovereignty.
+2. **Codegen to C**, not LLVM/Cranelift: the substrate already ships a C
+   compiler, so the backend adds no new external dependency that can die.
+   Floor = kernel + libc + cc.
+3. **Capability seam.** Declaration mode *grants* capabilities; construction
+   mode *consumes* them via `World`. One vocabulary, two roles.
+
+**Nullang v0.1** lands at `bootstrap/system/nullang/` (Rust host compiler,
+bin `nullang`, SPEC at `system/nullang/SPEC.md`). The closed loop is green:
+
+```
+source.null → typed AST → effect check → C → cc → ELF → run
+```
+
+Implemented: `fn`, `let`, `Int`/`Bool`/`String`/`Unit`/`World`, the
+capability/effect discipline (`uses`, checked statically; `World` is
+erased at codegen — runtime enforcement deferred to Phase 2 per
+CONTRACTS §4), arithmetic/comparison/logical operators, `if` expressions
+(lowered via temporaries), and `enum` + `.symbol` + exhaustive `match`
+(v0.1 rule: symbols globally unique). NDJSON diagnostics with stable
+codes (`PAR`/`TYP`/`SCH`/`REF`/`CAP`/`EFF`/`MOD`/`CGN`) and typed repair
+IDs. 12 integration tests pass; `examples/{hello,compute,status}.null`
+build and run.
+
+Built with `nix shell nixpkgs#cargo nixpkgs#rustc nixpkgs#gcc -c cargo …`
+(rustc 1.95.0, gcc 15.2.0). Deferred: CAS+provenance wiring (the last
+piece of SPEC §13, via `.nvpkg`), `mut`/ownership, generics, self-hosting.
+
 ### Milestone — Phase 1 stretch test passes (real Rust ELF + pkgs ambient) (2026-05-28)
 
 `bootstrap/system/demos/hello-rust/stretch-test.sh` was driven
