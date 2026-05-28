@@ -131,7 +131,7 @@
                 -cpu max \
                 -netdev user,id=net0 \
                 -device virtio-net-pci,netdev=net0 \
-                -virtfs "local,path=$CRED_DIR,mount_tag=claudefs,security_model=mapped-xattr,readonly=on" \
+                -virtfs "local,path=$CRED_DIR,mount_tag=claudefs,security_model=mapped-xattr" \
                 -nographic \
                 -no-reboot \
                 -m 1024 \

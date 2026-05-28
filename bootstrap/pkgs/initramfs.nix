@@ -53,15 +53,32 @@ let
     # Silence late kernel info-level messages so they don't disrupt the prompt.
     dmesg -n 1 2>/dev/null || true
 
-    # 9P share: host's ~/.claude/ → /root/.claude/ (RO).
+    # 9P share: host's ~/.claude/ → /root/.claude/ (RW).
     # Carries the Max-subscription credentials so `claude` inside the
-    # VM authenticates without our owning an API key.
+    # VM authenticates without our owning an API key. Mounted RW so
+    # claude-code can refresh the OAuth tokens in-place (Phase 0 plan
+    # contingency 5 — the VM may mutate the host directory).
     mkdir -p /root/.claude
-    if mount -t 9p -o trans=virtio,version=9p2000.L,ro,msize=131072 \
+    if mount -t 9p -o trans=virtio,version=9p2000.L,msize=131072 \
          claudefs /root/.claude 2>/dev/null; then
       CREDS_OK=yes
     else
       CREDS_OK="no (9P mount failed)"
+    fi
+
+    # ~/.claude.json (Claude Code's config file with project trust + MCP
+    # servers + model prefs) lives in $HOME, not in $HOME/.claude/, so
+    # the 9P share above doesn't carry it. Without it `claude` aborts
+    # before reading the credentials. Seed it from the most recent
+    # backup in .claude/backups/, which is what Claude Code suggests in
+    # its own error message.
+    if [ "$CREDS_OK" = yes ] && [ ! -f /root/.claude.json ]; then
+      LATEST_CFG=$(ls -1t /root/.claude/backups/.claude.json.backup.* \
+                     2>/dev/null | head -1)
+      if [ -n "$LATEST_CFG" ]; then
+        cp "$LATEST_CFG" /root/.claude.json
+        echo "seeded /root/.claude.json from $LATEST_CFG"
+      fi
     fi
 
     # Loopback + DHCP on eth0 (QEMU user networking, gateway 10.0.2.2).

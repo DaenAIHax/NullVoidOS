@@ -175,6 +175,34 @@ Interactive verification (manual, after `nix run ./bootstrap`):
 
 - `bootstrap/PHASE0_A_PLAN.md` — superseded by this milestone entry.
 
+### Fix — Phase 0 (a) interactive login
+
+First interactive run blocked at `claude` startup with:
+
+```
+Claude configuration file not found at: /root/.claude.json
+A backup file exists at: /root/.claude/backups/.claude.json.backup.<ts>
+```
+
+Root cause: Claude Code splits its on-disk state in two — `~/.claude/`
+(credentials, history, cache) and `~/.claude.json` (config: project
+trust, model prefs, MCP servers). Our 9P share only exposes the
+directory, so the JSON config file at `$HOME/.claude.json` is missing
+inside the VM and `claude` refuses to start. The on-screen rescue
+command Claude prints (`cp …backup.<ts> ~/.claude.json`) gets line-
+wrapped to 80 cols on the serial console, which is what made it look
+like an OAuth `Missing code_challenge` problem.
+
+Fix in two pieces:
+
+- `bootstrap/pkgs/initramfs.nix`: init now seeds `/root/.claude.json`
+  from the newest backup under `/root/.claude/backups/` on every boot.
+- `bootstrap/flake.nix` and `initramfs.nix`: drop `readonly=on` from
+  the 9P share so claude-code can refresh the OAuth token in-place.
+  This is the trade documented as Phase 0 plan contingency 5 — the VM
+  may now mutate the host's `~/.claude/` (token refresh + history
+  writes). Accepted for Phase 0; a multi-tenant separation comes later.
+
 ### Polish (from first interactive session)
 
 - `bootstrap/pkgs/initramfs.nix`: replaced the hand-curated busybox
