@@ -61,17 +61,28 @@ let
     dmesg -n 1 2>/dev/null || true
 
     # Persistent /var on the qcow2 attached to virtio-blk (/dev/vda).
-    # First boot: device is unformatted -> mkfs.ext4. Subsequent boots:
-    # mount existing fs. Without this, packages built by the agent and
-    # nv-system generations die on every reboot.
+    # Probe by trying to mount, not by trusting `blkid`. blkid was
+    # found to false-negative on existing qcow2 images here (no udev
+    # in the initramfs, and blkid wanted a cache under /run before
+    # /run had been created), pushing init into the mkfs branch on
+    # every boot — and then `mkfs.ext4` (without -F) would block on
+    # its interactive "Proceed anyway?" prompt forever. Mount-first
+    # probes actual usability and only formats if mount truly fails.
     VAR_OK=no
     if [ -b /dev/vda ]; then
-      if ! blkid /dev/vda >/dev/null 2>&1; then
-        echo "Formatting /dev/vda as ext4 (first boot)..."
-        mkfs.ext4 -q -L nv-var /dev/vda 2>/dev/null
-      fi
       if mount -t ext4 /dev/vda /var 2>/dev/null; then
         VAR_OK=yes
+      else
+        echo "Formatting /dev/vda as ext4 (first boot)..."
+        # -F skips the safety prompt. We only get here because the
+        # mount above just failed, so there is nothing valid to
+        # preserve on /dev/vda anyway.
+        if mkfs.ext4 -F -q -L nv-var /dev/vda 2>/dev/null \
+           && mount -t ext4 /dev/vda /var 2>/dev/null; then
+          VAR_OK=yes
+        fi
+      fi
+      if [ "$VAR_OK" = yes ]; then
         mkdir -p /var/lib /var/log /var/tmp /var/lib/nv-store \
                  /var/lib/nv-system /var/lib/dropbear /var/lib/nv-config
       fi
