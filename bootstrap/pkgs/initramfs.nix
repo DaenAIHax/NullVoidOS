@@ -21,10 +21,18 @@ let
     echo "zero:     $(zero --version)"
     echo ""
     echo "Pipeline alive. Dropping to busybox sh."
-    echo "Try: zero --help    |    Ctrl-A X to quit QEMU"
+    echo "Try: zero --help"
+    echo "Quit: type 'poweroff' inside, or Ctrl-A x from host."
     echo ""
 
-    exec /bin/sh
+    # Respawn the shell instead of exec'ing it — otherwise `exit` (or any
+    # accidental death) kills PID 1 and the kernel panics.
+    while true; do
+      /bin/sh
+      echo ""
+      echo "[shell exited — respawning in 2s, or Ctrl-A x to quit QEMU]"
+      sleep 2
+    done
   '';
 in
 runCommand "nullvoid-initramfs" {

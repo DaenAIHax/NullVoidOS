@@ -110,6 +110,12 @@ Outstanding for full Phase 0 demo:
   into the shell prompt during the first interactive session.
 - `bootstrap/flake.nix` (boot-vm app): added `quiet` to the kernel
   cmdline. Suppresses boot info-level messages from the console.
+- `bootstrap/pkgs/initramfs.nix` (init): replaced `exec /bin/sh` with
+  a respawn loop. Typing `exit` (or any accidental shell death) no
+  longer kills PID 1 and panics the kernel. Banner now suggests
+  `poweroff` as the in-VM exit command (busybox applet, signals the
+  kernel; QEMU `-no-reboot` makes that translate into a clean QEMU
+  exit), with `Ctrl-A x` as the host-side fallback.
 
 ## 2026-05-28
 
