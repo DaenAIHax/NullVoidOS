@@ -75,5 +75,27 @@
         packages = customPkgs // {
           busybox-musl = busyboxStatic;
         };
+
+        # Convenience runner for the Phase 0 (d) bootable VM.
+        # Usage: nix run ./bootstrap#boot-vm
+        apps.boot-vm = {
+          type = "app";
+          program = toString (pkgs.writeShellScript "nullvoid-boot-vm" ''
+            echo ""
+            echo "======================================================"
+            echo " Booting NullVoidOS Phase 0 (d) in QEMU"
+            echo " Exit the VM:  press Ctrl-A   then   x"
+            echo "======================================================"
+            echo ""
+            exec ${pkgs.qemu_kvm}/bin/qemu-system-x86_64 \
+              -kernel ${customPkgs.kernel}/bzImage \
+              -initrd ${customPkgs.initramfs}/initramfs.cpio.gz \
+              -append "console=ttyS0" \
+              -nographic \
+              -no-reboot \
+              -m 256 \
+              "$@"
+          '');
+        };
       });
 }

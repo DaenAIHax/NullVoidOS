@@ -92,6 +92,10 @@ Outstanding for full Phase 0 demo:
   user pays a Claude Max subscription that covers Claude Code usage.
   (b) would be double-paying. (a) reuses the subscription. See memory
   `feedback_claude_subscription`.
+- `bootstrap/flake.nix`: added `apps.boot-vm` for one-command interactive
+  boot of the Phase 0 (d) VM. Usage: `nix run ./bootstrap#boot-vm`.
+  Wraps `qemu-system-x86_64` with the kernel + initramfs derivations
+  baked in; exit with `Ctrl-A x`.
 
 ## 2026-05-28
 
