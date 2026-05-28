@@ -76,12 +76,22 @@ this proves the kernel + initramfs + userland pipeline before adding
 the agent backend.
 
 Outstanding for full Phase 0 demo:
-- Variant (b): agent loop via curl + Anthropic API. Tracked as task #9.
-  Operational plan written to `bootstrap/PHASE0_B_PLAN.md` — substrate
-  additions, init script, QEMU invocation, edge cases, verification
-  checklist. Delete that file when (b) ships.
+- Variant (a): Claude Code CLI inside the VM, consuming the user's
+  Claude Max subscription. Plan in `bootstrap/PHASE0_A_PLAN.md`.
+  Decisions locked: Node.js via `pkgsMusl.nodejs_22`, credentials
+  passed in via 9P read-only mount of host's `~/.config/claude/`,
+  init drops to busybox shell and user types `claude` manually.
+  Delete the plan file when (a) ships.
 - Cosmetic: `can't access tty; job control turned off` warning from
   busybox sh. Fix later with `setsid cttyhack`.
+
+### Changed (within session)
+
+- Replaced operational plan `PHASE0_B_PLAN.md` with `PHASE0_A_PLAN.md`.
+  Reason: variant (b) called Anthropic API directly per-token, while
+  user pays a Claude Max subscription that covers Claude Code usage.
+  (b) would be double-paying. (a) reuses the subscription. See memory
+  `feedback_claude_subscription`.
 
 ## 2026-05-28
 
