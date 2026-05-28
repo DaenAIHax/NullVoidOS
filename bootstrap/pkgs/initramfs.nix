@@ -8,6 +8,9 @@ let
     mount -t sysfs sysfs /sys 2>/dev/null
     mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
 
+    # Silence late kernel info-level messages so they don't disrupt the prompt.
+    dmesg -n 1 2>/dev/null || true
+
     echo ""
     echo "============================================="
     echo " NullVoidOS bootstrap — Phase 0 variant (d)"
@@ -32,15 +35,15 @@ runCommand "nullvoid-initramfs" {
     platforms = [ "x86_64-linux" ];
   };
 } ''
-  mkdir -p root/{bin,dev,proc,sys,tmp}
+  mkdir -p root/{bin,dev,proc,sys,tmp,root,etc}
 
   cp ${pkgsStatic.busybox}/bin/busybox root/bin/
-  for util in \
-    sh ash mount umount ls cat echo mkdir rmdir cp mv rm ln \
-    hostname uname env printenv pwd cd export sleep ps kill \
-    grep sed awk find head tail wc tr cut sort uniq \
-    ifconfig ip route ping; do
-    ln -s busybox root/bin/$util
+
+  # Auto-symlink every applet busybox was compiled with. Avoids the
+  # bug where common commands (whoami, date, dmesg, ...) "weren't there
+  # because we forgot to add them to a list".
+  for applet in $(${pkgsStatic.busybox}/bin/busybox --list); do
+    [ -e "root/bin/$applet" ] || ln -s busybox "root/bin/$applet"
   done
 
   cp ${zerolang}/bin/zero root/bin/

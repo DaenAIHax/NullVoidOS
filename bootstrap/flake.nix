@@ -92,7 +92,7 @@
               exec ${pkgs.qemu_kvm}/bin/qemu-system-x86_64 \
                 -kernel ${customPkgs.kernel}/bzImage \
                 -initrd ${customPkgs.initramfs}/initramfs.cpio.gz \
-                -append "console=ttyS0" \
+                -append "console=ttyS0 quiet" \
                 -nographic \
                 -no-reboot \
                 -m 256 \

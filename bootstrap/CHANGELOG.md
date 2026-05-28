@@ -98,6 +98,19 @@ Outstanding for full Phase 0 demo:
   `qemu-system-x86_64` with the kernel + initramfs derivations baked
   in; exit with `Ctrl-A x`.
 
+### Polish (from first interactive session)
+
+- `bootstrap/pkgs/initramfs.nix`: replaced the hand-curated busybox
+  symlink list with auto-enumeration via `busybox --list`. Now every
+  applet busybox was compiled with (~400, including `whoami`, `date`,
+  `dmesg`, `vi`, `wget`, ...) gets a symlink in `/bin`. Also created
+  `/root` and `/etc` dirs preemptively for variant (a).
+- `bootstrap/pkgs/initramfs.nix`: init script now runs `dmesg -n 1`
+  early to silence late kernel info-level messages that were leaking
+  into the shell prompt during the first interactive session.
+- `bootstrap/flake.nix` (boot-vm app): added `quiet` to the kernel
+  cmdline. Suppresses boot info-level messages from the console.
+
 ## 2026-05-28
 
 ### Added
