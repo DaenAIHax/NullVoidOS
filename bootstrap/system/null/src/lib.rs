@@ -3,12 +3,14 @@
 /// tests reference `null` (the lib) directly.
 pub mod ast;
 pub mod diagnostics;
+pub mod explain;
 pub mod fmt;
 pub mod lexer;
 pub mod parser;
+pub mod skills;
 pub mod types;
 
-use diagnostics::Diag;
+use diagnostics::{span_at, Diag};
 use lexer::Lexer;
 use parser::Parser;
 use types::{Env, Evaluator};
@@ -24,11 +26,12 @@ pub fn run_parse(src: &str, file: &str) -> Result<ast::Expr, Diag> {
         Diag {
             level: diagnostics::DiagLevel::Error,
             code: diagnostics::DiagCode::Par001,
+            message: e.message.clone(),
+            expected: "valid token".to_string(),
+            actual: e.message,
             file: file.to_string(),
-            line,
-            col,
-            message: e.message,
-            fix: None,
+            span: span_at(line, col),
+            repair: None,
         }
     })?;
     let mut p = Parser::new(tokens, src, file);

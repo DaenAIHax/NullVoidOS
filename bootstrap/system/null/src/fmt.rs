@@ -77,6 +77,25 @@ fn write_expr(expr: &Expr, indent: usize, out: &mut String) {
             out.push('.');
             out.push_str(field);
         }
+        Expr::Symbol { name, .. } => {
+            out.push('.');
+            out.push_str(name);
+        }
+        Expr::Capability { path, arg, .. } => {
+            out.push('!');
+            out.push_str(&path.join("."));
+            if let Some(s) = arg {
+                out.push_str(".\"");
+                for c in s.chars() {
+                    match c {
+                        '"' => out.push_str("\\\""),
+                        '\\' => out.push_str("\\\\"),
+                        other => out.push(other),
+                    }
+                }
+                out.push('"');
+            }
+        }
     }
 }
 

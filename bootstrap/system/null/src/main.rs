@@ -5,19 +5,17 @@ use std::collections::HashMap;
 use clap::{Parser as ClapParser, Subcommand};
 
 // Re-use everything from the library crate.
-use null::diagnostics::{self, emit, Diag};
+use null::diagnostics::{self, emit, span_at, Diag};
+use null::explain;
 use null::fmt;
+use null::skills;
 use null::types::Env;
 use null::{run_check, run_eval, run_parse};
 
-/// `null` — NullVoidOS system description language CLI (Phase 1 MVP)
+/// `null` — NullVoidOS system description language CLI
 #[derive(ClapParser, Debug)]
 #[command(name = "null", version, about, long_about = None)]
 struct Cli {
-    /// Emit machine-readable JSON diagnostics on stderr.
-    #[arg(long, global = true)]
-    json: bool,
-
     #[command(subcommand)]
     command: Command,
 }
@@ -42,11 +40,35 @@ enum Command {
         json_ast: bool,
         file: PathBuf,
     },
+    /// Print the documentation for a diagnostic code (e.g. `null explain CAP004`).
+    Explain {
+        /// Error code, case-insensitive (e.g. CAP004, cap004).
+        /// Pass `list` to print all known codes.
+        code: String,
+    },
+    /// Version-matched skill bundle. `null skills list` enumerates; `null
+    /// skills get <name>` prints a single markdown document to stdout.
+    Skills {
+        #[command(subcommand)]
+        action: SkillsAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SkillsAction {
+    /// List embedded skills with one-line descriptions.
+    List,
+    /// Print a single skill's markdown body to stdout.
+    Get { name: String },
 }
 
 fn main() {
     let cli = Cli::parse();
-    let json_diag = cli.json;
+    // v2: NDJSON diagnostics on stderr are the default (SPEC §6/§7).
+    // The dual-mode `--json` toggle from v1 is gone; until step 5 ships
+    // the proper NDJSON emitter, `emit()` is still called with a bool —
+    // we pin it to `true` so every error is at least JSON-shaped.
+    let json_diag = true;
 
     match &cli.command {
         Command::Check { file } => {
@@ -97,6 +119,41 @@ fn main() {
                 }
             }
         }
+        Command::Skills { action } => match action {
+            SkillsAction::List => {
+                for s in skills::all() {
+                    println!("{:<15} {}", s.name, s.description);
+                }
+            }
+            SkillsAction::Get { name } => match skills::get(name) {
+                Some(body) => print!("{}", body),
+                None => {
+                    eprintln!(
+                        "unknown skill `{}`; try `null skills list`",
+                        name
+                    );
+                    process::exit(2);
+                }
+            },
+        },
+        Command::Explain { code } => {
+            if code.eq_ignore_ascii_case("list") {
+                for c in explain::list_codes() {
+                    println!("{}", c);
+                }
+                return;
+            }
+            match explain::lookup(code) {
+                Some(doc) => print!("{}", doc),
+                None => {
+                    eprintln!(
+                        "unknown error code `{}`; try `null explain list`",
+                        code
+                    );
+                    process::exit(2);
+                }
+            }
+        }
         Command::Parse { json_ast, file } => {
             if !json_ast {
                 eprintln!("usage: null parse --json <file.null>");
@@ -132,11 +189,12 @@ fn read_file(path: &PathBuf, json_diag: bool) -> (String, String) {
             let diag = Diag {
                 level: diagnostics::DiagLevel::Error,
                 code: diagnostics::DiagCode::Par001,
-                file: fname.clone(),
-                line: 0,
-                col: 0,
                 message: format!("cannot read file: {}", e),
-                fix: None,
+                expected: "readable file".to_string(),
+                actual: format!("IO error: {}", e),
+                file: fname.clone(),
+                span: span_at(0, 0),
+                repair: None,
             };
             emit(&diag, json_diag);
             process::exit(1);
@@ -155,15 +213,16 @@ fn build_env(json_diag: bool) -> Env {
         Err(reason) => {
             let warn = Diag {
                 level: diagnostics::DiagLevel::Warning,
-                code: diagnostics::DiagCode::Typ001,
-                file: String::new(),
-                line: 0,
-                col: 0,
+                code: diagnostics::DiagCode::Ref002,
                 message: format!(
                     "nv-pkg not available ({}); `pkgs.*` references will fail if used",
                     reason
                 ),
-                fix: Some("install nv-pkg and ensure it is on PATH".to_string()),
+                expected: "nv-pkg on PATH".to_string(),
+                actual: reason,
+                file: String::new(),
+                span: span_at(0, 0),
+                repair: None,
             };
             emit(&warn, json_diag);
             Env {

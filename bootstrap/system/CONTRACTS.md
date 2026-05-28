@@ -159,119 +159,26 @@ by `nv-rebuild` and by humans piping through `jq`.
 
 ## 2 — `.null` language (Beta ↔ Gamma)
 
-### 2.1 What `.null` is
-
-A small declarative configuration language. **Eval-only** in Phase 1:
-no compile-to-binary backend, no FFI. Evaluation of a `.null` file
-produces a typed `SystemManifest` value, serialized to JSON for
-`nv-rebuild` to consume.
-
-### 2.2 Surface syntax (MVP subset)
-
-```null
-{
-  hostname = "nullvoid";
-
-  packages = [
-    "neovim-mini-0.1.0"
-    "task-tui-0.3.2"
-    "bash-5.3.9"
-  ];
-
-  services = {
-    agent = {
-      exec = "/run/current/bin/claude";
-      restart = "always";
-    };
-  };
-
-  environment = {
-    EDITOR = "nvim-mini";
-    LANG = "en_US.UTF-8";
-  };
-}
-```
-
-Constructs in MVP:
-
-- **Literals**: string (`"..."`), int (`42`), bool (`true`/`false`), null.
-- **List**: `[ a b c ]` — whitespace-separated, same type required.
-- **Attribute set**: `{ key = value; ... }` — semicolon-terminated.
-- **Path**: `./relative/path` — resolved relative to the source file.
-- **Reference**: bare identifier (must be in scope; Phase 1 has only
-  one in-scope identifier: `pkgs`, see §2.4).
-- **Field access**: `pkgs.bash` (lhs must be attrset).
-- **Comment**: `# trailing only`, until end of line.
-
-Not in MVP (deferred):
-- Functions (`{ ... }: ...`)
-- `let in`
-- `if then else`
-- Imports between `.null` files
-- String interpolation
-
-### 2.3 Type system (Phase 1)
-
-The evaluator runs in two stages:
-
-1. **Parse** → AST (untyped tree).
-2. **Type-check + eval** in one pass, against the expected schema of
-   the top-level value.
-
-The expected schema for `system.null` is:
-
-```
-type SystemManifest = {
-  hostname: String,
-  packages: [String],
-  services: { [String]: Service },
-  environment: { [String]: String },
-}
-
-type Service = {
-  exec: String,
-  restart: "always" | "on-failure" | "never",
-}
-```
-
-Type errors are reported with file:line:col and a short repair hint.
-A `.null` file that fails type-check is rejected entirely (no partial
-output).
-
-### 2.4 The `pkgs` ambient
-
-The single in-scope identifier in Phase 1 is `pkgs`. It is built by
-the evaluator at startup by calling `nv-pkg list --json` and projecting:
-
-```
-pkgs = {
-  "<name>" = "<name>-<version>";   # latest version installed
-  ...
-}
-```
-
-So writing `pkgs.bash` is sugar for the string `"bash-5.3.9"` if
-that's the version currently in the store. This is good enough for
-Phase 1 and avoids embedding a registry. Multiple versions of the
-same package are addressable directly by literal string.
-
-### 2.5 CLI surface
-
-```
-null check <file.null>              type-check, exit 0 if ok
-null eval <file.null>               type-check + eval, print JSON
-                                    of the resulting SystemManifest
-null fmt <file.null>                canonical formatting (in-place)
-null parse --json <file.null>       AST as JSON (for tooling)
-```
-
-All commands emit machine-readable diagnostics on stderr when
-`--json` is set:
-
-```json
-{"level":"error","code":"TYP001","file":"system.null","line":3,"col":14,
- "message":"expected String, got Int","fix":"wrap 42 in quotes"}
-```
+> **Superseded by [`null/SPEC.md`](null/SPEC.md) — 2026-05-28.**
+>
+> The original §2 sketched a tiny Nix-shaped DSL but did not transpose
+> ZeroLang's agent-first tooling recipe (typed JSON diagnostics, repair
+> IDs, embedded skills bundle, capability-as-syntax). After surfacing
+> that contradiction with the same-day DESIGN.md decision on Layer 3,
+> the language design was revised in place. The full v2 spec — surface
+> syntax, anti-feature list, schema, capability values, CLI surface,
+> NDJSON diagnostics, repair IDs, skills bundle — is now in
+> [`null/SPEC.md`](null/SPEC.md), which is authoritative.
+>
+> What the rest of this document relies on from `.null` is unchanged
+> at the **interface** level: a `system.null` file evaluates to a
+> typed `SystemManifest` JSON value that §3 (`nv-rebuild`) consumes.
+> The schema shape used by §3 below is the same one detailed in
+> SPEC.md §4. The CLI commands referenced in §3 (`null eval`,
+> `null check`, etc.) are defined in SPEC.md §6.
+>
+> Treat any divergence between this document and SPEC.md as a bug in
+> this document.
 
 ## 3 — Activation engine (`nv-rebuild`, Gamma)
 

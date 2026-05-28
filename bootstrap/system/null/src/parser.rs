@@ -1,18 +1,22 @@
-/// Recursive-descent parser for the `.null` language (Phase 1 MVP).
+/// Recursive-descent parser for the `.null` language (v2).
 ///
-/// The grammar is intentionally small:
+/// Grammar:
 ///
-///   expr   = attrset | list | literal | ident-or-field-access
-///   attrset = '{' ( ident '=' expr ';' )* '}'
-///   list    = '[' expr* ']'
-///   literal = STRING | INT | BOOL | NULL | PATH
+///   expr      = attrset | list | literal | ident-or-field-access
+///             | symbol | capability
+///   attrset   = '{' ( ident '=' expr ';' )* '}'
+///   list      = '[' expr* ']'
+///   literal   = STRING | INT | BOOL | NULL
 ///   ident-or-field-access = IDENT ('.' IDENT)*
+///   symbol    = '.' IDENT
+///   capability = '!' IDENT ('.' IDENT)* ('.' STRING)?
 ///
-/// Constructs that are intentionally NOT in Phase 1 are detected and
-/// produce a PAR001 error with a "not in Phase 1 MVP" message.
+/// Anti-features (SPEC §2): functions, `let in`, `if then else`, imports,
+/// string interpolation. Each is detected and produces PAR001 with a hint.
 use crate::ast::{Attr, Expr, Span};
-use crate::diagnostics::{Diag, DiagLevel, DiagCode};
-use crate::lexer::{Token, TokenKind, line_col};
+use crate::diagnostics::{span_at, Diag, DiagCode, DiagLevel, Repair};
+use crate::lexer::{line_col, Token, TokenKind};
+use serde_json::json;
 
 pub struct Parser<'a> {
     tokens: Vec<Token>,
@@ -53,16 +57,25 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn diag(&self, offset: usize, code: DiagCode, message: String, fix: Option<String>) -> Diag {
+    fn diag(
+        &self,
+        offset: usize,
+        code: DiagCode,
+        message: String,
+        expected: impl Into<String>,
+        actual: impl Into<String>,
+        repair: Option<Repair>,
+    ) -> Diag {
         let (line, col) = line_col(self.src, offset);
         Diag {
             level: DiagLevel::Error,
             code,
-            file: self.file.clone(),
-            line,
-            col,
             message,
-            fix,
+            expected: expected.into(),
+            actual: actual.into(),
+            file: self.file.clone(),
+            span: span_at(line, col),
+            repair,
         }
     }
 
@@ -70,11 +83,15 @@ impl<'a> Parser<'a> {
         if self.peek() == expected {
             Ok(self.advance())
         } else {
-            let tok = self.peek_token();
+            let tok_offset = self.peek_token().offset;
+            let actual_str = format!("`{}`", self.peek());
+            let expected_str = format!("`{}`", expected);
             Err(self.diag(
-                tok.offset,
+                tok_offset,
                 DiagCode::Par001,
                 format!("expected `{}`, found `{}`", expected, self.peek()),
+                expected_str,
+                actual_str,
                 None,
             ))
         }
@@ -83,13 +100,17 @@ impl<'a> Parser<'a> {
     /// Parse the entire file: one top-level expression.
     pub fn parse_file(&mut self) -> Result<Expr, Diag> {
         let expr = self.parse_expr()?;
-        // After the top-level expr we expect EOF.
         if !matches!(self.peek(), TokenKind::Eof) {
             let tok = self.peek_token();
             return Err(self.diag(
                 tok.offset,
                 DiagCode::Par001,
-                format!("unexpected token `{}` after top-level expression", self.peek()),
+                format!(
+                    "unexpected token `{}` after top-level expression",
+                    self.peek()
+                ),
+                "end of file",
+                format!("`{}`", self.peek()),
                 None,
             ));
         }
@@ -139,29 +160,158 @@ impl<'a> Parser<'a> {
             TokenKind::Null => {
                 let offset = self.span_here().offset;
                 self.advance();
-                Ok(Expr::Null { span: Span { offset } })
+                Ok(Expr::Null {
+                    span: Span { offset },
+                })
             }
             TokenKind::Ident(_) => self.parse_ident_or_field_access(),
-            // Detect deferred constructs and produce helpful errors
+            TokenKind::Dot => self.parse_symbol(),
+            TokenKind::Bang => self.parse_capability(),
             TokenKind::Eof => {
                 let offset = self.span_here().offset;
                 Err(self.diag(
                     offset,
                     DiagCode::Par001,
                     "unexpected end of file; expected an expression".to_string(),
+                    "expression",
+                    "end of file",
                     None,
                 ))
             }
             other => {
                 let offset = self.peek_token().offset;
-                let msg = match other {
-                    TokenKind::Eq => "bare `=` is not a valid expression; did you mean to write `{ key = value; }`?".to_string(),
-                    TokenKind::Semi => "unexpected `;`".to_string(),
-                    _ => format!("unexpected token `{}`; this construct is not in Phase 1 MVP", other),
+                let (msg, expected_str) = match other {
+                    TokenKind::Eq => (
+                        "bare `=` is not a valid expression; did you mean to write `{ key = value; }`?".to_string(),
+                        "expression",
+                    ),
+                    TokenKind::Semi => ("unexpected `;`".to_string(), "expression"),
+                    _ => (
+                        format!(
+                            "unexpected token `{}`; this construct is not in v2",
+                            other
+                        ),
+                        "expression",
+                    ),
                 };
-                Err(self.diag(offset, DiagCode::Par001, msg, None))
+                Err(self.diag(
+                    offset,
+                    DiagCode::Par001,
+                    msg,
+                    expected_str,
+                    format!("`{}`", other),
+                    None,
+                ))
             }
         }
+    }
+
+    /// Parse a symbol literal: `.identifier`.
+    /// Caller has already confirmed `peek() == Dot`.
+    fn parse_symbol(&mut self) -> Result<Expr, Diag> {
+        let dot_offset = self.peek_token().offset;
+        self.advance(); // consume '.'
+        let name_offset = self.peek_token().offset;
+        let name = match self.peek() {
+            TokenKind::Ident(n) => {
+                let n = n.clone();
+                self.advance();
+                n
+            }
+            _ => {
+                return Err(self.diag(
+                    dot_offset,
+                    DiagCode::Par001,
+                    format!(
+                        "expected identifier after `.` (symbol literal), found `{}`",
+                        self.peek()
+                    ),
+                    "identifier after `.`",
+                    format!("`{}`", self.peek()),
+                    None,
+                ));
+            }
+        };
+        Ok(Expr::Symbol {
+            name,
+            span: Span { offset: name_offset },
+        })
+    }
+
+    /// Parse a capability literal: `!ident(.ident)*(."str")?`.
+    /// Caller has already confirmed `peek() == Bang`.
+    fn parse_capability(&mut self) -> Result<Expr, Diag> {
+        let bang_offset = self.peek_token().offset;
+        self.advance(); // consume '!'
+
+        let mut path = Vec::new();
+        match self.peek() {
+            TokenKind::Ident(n) => {
+                path.push(n.clone());
+                self.advance();
+            }
+            _ => {
+                return Err(self.diag(
+                    bang_offset,
+                    DiagCode::Par001,
+                    format!(
+                        "expected identifier after `!` (capability literal), found `{}`",
+                        self.peek()
+                    ),
+                    "identifier after `!`",
+                    format!("`{}`", self.peek()),
+                    None,
+                ));
+            }
+        }
+
+        let mut arg: Option<String> = None;
+        while matches!(self.peek(), TokenKind::Dot) {
+            let dot_offset = self.peek_token().offset;
+            self.advance(); // consume '.'
+            match self.peek() {
+                TokenKind::Ident(n) => {
+                    path.push(n.clone());
+                    self.advance();
+                }
+                TokenKind::String(s) => {
+                    arg = Some(s.clone());
+                    self.advance();
+                    if matches!(self.peek(), TokenKind::Dot) {
+                        let extra_offset = self.peek_token().offset;
+                        return Err(self.diag(
+                            extra_offset,
+                            DiagCode::Par001,
+                            "capability argument must be the last component"
+                                .to_string(),
+                            "end of capability literal",
+                            "extra segment after string argument",
+                            None,
+                        ));
+                    }
+                    break;
+                }
+                _ => {
+                    return Err(self.diag(
+                        dot_offset,
+                        DiagCode::Par001,
+                        format!(
+                            "expected identifier or string after `.` in capability, found `{}`",
+                            self.peek()
+                        ),
+                        "identifier or string",
+                        format!("`{}`", self.peek()),
+                        None,
+                    ));
+                }
+            }
+        }
+
+        Ok(Expr::Capability {
+            path,
+            arg,
+            span: Span { offset: bang_offset },
+        })
     }
 
     fn parse_attrset(&mut self) -> Result<Expr, Diag> {
@@ -172,44 +322,45 @@ impl<'a> Parser<'a> {
             if matches!(self.peek(), TokenKind::RBrace | TokenKind::Eof) {
                 break;
             }
-            // Check for deferred features: `let`, `if`, function pattern
+            // Anti-features (SPEC §2): detect and reject early with a hint.
             if let TokenKind::Ident(name) = self.peek() {
                 let name = name.clone();
+                let offset = self.peek_token().offset;
                 match name.as_str() {
                     "let" => {
-                        let offset = self.peek_token().offset;
                         return Err(self.diag(
                             offset,
                             DiagCode::Par001,
-                            "`let in` is not in Phase 1 MVP".to_string(),
-                            Some("use a flat attrset instead".to_string()),
+                            "`let in` is not in v2".to_string(),
+                            "attrset key or `}`",
+                            "`let`",
+                            None,
                         ));
                     }
                     "if" => {
-                        let offset = self.peek_token().offset;
                         return Err(self.diag(
                             offset,
                             DiagCode::Par001,
-                            "`if then else` is not in Phase 1 MVP".to_string(),
+                            "`if then else` is not in v2".to_string(),
+                            "attrset key or `}`",
+                            "`if`",
                             None,
                         ));
                     }
                     "import" => {
-                        let offset = self.peek_token().offset;
                         return Err(self.diag(
                             offset,
                             DiagCode::Par001,
-                            "imports between `.null` files are not in Phase 1 MVP".to_string(),
+                            "imports between `.null` files are not in v2.0 (see SPEC §12)"
+                                .to_string(),
+                            "attrset key or `}`",
+                            "`import`",
                             None,
                         ));
                     }
                     _ => {}
                 }
             }
-            // Check for function-pattern attrset: `{ arg, ... }:` or `{ arg ? default }:`
-            // We detect the `{` is followed by ident then `,` or `?` before the `:`.
-            // Simple heuristic: if the current context looks like it might be a function arg,
-            // it will fail at the `=` expect below anyway with a clear message.
 
             // Parse `key = value ;`
             let key_offset = self.peek_token().offset;
@@ -224,21 +375,32 @@ impl<'a> Parser<'a> {
                     return Err(self.diag(
                         offset,
                         DiagCode::Par001,
-                        format!("expected an attribute name (identifier), found `{}`; functions and `let in` are not in Phase 1 MVP", self.peek()),
+                        format!(
+                            "expected an attribute name (identifier), found `{}`; functions and `let in` are not in v2",
+                            self.peek()
+                        ),
+                        "identifier",
+                        format!("`{}`", self.peek()),
                         None,
                     ));
                 }
             };
 
-            // Detect function pattern: `name: ...` or `name, ...`
             if matches!(self.peek(), TokenKind::Semi) {
-                // lone ident followed by `;` — treat as missing `= value`
                 let offset = self.peek_token().offset;
                 return Err(self.diag(
                     offset,
                     DiagCode::Par001,
-                    format!("expected `=` after attribute name `{}`, found `;`", key),
-                    Some(format!("{} = <value>;", key)),
+                    format!(
+                        "expected `=` after attribute name `{}`, found `;`",
+                        key
+                    ),
+                    "`=`",
+                    "`;`",
+                    Some(Repair::new(
+                        "add-required-field",
+                        json!({ "field": key, "type": "Value" }),
+                    )),
                 ));
             }
 
@@ -278,21 +440,24 @@ impl<'a> Parser<'a> {
         };
         self.advance();
 
-        // Detect deferred identifier constructs
         match name.as_str() {
             "let" => {
                 return Err(self.diag(
                     offset,
                     DiagCode::Par001,
-                    "`let in` is not in Phase 1 MVP".to_string(),
-                    Some("use a flat attrset instead".to_string()),
+                    "`let in` is not in v2".to_string(),
+                    "expression",
+                    "`let`",
+                    None,
                 ));
             }
             "if" => {
                 return Err(self.diag(
                     offset,
                     DiagCode::Par001,
-                    "`if then else` is not in Phase 1 MVP".to_string(),
+                    "`if then else` is not in v2".to_string(),
+                    "expression",
+                    "`if`",
                     None,
                 ));
             }
@@ -300,7 +465,10 @@ impl<'a> Parser<'a> {
                 return Err(self.diag(
                     offset,
                     DiagCode::Par001,
-                    "imports between `.null` files are not in Phase 1 MVP".to_string(),
+                    "imports between `.null` files are not in v2.0 (see SPEC §12)"
+                        .to_string(),
+                    "expression",
+                    "`import`",
                     None,
                 ));
             }
@@ -312,10 +480,9 @@ impl<'a> Parser<'a> {
             span: Span { offset },
         };
 
-        // Handle chained field access: `ident.field.field`
         while matches!(self.peek(), TokenKind::Dot) {
             let dot_offset = self.peek_token().offset;
-            self.advance(); // consume '.'
+            self.advance();
             match self.peek() {
                 TokenKind::Ident(field) => {
                     let field = field.clone();
@@ -334,6 +501,8 @@ impl<'a> Parser<'a> {
                         dot_offset,
                         DiagCode::Par001,
                         format!("expected field name after `.`, found `{}`", self.peek()),
+                        "identifier after `.`",
+                        format!("`{}`", self.peek()),
                         None,
                     ));
                 }

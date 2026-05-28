@@ -73,10 +73,10 @@ QEMU), so this is within reach.
 │   distributed as (prompt + spec + capabilities)  │
 │   AI rebuilds locally per substrate              │
 ├──────────────────────────────────────────────────┤
-│ Layer 3: DSL + activation engine                 │
-│   declarative system state in agent-native DSL   │
-│   evaluator emits JSON manifest                  │
-│   activation engine renders systemd-units/nspawn │
+│ Layer 3: .null + activation engine               │
+│   declarative system state in .null DSL          │
+│   (agent-native, Nix-shaped, eval-only)          │
+│   nv-rebuild renders generations + atomic swap   │
 ├──────────────────────────────────────────────────┤
 │ Layer 2: Agent backend (pluggable)               │
 │   agent_backend interface: send(prompt, caps)    │
@@ -129,16 +129,25 @@ This inverts how shared infrastructure scales. Instead of "package binary
 N times for N users," the AI generates per-user. Updates are prompt
 updates; the AI rebuilds.
 
-## Language choice — ZeroLang
+## Language choices — Zero (programs) + `.null` (system declaration)
 
-Implementation language for layers 1-4 (and tooling for Layer 0) is
-ZeroLang (Vercel Labs, currently v0.1.4, Apache 2.0, May 2026).
+Two agent-native languages, two roles, no overlap.
 
-**Why Zero:**
+### ZeroLang — implementation language (layers 1-2, layer 4 apps)
+
+ZeroLang (Vercel Labs, currently v0.1.4, Apache 2.0, May 2026) is the
+implementation language for: substrate wrappers (Layer 1), agent
+backend internals and activation engine when rewritten in Zero
+(Layer 2), and agent-authored applications (Layer 4).
+
+**Why Zero for programs:**
 
 - Capability-based I/O native (matches thesis primitive #1)
 - JSON-structured compiler diagnostics with stable error codes and
-  typed repair plans (`fix --plan --json`)
+  typed repair plans (`zero fix --plan --json`)
+- Version-matched skill bundles (`zero skills list`) — the compiler
+  ships its own docs, so agents without training data can learn the
+  language from the binary alone
 - Designed for AI agents as consumers from day one
 - Compiles to small native musl binaries (~10KB target range)
 - Apache 2.0, forkable if vendor abandons
@@ -146,46 +155,100 @@ ZeroLang (Vercel Labs, currently v0.1.4, Apache 2.0, May 2026).
 **Vendor risk handling:**
 
 - For research alpha, vendor risk is acceptable
-- If Vercel pivots or kills Zero: fork (Apache 2.0) or migrate to other
-  emerging AI-native languages (Roc, Unison, future entrants)
-- **No fallback to Rust/Go** — using human-designed languages for the
-  agent runtime would contradict the thesis
+- If Vercel pivots or kills Zero: fork (Apache 2.0) or migrate to
+  other emerging AI-native languages (Roc, Unison, future entrants)
+- **No fallback to Rust/Go for the program layer** — using
+  human-designed languages for agent-authored programs would
+  contradict the thesis. Phase 1 tooling (`nv-pkg`, `nv-rebuild`)
+  is currently Rust as a pragmatic bootstrap; rewrite-in-Zero is a
+  later question once the substrate is solid.
 
-## Layer 3 language model — Zero native, no translator (LOCKED 2026-05-28)
+### `.null` — system description language (layer 3)
 
-The Layer 3 DSL is not a separate language. The system description
-language **is ZeroLang itself**. No translator, no second-language
-wrapper, no runtime module system bolted on top. A `system.zero`
-program evaluates to a typed `SystemManifest` value, which the
-activation engine renders into files, units, and processes.
+`.null` is the declarative DSL for `system.null` files. It does **not**
+overlap with Zero's role: Zero builds programs, `.null` describes the
+system that runs them. See the [Layer 3 section](#layer-3-language-model--null-agent-native-config-dsl-revised-2026-05-28)
+below for the full design and [SPEC.md](system/null/SPEC.md) for the
+authoritative spec.
 
-**Why no translator:**
+The same agent-first recipe (JSON diagnostics, repair IDs, embedded
+skills bundle, single-form-per-concept, capability-explicit syntax)
+applies independently to `.null`, transposed to the configuration
+domain.
 
-- Single language across layers 1-4 (implementation) and layer 3
-  (system description). One toolchain, one type system, one capability
-  model.
-- ZeroLang already has the properties NixOS had to bolt on at runtime
-  (static types, structured diagnostics). Building a separate module
-  system on top would reinvent solved problems and lose static
-  guarantees.
-- Narrative integrity: "the AI builds everything above Layer 0 in Zero"
-  stays clean. A separate config language would contradict it.
+## Layer 3 language model — `.null` (agent-native config DSL) (REVISED 2026-05-28)
+
+> **History.** This section was first locked on 2026-05-28 as
+> *"Zero native, no translator"* — the Layer 3 DSL would be ZeroLang
+> itself. The same day, after surveying ZeroLang's actual surface
+> (`mut`, `set`, `World`, generics, ownership, native codegen — a
+> systems language in the Rust/Zig family), it became clear that
+> forcing it into the system-declaration role is a category error.
+> Zero is for *building software*; a system manifest is *data*. The
+> decision is revised below. Authoritative spec:
+> [`bootstrap/system/null/SPEC.md`](system/null/SPEC.md).
+
+The Layer 3 DSL is `.null` — a small, declarative, Nix-shaped
+configuration language. It is **eval-only**: no functions, no `let`,
+no control flow, no runtime, no IO. A `system.null` file evaluates to
+a typed `SystemManifest` JSON value, which `nv-rebuild` (Gamma)
+renders into generations and atomically activates.
+
+`.null` is **not** Zero, and not a fork of Zero. It is a separate,
+deliberately tiny language that **inherits ZeroLang's agent-first
+tooling recipe** transposed to the configuration domain:
+
+| Zero (systems language) | `.null` (config language) |
+|---|---|
+| Stable JSON diagnostics + repair IDs | Stable JSON diagnostics + repair IDs |
+| `zero explain CODE` from embedded docs | `null explain CODE` from embedded docs |
+| `zero skills list` — version-matched skill bundles | `null skills list` — version-matched skill bundles |
+| `World` capability + effect annotations | Capabilities as values in syntax (`!net`, `!fs.read."/etc"`); system grants, services require |
+| Small surface, one way per concept | Small surface, one way per concept |
+| Token-efficient, fast startup | Token-efficient, fast eval |
+
+**Why two languages and not one:**
+
+- A declaration is categorically different from a program. Programs
+  have control flow, mutation, IO, generics. Declarations are values.
+  One language for both is *one language doing two jobs poorly* —
+  exactly the trap NixOS avoids by separating Nix-the-evaluator from
+  the C++/Rust modules it activates.
+- Both can be agent-native at once. The recipe (typed JSON
+  diagnostics, repair IDs, embedded skills bundle, capability-explicit
+  syntax, single-form-per-concept) applies independently to each.
+- Narrative integrity is preserved differently than the original
+  framing claimed: *"the agent builds programs in Zero and declares
+  the system in `.null` — and both languages publish their docs and
+  repair plans the same way."* This is in fact stronger than
+  "everything in Zero", because it admits the categorical difference
+  the agent will encounter regardless.
+
+The cost is a second toolchain (lexer + parser + typechecker + CLI
+for `.null`) — minor, since the surface is deliberately tiny
+(see SPEC.md §2 for the anti-feature list).
 
 ### Mental model — how the layers relate (NixOS analogy)
 
-The user already runs NixOS daily. The mechanics here are identical in
-shape — only the languages and where the type-checking happens change.
+The user already runs NixOS daily. The mechanics here are identical
+in shape — only the languages and where the type-checking happens
+change.
 
 | NixOS construct | NullVoidOS equivalent |
 |---|---|
-| Nix the language | ZeroLang itself |
-| Module system (`mkOption`, runtime types, merges) | ZeroLang static types — no runtime module layer |
-| `imports = [ ./foo.nix ];` | Zero `import` of another `*.zero` module |
-| Evaluation → attribute set | Evaluation → typed `SystemManifest` struct |
-| Nix derivation (sandboxed build → hashed output) | LFS-style sandboxed build → CAS artifact |
+| Nix the language | `.null` the language |
+| Module system (`mkOption`, runtime types, merges) | Fixed `SystemManifest` schema in `.null`'s compiler — no runtime module layer |
+| `imports = [ ./foo.nix ];` | Deferred to `.null` v2.1 (see SPEC §12) |
+| Evaluation → attribute set | Evaluation → typed `SystemManifest` JSON |
+| Nix derivation (sandboxed build → hashed output) | LFS-style sandboxed build → CAS artifact (built using Zero) |
 | `/nix/store` | CAS substrate (content-addressed) |
-| System derivation → `/etc`, units, kernel | Activation engine in Zero, reads manifest, materializes outputs |
-| `nixos-rebuild switch` | Zero activation module with `cap[activate:system]` |
+| System derivation → `/etc`, units, kernel | `nv-rebuild` activation engine, reads manifest, materializes outputs |
+| `nixos-rebuild switch` | `nv-rebuild switch` (capability-gated by `!activate.system`) |
+
+Implementation languages remain Zero for layers 1-2 (substrate
+wrappers, services, activation engine internals if rewritten) and for
+agent-authored applications. `nv-rebuild` is currently a Rust crate
+per Phase 1 contracts; rewriting it in Zero is a later question.
 
 The imperative side never disappears — building openssl from source is
 imperative work. It is wrapped in a sandboxed CAS-producing build (the
@@ -217,24 +280,33 @@ specific path, and so on.
 ## Open design questions (Layer 3, to resolve in Phase 2)
 
 These are deliberately deferred until the bootstrap is alive and the
-agent can participate in the design:
+agent can participate in the design. (Several have first answers in
+`.null` SPEC §12 — they remain open as larger architectural
+questions.)
 
-1. **Shape of a module.** Is a Zero module a function
-   `(SystemContext) -> Service`, a trait/interface, or a record literal?
-2. **Composition semantics.** How does module A express "I depend on
-   module B"? How are conflicts (two modules setting overlapping fields)
-   resolved — error, explicit combiner, last-write-wins?
-3. **`SystemManifest` schema.** Concrete typed shape of the final
-   evaluated system: services, mounts, users, kernel cmdline, network
-   interfaces, etc.
-4. **Activation capability primitives.** Minimum set the activation
-   engine needs: `write_file`, `start_unit`, `mount`, `symlink`,
-   `chmod`, `chown`, `link_into_store`. Each gated by a distinct
-   capability.
+1. **Composition / imports.** `.null` v2.0 is single-file; SPEC §12
+   reserves `import "./other.null"` for v2.1. The bigger question is
+   whether composition is just file concatenation, attrset merging
+   with a defined combinator, or something module-shaped (named units
+   with explicit interfaces).
+2. **Shape of a module.** If `.null` grows beyond single-file, what
+   *is* a module? A named attrset literal, a typed record interface,
+   or a function from `SystemContext` to a partial manifest? Resolving
+   this answers what reuse looks like in `.null`.
+3. **Variants beyond `SystemManifest`.** Should `.null` also describe
+   user-level artifacts (`.nvpkg` recipes, app manifests)? Either the
+   evaluator becomes schema-pluggable or each artifact gets its own
+   tiny tool. SPEC §12 q2 flags this.
+4. **Activation capability primitives.** Minimum set `nv-rebuild`
+   needs: `write_file`, `start_unit`, `mount`, `symlink`, `chmod`,
+   `chown`, `link_into_store`. Each gated by a distinct capability
+   in `.null`'s capability vocabulary (SPEC §5.5 has the user-facing
+   set; the activation-host set is separate and currently fixed in
+   `nv-rebuild`).
 
 None of these block Phase 0 (bootable VM) or Phase 1 (substrate
-selection). They become central in Phase 2-3 when the agent designs
-Layer 3 from inside the running system.
+selection + `.null` v2 implementation). They become central in Phase
+2-3 when the agent designs Layer 3 from inside the running system.
 
 ## What the substrate covers (the irreducible C layer)
 

@@ -8,7 +8,109 @@ applicable.
 
 ## [Unreleased]
 
+### Revised — Layer 3 language decision (2026-05-28, same day as lock)
+
+The 2026-05-28 lock *"Layer 3 DSL is ZeroLang itself, no translator"*
+has been revised the same day. Trigger: user surfaced that ZeroLang
+is a systems programming language (`mut`, `set`, `World`, generics,
+ownership, native codegen — Rust/Zig family), and forcing it into the
+system-declaration role is a category error analogous to writing
+NixOS configurations in Rust.
+
+**New decision:** Layer 3 DSL is `.null` — a separate, deliberately
+tiny, Nix-shaped declarative language that **inherits ZeroLang's
+agent-first tooling recipe** (typed JSON diagnostics, repair IDs,
+embedded skills bundle, single-form-per-concept, capability-explicit
+syntax) transposed to the configuration domain. ZeroLang remains the
+implementation language for layers 1-2 and layer 4 apps.
+
+Authoritative spec: `bootstrap/system/null/SPEC.md` (new). DESIGN.md
+section *"Layer 3 language model"* rewritten in place; the original
+locked text is preserved verbatim in a `History` callout so the
+reasoning trail stays visible. The mental-model NixOS-analogy table,
+the layer-3 ASCII box, the *Language choice — ZeroLang* section, and
+the *Open design questions* are all updated to match.
+
+The CONTRACTS.md §2 sketch from the previous session (which had
+already drifted to a separate `.null` language without flagging the
+contradiction with the same-day lock) is now formally superseded by
+SPEC.md v2.
+
+### Migration — `.null` crate v1 → v2 (same session)
+
+`bootstrap/system/null/` migrated to implement SPEC v2 in 8 steps,
+each verified by build + smoke test before moving on:
+
+1. **Lexer.** Added `Bang` (`!`) token. Symbol (`.identifier`) and
+   capability (`!ident(.ident)*(."str")?`) literals are assembled at
+   parse time from the dumb token stream, so the lexer stayed minimal.
+2. **AST.** Added `Expr::Symbol { name, span }` and
+   `Expr::Capability { path, arg, span }`. Field-access continues to
+   work after a leading `Ident`; standalone `Dot` / `Bang` at the
+   start of an expression now route to the new parsers.
+3. **Parser.** `parse_symbol` and `parse_capability` added. Existing
+   anti-feature detection (`let`, `if`, `import`) preserved. A
+   pre-existing CLI bug (global `--json` clashing with `parse --json`)
+   surfaced and was fixed by dropping the dual-mode toggle (v2 NDJSON
+   is the default, in line with SPEC §6).
+4. **Schema / types.** `types.rs` rewritten. `SystemManifest` gains
+   `caps: [Capability]`; `Service` gains `requires: [Capability]` and
+   `restart` becomes the enum-as-symbol `RestartPolicy`. The capability
+   vocabulary from SPEC §5.5 is hardcoded in `known_capability()`.
+   Subset rule enforced: every `service.requires` ⊆ `system.caps`
+   (CAP004 with `repair = add-system-cap` if violated).
+5. **Diagnostics.** Full rewrite to SPEC §7 shape: NDJSON on stderr,
+   structured `expected` / `actual` / `span: SpanInfo` /
+   `repair: Option<Repair>` (typed `id` + `args` JSON value). Stable
+   error-code namespaces materialised: `PAR001`, `TYP001`, `TYP004`,
+   `SCH001`, `REF002`, `CAP001`, `CAP004`. Initial repair-ID set from
+   SPEC §7.3 wired in: `wrap-int-as-string`, `add-system-cap`,
+   `fix-enum-symbol`, `add-required-field`, `quote-bare-identifier`,
+   `homogenize-list`, `remove-unknown-field`.
+6. **CLI `explain`.** `null explain <CODE>` and `null explain list`
+   added. Per-code docs embedded as const strings in `src/explain.rs`
+   — agent can recover the meaning of any diagnostic from the binary
+   alone, no network access (SPEC §1).
+7. **Skills bundle.** Six markdown documents at
+   `bootstrap/system/null/skills/` (`null`, `language`, `schema`,
+   `caps`, `cli`, `diagnostics`) embedded via `include_str!` and
+   served by `null skills list` / `null skills get <name>`. This is
+   the version-matched-skills-bundle property that lets an agent that
+   has never seen `.null` author a correct `system.null` from the
+   binary alone (SPEC §8).
+8. **Test migration.** All 50 v1 integration tests adapted to v2
+   schema (added `caps = []` to every `SystemManifest` test string,
+   `requires = []` to every Service, `restart = .always` symbols
+   instead of `"always"` strings, `err.span.line`/`err.repair`
+   instead of `err.line`/`err.fix`). 3 example-file-bound tests
+   deleted (the `examples/*.null` files are still v1-shaped — they
+   parse but no longer typecheck under v2; restoration deferred).
+   2 new schema-missing tests and 4 new capability tests added.
+   **Final result: 53 tests passing, 0 failures.** Verified end-to-end
+   with smoke files covering CAP001 (unknown cap), CAP004 (subset
+   violation), TYP004 (string-instead-of-symbol restart). Each error
+   now carries a typed `repair.id + args` payload an agent can apply
+   without parsing prose.
+
+Known gaps deferred to a future session:
+- `null doctor` and `null fix --plan --json` (SPEC §6) not
+  implemented.
+- The `examples/*.null` files are still v1 shape; restore them or
+  drop the dir.
+- The v1 `./path` lexer shortcut is still accepted even though SPEC
+  v2 §3.1 doesn't list it — either ban it in v2.1 or add it to SPEC.
+
 ### Added
+
+- `bootstrap/system/null/SPEC.md` — authoritative spec for `.null`
+  v2. Twelve sections including the five-tricks-transposed rationale,
+  the anti-feature list, surface syntax, the `SystemManifest` schema,
+  the capability-as-value system, CLI surface mirroring Zero's
+  (`null explain`, `null skills`, `null fix --plan --json`),
+  diagnostic NDJSON format with stable error-code namespaces
+  (`PAR`/`TYP`/`SCH`/`REF`/`CAP`) and a closed initial repair-ID set,
+  reference `system.null` example, and what the existing Rust crate
+  owes to reach v2.
 
 - **Layer 3 language model — Zero native, no translator** section in
   `DESIGN.md`. Decision locked: the system description language is

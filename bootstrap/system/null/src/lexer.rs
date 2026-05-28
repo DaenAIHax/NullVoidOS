@@ -20,6 +20,7 @@ pub enum TokenKind {
     Eq,      // =
     Semi,    // ;
     Dot,     // .
+    Bang,    // !  (capability prefix — see SPEC §5.5)
 
     // Identifiers / keywords
     Ident(String),
@@ -41,6 +42,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Eq => write!(f, "="),
             TokenKind::Semi => write!(f, ";"),
             TokenKind::Dot => write!(f, "."),
+            TokenKind::Bang => write!(f, "!"),
             TokenKind::Ident(s) => write!(f, "{}", s),
             TokenKind::Eof => write!(f, "<EOF>"),
         }
@@ -192,6 +194,7 @@ impl<'a> Lexer<'a> {
                 Some(']') => tokens.push(Token { kind: TokenKind::RBrack, offset: start }),
                 Some('=') => tokens.push(Token { kind: TokenKind::Eq, offset: start }),
                 Some(';') => tokens.push(Token { kind: TokenKind::Semi, offset: start }),
+                Some('!') => tokens.push(Token { kind: TokenKind::Bang, offset: start }),
                 Some('.') => {
                     // Could be the start of a path: `./...`
                     if self.peek() == Some('/') {

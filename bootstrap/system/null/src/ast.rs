@@ -50,6 +50,22 @@ pub enum Expr {
         field: String,
         span: Span,
     },
+
+    // v2 — closed-set enum value: `.always`, `.on-failure`, `.never`.
+    // See SPEC §5.3.
+    Symbol {
+        name: String,
+        span: Span,
+    },
+
+    // v2 — capability value: `!net`, `!fs.read."/etc"`.
+    // `path` is the dot-separated segments after `!` (e.g. ["fs","read"]),
+    // `arg` is the optional final `."<string>"` argument. See SPEC §5.5.
+    Capability {
+        path: Vec<String>,
+        arg: Option<String>,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -63,6 +79,8 @@ impl Expr {
             Expr::AttrSet { span, .. } => span,
             Expr::Ident { span, .. } => span,
             Expr::FieldAccess { span, .. } => span,
+            Expr::Symbol { span, .. } => span,
+            Expr::Capability { span, .. } => span,
         }
     }
 }
