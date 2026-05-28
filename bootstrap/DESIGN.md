@@ -151,6 +151,91 @@ ZeroLang (Vercel Labs, currently v0.1.4, Apache 2.0, May 2026).
 - **No fallback to Rust/Go** — using human-designed languages for the
   agent runtime would contradict the thesis
 
+## Layer 3 language model — Zero native, no translator (LOCKED 2026-05-28)
+
+The Layer 3 DSL is not a separate language. The system description
+language **is ZeroLang itself**. No translator, no second-language
+wrapper, no runtime module system bolted on top. A `system.zero`
+program evaluates to a typed `SystemManifest` value, which the
+activation engine renders into files, units, and processes.
+
+**Why no translator:**
+
+- Single language across layers 1-4 (implementation) and layer 3
+  (system description). One toolchain, one type system, one capability
+  model.
+- ZeroLang already has the properties NixOS had to bolt on at runtime
+  (static types, structured diagnostics). Building a separate module
+  system on top would reinvent solved problems and lose static
+  guarantees.
+- Narrative integrity: "the AI builds everything above Layer 0 in Zero"
+  stays clean. A separate config language would contradict it.
+
+### Mental model — how the layers relate (NixOS analogy)
+
+The user already runs NixOS daily. The mechanics here are identical in
+shape — only the languages and where the type-checking happens change.
+
+| NixOS construct | NullVoidOS equivalent |
+|---|---|
+| Nix the language | ZeroLang itself |
+| Module system (`mkOption`, runtime types, merges) | ZeroLang static types — no runtime module layer |
+| `imports = [ ./foo.nix ];` | Zero `import` of another `*.zero` module |
+| Evaluation → attribute set | Evaluation → typed `SystemManifest` struct |
+| Nix derivation (sandboxed build → hashed output) | LFS-style sandboxed build → CAS artifact |
+| `/nix/store` | CAS substrate (content-addressed) |
+| System derivation → `/etc`, units, kernel | Activation engine in Zero, reads manifest, materializes outputs |
+| `nixos-rebuild switch` | Zero activation module with `cap[activate:system]` |
+
+The imperative side never disappears — building openssl from source is
+imperative work. It is wrapped in a sandboxed CAS-producing build (the
+LFS-bootstrap analogue of a Nix derivation). The declarative side
+references those built artifacts by hash.
+
+### Substrate ↔ Zero boundary (how Linux talks to Zero)
+
+For each C package in the substrate there is a Zero wrapper module:
+
+```
+substrate/openssl.zero       ← typed Zero API, capability-annotated
+        │
+        │  FFI boundary
+        ▼
+libcrypto.so                 ← unsafe raw C, never exposed above
+```
+
+Wrapper functions declare their capability requirements in the type
+signature (e.g. `fn aes_encrypt(...) requires cap[crypto]`). The Zero
+compiler rejects calls without the required capability. The C layer is
+unaware of capabilities — enforcement is purely at the Zero boundary.
+
+Kernel syscalls follow the same pattern. A `substrate/syscall.zero`
+module wraps the relevant syscalls behind capability types:
+`cap[net]` gates `socket()`, `cap[fs:/path]` gates `open()` on a
+specific path, and so on.
+
+## Open design questions (Layer 3, to resolve in Phase 2)
+
+These are deliberately deferred until the bootstrap is alive and the
+agent can participate in the design:
+
+1. **Shape of a module.** Is a Zero module a function
+   `(SystemContext) -> Service`, a trait/interface, or a record literal?
+2. **Composition semantics.** How does module A express "I depend on
+   module B"? How are conflicts (two modules setting overlapping fields)
+   resolved — error, explicit combiner, last-write-wins?
+3. **`SystemManifest` schema.** Concrete typed shape of the final
+   evaluated system: services, mounts, users, kernel cmdline, network
+   interfaces, etc.
+4. **Activation capability primitives.** Minimum set the activation
+   engine needs: `write_file`, `start_unit`, `mount`, `symlink`,
+   `chmod`, `chown`, `link_into_store`. Each gated by a distinct
+   capability.
+
+None of these block Phase 0 (bootable VM) or Phase 1 (substrate
+selection). They become central in Phase 2-3 when the agent designs
+Layer 3 from inside the running system.
+
 ## What the substrate covers (the irreducible C layer)
 
 The agent does not regenerate cryptography, codecs, kernel drivers, or SQL

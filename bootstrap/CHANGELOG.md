@@ -1,0 +1,48 @@
+# Bootstrap Changelog
+
+All notable changes to the NullVoidOS `lfs-bootstrap` direction.
+
+Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+Dates are ISO 8601 (YYYY-MM-DD). Entries reference commit hashes when
+applicable.
+
+## [Unreleased]
+
+### Added
+
+- **Layer 3 language model — Zero native, no translator** section in
+  `DESIGN.md`. Decision locked: the system description language is
+  ZeroLang itself; no separate DSL, no runtime module system bolted on
+  top.
+- **Mental model — how the layers relate** table in `DESIGN.md` mapping
+  NixOS constructs to NullVoidOS equivalents (Nix language ↔ ZeroLang,
+  module system ↔ static types, `/nix/store` ↔ CAS substrate, etc.).
+- **Substrate ↔ Zero boundary** section in `DESIGN.md` explaining the
+  per-package Zero wrapper pattern (`substrate/openssl.zero` over
+  `libcrypto.so` via FFI; capability annotations enforced at Zero
+  boundary).
+- **Open design questions** section in `DESIGN.md` listing four pieces
+  deferred to Phase 2: module shape, composition semantics,
+  `SystemManifest` schema, activation capability primitives.
+- `CLAUDE.md` at repo root scoping behaviour for this branch
+  (workflow, communication conventions, phase awareness).
+- `bootstrap/CHANGELOG.md` (this file).
+
+## 2026-05-28
+
+### Added
+
+- Branch `lfs-bootstrap` created off `main`.
+- `bootstrap/README.md` and `bootstrap/DESIGN.md` scaffolded
+  (commit `6759b53`).
+- **Phase 0 decisions locked** in `DESIGN.md` (commit `5cd9531`):
+  - libc → musl
+  - init → sh-based custom
+  - Agent backend → pluggable (default Claude Code)
+  - Build env → Nix cross-compile on host
+  - VM image → initramfs + qcow2 `/var`
+  - Kernel → vanilla Linux LTS, minimal `.config`
+- `bootstrap/flake.nix` cross-compile dev shell (commit `5cd9531`).
+- Graphical UI decision **deferred** until Phase 0-1 base is booting.
+  Provisional preference: browser-as-desktop kiosk (option b) once
+  revisited. Documented in `DESIGN.md` (commit `7081559`).
