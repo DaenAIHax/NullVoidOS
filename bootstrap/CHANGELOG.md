@@ -230,6 +230,27 @@ Fixes:
   job control works and TUIs that catch `SIGINT` (Claude Code's Ink
   UI) can restore the terminal cleanly on exit.
 
+### Fix — Phase 0 (a) tool-use blocked without bash
+
+User feedback after first real `claude` session: agent runs but
+"cannot do commands". Claude Code invokes its Bash tool through
+`bash -c "<cmd>"` rather than `sh -c`, and the initramfs only
+shipped busybox ash at `/bin/sh`. No `/bin/bash` → every Bash
+tool-use call fails (silently or with `ENOENT`).
+
+- `bootstrap/pkgs/initramfs.nix`: closure root now includes `bash`
+  alongside `claude-code`. Symlinks `/bin/bash` to the GNU bash
+  wrapper and `/usr/bin/env -> /bin/env` (canonical shebang path,
+  busybox's `env` applet covers the binary side).
+- `bootstrap/pkgs/default.nix`: passes `bash` through to initramfs.
+- Closure size impact: `+2 MB` compressed (47 MB uncompressed
+  bash closure shares almost everything — glibc, ncurses, readline
+  — with the already-shipped claude-code closure).
+
+`bash --version` reports `5.3.9(1)-release` inside the VM; tool-use
+should now reach a real GNU bash. Git, ripgrep, etc. are still
+absent — add as needed when Claude reports the next missing tool.
+
 ### Polish (from first interactive session)
 
 - `bootstrap/pkgs/initramfs.nix`: replaced the hand-curated busybox

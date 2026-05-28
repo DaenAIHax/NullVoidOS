@@ -4,6 +4,7 @@
 , zerolang
 , claude-code
 , cacert
+, bash
 }:
 
 let
@@ -128,17 +129,21 @@ let
     done
   '';
 
-  # Whole transitive closure of claude-code (~30 paths, ~312 MB).
-  # We ship it under /nix/store inside the initramfs. The wrapper
-  # binary patches PATH/LD_LIBRARY_PATH with absolute /nix/store
-  # paths, so all the dynamic deps resolve verbatim from there.
+  # Whole transitive closure of claude-code + bash (~30+5 paths,
+  # ~360 MB uncompressed). We ship it under /nix/store inside the
+  # initramfs. claude-code's wrapper binary patches PATH/LD_LIBRARY_PATH
+  # with absolute /nix/store paths, so all the dynamic deps resolve
+  # verbatim from there. bash is needed for tool-use: claude-code
+  # invokes `bash -c "<cmd>"` for the Bash tool, and busybox ash at
+  # /bin/sh is not a substitute (Claude calls `/bin/bash` or the
+  # `bash` on PATH explicitly).
   #
   # This is a Phase 0 shortcut and a documented deviation from the
   # "musl-only" decision (Phase 0 contingency 1). DESIGN.md maps
   # /nix/store onto the CAS substrate role; we use the real thing
   # here, deferring the LFS-style CAS to Phase 1+.
-  claudeClosure = closureInfo {
-    rootPaths = [ claude-code ];
+  agentClosure = closureInfo {
+    rootPaths = [ claude-code bash ];
   };
 in
 runCommand "nullvoid-initramfs" {
@@ -149,7 +154,7 @@ runCommand "nullvoid-initramfs" {
     platforms = [ "x86_64-linux" ];
   };
 } ''
-  mkdir -p root/{bin,dev,proc,sys,tmp,root,etc/ssl/certs,etc/udhcpc,nix/store}
+  mkdir -p root/{bin,dev,proc,sys,tmp,root,etc/ssl/certs,etc/udhcpc,nix/store,usr/bin}
 
   cp ${pkgsStatic.busybox}/bin/busybox root/bin/
 
@@ -162,12 +167,15 @@ runCommand "nullvoid-initramfs" {
 
   cp ${zerolang}/bin/zero root/bin/
 
-  # Ship the claude-code closure into /nix/store. Symlink /bin/claude
-  # to the wrapper so it's on PATH.
-  for p in $(cat ${claudeClosure}/store-paths); do
+  # Ship the agent runtime closure (claude-code + bash) into /nix/store.
+  for p in $(cat ${agentClosure}/store-paths); do
     cp -a "$p" "root/nix/store/$(basename "$p")"
   done
+
+  # Symlink the wrappers into /bin and /usr/bin so they're on PATH.
   ln -s ${claude-code}/bin/claude root/bin/claude
+  ln -s ${bash}/bin/bash root/bin/bash
+  ln -s /bin/env root/usr/bin/env
 
   # CA bundle for Node.js TLS (Claude Code calls api.anthropic.com).
   cp ${cacert}/etc/ssl/certs/ca-bundle.crt root/etc/ssl/certs/ca-bundle.crt

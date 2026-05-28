@@ -7,7 +7,7 @@ let
       inherit (self) zerolang;
       # `claude-code` is unfree — only resolvable because the flake
       # imports nixpkgs with `config.allowUnfree = true`.
-      inherit (pkgs) claude-code cacert;
+      inherit (pkgs) claude-code cacert bash;
     };
   };
 in
