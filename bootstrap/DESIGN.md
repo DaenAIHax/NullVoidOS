@@ -317,6 +317,30 @@ The combination is the bet.
 These are revisable but lock the starting position. Override later via
 config or by replacing the relevant subsystem.
 
+### Phase 0 (a) — documented deviation: glibc in the bootstrap initramfs
+
+The default `ClaudeCodeBackend` requires the upstream `claude-code` Node
+binary, which nixpkgs ships as a wrapper hard-linked against
+`/nix/store/.../glibc/lib/ld-linux-x86-64.so.2`. The Phase 0 (a) image
+therefore ships the **entire `claude-code` Nix closure** (~30 store paths,
+~100 MB compressed) under `/nix/store` inside the initramfs, alongside the
+static-musl busybox + Zero binary.
+
+This is an intentional shortcut, not the steady-state design:
+
+- It contradicts decision #1 (musl-only) for one specific binary, in
+  exchange for skipping a fragile cross-compile of Node + `npm install`
+  in the bootstrap toolchain.
+- It uses the real `/nix/store` as the CAS substrate (see the NixOS
+  analogy table above: `/nix/store` ↔ CAS substrate). Phase 1+ replaces
+  this with the LFS-style sandboxed-build CAS the design calls for.
+- Other backends (`OllamaBackend`, `LlamaCppBackend`, `LlamaCppBackend`)
+  remain pure-musl candidates when we wire them later.
+
+Revisit when (a) Claude Code ships a standalone musl binary, or (b) the
+Phase 1 CAS is online and any binary — glibc or not — is a hashed
+artifact addressed the same way.
+
 ## Agent backend abstraction
 
 The agent runtime layer exposes a minimal interface so any LLM-driving

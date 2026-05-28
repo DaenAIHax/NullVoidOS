@@ -9,7 +9,15 @@
   outputs = { self, nixpkgs, flake-utils }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
+        # `claude-code` in nixpkgs carries the `unfree` meta flag, so the
+        # default `legacyPackages` view filters it out. Re-importing with
+        # `config.allowUnfree = true` exposes it. Phase 0 variant (a)
+        # depends on it directly (we ship its full closure into the
+        # initramfs as a CAS-of-convenience for Claude Code).
+        pkgs = import nixpkgs {
+          inherit system;
+          config.allowUnfree = true;
+        };
 
         # Static-musl busybox for the initramfs. pkgsStatic on Linux gives
         # musl + full static linking, so the cpio doesn't need to ship
@@ -83,19 +91,50 @@
           bootVm = {
             type = "app";
             program = toString (pkgs.writeShellScript "nullvoid-boot-vm" ''
+              set -eu
+
+              # Phase 0 (a) ships Claude Code inside the VM and reuses
+              # the host's Max-subscription credentials over a read-only
+              # 9P share. Fail fast if the host hasn't logged in yet —
+              # otherwise `claude` inside the VM would just sit at the
+              # login prompt with no way to complete it.
+              CRED_DIR="''${HOME}/.claude"
+              if [ ! -f "$CRED_DIR/.credentials.json" ]; then
+                cat >&2 <<EOF
+              ERROR: $CRED_DIR/.credentials.json not found.
+
+              The boot-vm app shares your host's Claude credentials into
+              the VM over 9P, so the agent reuses your Max subscription.
+              Run \`claude login\` on the host first, then retry.
+              EOF
+                exit 1
+              fi
+
               echo ""
               echo "======================================================"
-              echo " Booting NullVoidOS Phase 0 (d) in QEMU"
-              echo " Exit the VM:  press Ctrl-A   then   x"
+              echo " Booting NullVoidOS Phase 0 (a) in QEMU"
+              echo " Credentials (RO 9P share): $CRED_DIR"
+              echo " Exit the VM:  type 'poweroff -f', or Ctrl-A then x"
               echo "======================================================"
               echo ""
+
+              # `-cpu max` exposes the modern x86-64 instruction set
+              # (AVX2, BMI2, FMA, ...) that nixpkgs glibc and the
+              # bundled Node.js are compiled to require — without it
+              # `claude --version` aborts with "Illegal instruction"
+              # inside the VM, because the default `qemu64` CPU is
+              # roughly Athlon 64-era.
               exec ${pkgs.qemu_kvm}/bin/qemu-system-x86_64 \
                 -kernel ${customPkgs.kernel}/bzImage \
                 -initrd ${customPkgs.initramfs}/initramfs.cpio.gz \
                 -append "console=ttyS0 quiet" \
+                -cpu max \
+                -netdev user,id=net0 \
+                -device virtio-net-pci,netdev=net0 \
+                -virtfs "local,path=$CRED_DIR,mount_tag=claudefs,security_model=mapped-xattr,readonly=on" \
                 -nographic \
                 -no-reboot \
-                -m 256 \
+                -m 1024 \
                 "$@"
             '');
           };

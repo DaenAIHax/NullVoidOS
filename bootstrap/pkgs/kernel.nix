@@ -61,14 +61,42 @@ stdenv.mkDerivation rec {
       --enable SERIAL_8250_CONSOLE \
       --enable UNIX98_PTYS
 
-    # PCI + VirtIO (QEMU paravirt block / net / console).
+    # PCI + VirtIO (QEMU paravirt block / net / console / 9p).
+    # PCI_MSI is required by modern virtio devices to actually attach —
+    # without it the host announces virtio-net / virtio-9p but the
+    # kernel never binds them (symptom: "no channels available").
+    #
+    # VIRTIO_MENU is the parent Kconfig gate for the virtio transport
+    # drivers (VIRTIO_PCI, VIRTIO_BLK, VIRTIO_CONSOLE). Without it,
+    # `scripts/config --enable VIRTIO_PCI` is silently dropped by
+    # olddefconfig because the symbol isn't visible — symptom: the kernel
+    # boots, sees the virtio PCI devices, but never binds a driver.
     scripts/config \
       --enable PCI \
+      --enable PCI_MSI \
       --enable VIRTIO \
+      --enable VIRTIO_MENU \
       --enable VIRTIO_PCI \
       --enable VIRTIO_BLK \
       --enable VIRTIO_NET \
       --enable VIRTIO_CONSOLE
+
+    # Userspace runtime requirements. tinyconfig switches off almost
+    # everything beyond "boot a static binary"; modern glibc + Node.js
+    # need real pthread (FUTEX), libuv I/O primitives (eventfd, signalfd,
+    # timerfd, epoll, inotify), and at least voluntary preemption.
+    # Without FUTEX, every pthread_mutex aborts with
+    # "futex facility returned an unexpected error code".
+    scripts/config \
+      --enable FUTEX \
+      --enable EVENTFD \
+      --enable SIGNALFD \
+      --enable TIMERFD \
+      --enable EPOLL \
+      --enable INOTIFY_USER \
+      --enable AIO \
+      --enable POSIX_MQUEUE \
+      --enable PREEMPT_VOLUNTARY
 
     # Networking (the agent backend needs HTTP out).
     scripts/config \
@@ -78,6 +106,16 @@ stdenv.mkDerivation rec {
       --enable UNIX \
       --enable NETDEVICES \
       --enable ETHERNET
+
+    # 9P filesystem over VirtIO — host-shared directories. Phase 0 (a)
+    # uses this to mount the host's `~/.config/claude/` into the VM at
+    # `/root/.config/claude/`, so Claude Code reuses the Max subscription
+    # credentials without copying them into the image.
+    scripts/config \
+      --enable NET_9P \
+      --enable NET_9P_VIRTIO \
+      --enable 9P_FS \
+      --enable 9P_FS_POSIX_ACL
 
     # ACPI — so `poweroff` from inside the VM actually powers it off
     # (without ACPI the kernel halts the CPU but QEMU stays alive).

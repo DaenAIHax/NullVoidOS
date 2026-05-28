@@ -1,6 +1,48 @@
-{ lib, runCommand, writeText, cpio, gzip, pkgsStatic, zerolang }:
+{ lib, runCommand, writeText, closureInfo
+, cpio, gzip
+, pkgsStatic
+, zerolang
+, claude-code
+, cacert
+}:
 
 let
+  # udhcpc dispatcher. Busybox's stock `default.script` hardcodes its
+  # own `/nix/store/.../bin/busybox` path, which is meaningless inside
+  # the initramfs filesystem. This minimal replacement uses the
+  # busybox applets via `$PATH` (we symlink them all under /bin).
+  udhcpcScript = writeText "udhcpc-default.script" ''
+    #!/bin/sh
+    RESOLV_CONF="/etc/resolv.conf"
+    case "$1" in
+      bound|renew)
+        ifconfig "$interface" $ip netmask $subnet \
+          ''${broadcast:+broadcast $broadcast} \
+          ''${mtu:+mtu $mtu}
+        if [ -n "$router" ]; then
+          ip -4 route flush exact 0.0.0.0/0 dev "$interface" 2>/dev/null
+          ip -4 route add default via "$router" dev "$interface"
+        fi
+        R=""
+        [ -n "$domain" ] && R="domain $domain"
+        for dnsip in $dns; do
+          R="$R
+    nameserver $dnsip"
+        done
+        printf '%s\n' "$R" > "$RESOLV_CONF"
+        ;;
+      deconfig)
+        ip link set "$interface" up
+        ip -4 addr flush dev "$interface"
+        ip -4 route flush dev "$interface"
+        ;;
+      leasefail|nak)
+        echo "udhcpc: $1: $message" >&2
+        ;;
+    esac
+    exit 0
+  '';
+
   init = writeText "init" ''
     #!/bin/sh
 
@@ -11,20 +53,48 @@ let
     # Silence late kernel info-level messages so they don't disrupt the prompt.
     dmesg -n 1 2>/dev/null || true
 
+    # 9P share: host's ~/.claude/ → /root/.claude/ (RO).
+    # Carries the Max-subscription credentials so `claude` inside the
+    # VM authenticates without our owning an API key.
+    mkdir -p /root/.claude
+    if mount -t 9p -o trans=virtio,version=9p2000.L,ro,msize=131072 \
+         claudefs /root/.claude 2>/dev/null; then
+      CREDS_OK=yes
+    else
+      CREDS_OK="no (9P mount failed)"
+    fi
+
+    # Loopback + DHCP on eth0 (QEMU user networking, gateway 10.0.2.2).
+    ifconfig lo up 2>/dev/null
+    udhcpc -i eth0 -q -t 5 -T 2 -s /etc/udhcpc/default.script \
+      >/dev/null 2>&1
+    [ -s /etc/resolv.conf ] || echo "nameserver 10.0.2.3" > /etc/resolv.conf
+    IP=$(ip -4 addr show eth0 2>/dev/null | sed -n 's/.*inet \([^ ]*\).*/\1/p')
+
+    # Node.js TLS — claude-code's bundled node looks here for the CA bundle.
+    export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-bundle.crt
+    export SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt
+    export HOME=/root
+    export TERM=xterm-256color
+    export PATH=/bin
+
     echo ""
-    echo "============================================="
-    echo " NullVoidOS bootstrap — Phase 0 variant (d)"
-    echo "============================================="
-    echo ""
+    echo "================================================="
+    echo " NullVoidOS bootstrap — Phase 0 variant (a)"
+    echo "================================================="
     echo "kernel:   $(uname -srvm)"
     echo "hostname: $(hostname)"
-    echo "zero:     $(zero --version)"
+    echo "zero:     $(zero --version 2>/dev/null || echo missing)"
+    echo "claude:   $(claude --version 2>/dev/null || echo missing)"
+    echo "IP:       ''${IP:-none}"
+    echo "creds:    $CREDS_OK"
+    if [ "$CREDS_OK" = "yes" ]; then
+      echo "          $(ls /root/.claude 2>/dev/null | head -3 | tr '\n' ' ')"
+    fi
     echo ""
-    echo "Pipeline alive. Dropping to busybox sh."
-    echo "Try: zero --help"
-    echo "Quit: type 'poweroff -f' inside, or Ctrl-A x from host."
-    echo "      (-f bypasses init and calls reboot(2) directly,"
-    echo "       which our shell-as-PID-1 setup requires)"
+    echo "Type 'claude' to start the agent."
+    echo "Or 'zero --help' to explore the language."
+    echo "Quit: type 'poweroff -f', or Ctrl-A x from host."
     echo ""
 
     # Respawn the shell instead of exec'ing it — otherwise `exit` (or any
@@ -36,16 +106,29 @@ let
       sleep 2
     done
   '';
+
+  # Whole transitive closure of claude-code (~30 paths, ~312 MB).
+  # We ship it under /nix/store inside the initramfs. The wrapper
+  # binary patches PATH/LD_LIBRARY_PATH with absolute /nix/store
+  # paths, so all the dynamic deps resolve verbatim from there.
+  #
+  # This is a Phase 0 shortcut and a documented deviation from the
+  # "musl-only" decision (Phase 0 contingency 1). DESIGN.md maps
+  # /nix/store onto the CAS substrate role; we use the real thing
+  # here, deferring the LFS-style CAS to Phase 1+.
+  claudeClosure = closureInfo {
+    rootPaths = [ claude-code ];
+  };
 in
 runCommand "nullvoid-initramfs" {
   nativeBuildInputs = [ cpio gzip ];
 
   meta = with lib; {
-    description = "NullVoidOS Phase 0 initramfs (variant d): busybox + zero + sh init";
+    description = "NullVoidOS Phase 0 initramfs (variant a): busybox + zero + claude-code closure";
     platforms = [ "x86_64-linux" ];
   };
 } ''
-  mkdir -p root/{bin,dev,proc,sys,tmp,root,etc}
+  mkdir -p root/{bin,dev,proc,sys,tmp,root,etc/ssl/certs,etc/udhcpc,nix/store}
 
   cp ${pkgsStatic.busybox}/bin/busybox root/bin/
 
@@ -58,6 +141,19 @@ runCommand "nullvoid-initramfs" {
 
   cp ${zerolang}/bin/zero root/bin/
 
+  # Ship the claude-code closure into /nix/store. Symlink /bin/claude
+  # to the wrapper so it's on PATH.
+  for p in $(cat ${claudeClosure}/store-paths); do
+    cp -a "$p" "root/nix/store/$(basename "$p")"
+  done
+  ln -s ${claude-code}/bin/claude root/bin/claude
+
+  # CA bundle for Node.js TLS (Claude Code calls api.anthropic.com).
+  cp ${cacert}/etc/ssl/certs/ca-bundle.crt root/etc/ssl/certs/ca-bundle.crt
+
+  cp ${udhcpcScript} root/etc/udhcpc/default.script
+  chmod +x root/etc/udhcpc/default.script
+
   cp ${init} root/init
   chmod +x root/init
 
@@ -69,6 +165,9 @@ runCommand "nullvoid-initramfs" {
   echo "=== initramfs built ==="
   ls -lh $out/initramfs.cpio.gz
   echo ""
-  echo "=== cpio table of contents ==="
-  zcat $out/initramfs.cpio.gz | cpio -t 2>/dev/null | head -40
+  echo "=== /bin (first 40) ==="
+  ls root/bin | head -40
+  echo ""
+  echo "=== /nix/store top-level count ==="
+  ls root/nix/store | wc -l
 ''

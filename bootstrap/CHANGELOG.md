@@ -98,6 +98,83 @@ Outstanding for full Phase 0 demo:
   `qemu-system-x86_64` with the kernel + initramfs derivations baked
   in; exit with `Ctrl-A x`.
 
+### Milestone — Phase 0 (a) alive: Claude Code inside the VM
+
+End-to-end boot of variant (a) succeeds. Final banner:
+
+```
+kernel:   Linux 6.6.141
+zero:     0.1.4
+claude:   2.1.148 (Claude Code)
+IP:       10.0.2.15/24
+creds:    yes  — backups cache debug ...
+```
+
+The VM mounts the host's `~/.claude/` directory over 9P/virtio at
+`/root/.claude/` (read-only), brings up `eth0` via DHCP through QEMU
+user networking, and `claude --version` runs the upstream Node-based
+Claude Code CLI from inside the initramfs.
+
+Artifact sizes:
+
+- `bzImage`: 1.7 MB (unchanged class — added options are a few KB each)
+- `initramfs.cpio.gz`: **100 MB** (up from 1.2 MB in variant (d); the
+  entire `claude-code` Nix closure of ~312 MB uncompressed across 30
+  store paths now lives under `/nix/store` inside the initramfs)
+
+Interactive verification (manual, after `nix run ./bootstrap`):
+
+- Send a prompt, confirm the Max-subscription token is consumed (and
+  not a per-token API key).
+- Send "create a file /tmp/test.txt with content hello", confirm tool
+  use writes the file inside the VM.
+- Stretch: ask `claude` to write a small Zero program and execute
+  `zero run` on it.
+
+### Changed (Phase 0 (a) work)
+
+- `bootstrap/pkgs/kernel.nix`: enabled `VIRTIO_MENU` (parent Kconfig
+  gate for `VIRTIO_PCI` / `VIRTIO_BLK` / `VIRTIO_CONSOLE`), `PCI_MSI`
+  (required by modern virtio transports), `NET_9P`, `NET_9P_VIRTIO`,
+  `9P_FS`, `9P_FS_POSIX_ACL`. Also added the userspace runtime block
+  needed by modern glibc + Node.js: `FUTEX`, `EVENTFD`, `SIGNALFD`,
+  `TIMERFD`, `EPOLL`, `INOTIFY_USER`, `AIO`, `POSIX_MQUEUE`,
+  `PREEMPT_VOLUNTARY`. Without these, `claude --version` aborts with
+  "futex facility returned an unexpected error code" and the virtio
+  devices stay unbound (symptom: "no channels available for device
+  claudefs"). bzImage stayed at 1.7 MB.
+- `bootstrap/pkgs/initramfs.nix`: Phase 0 (a) initramfs. Ships the
+  full `claude-code` Nix closure (30 paths) under `/nix/store`,
+  symlinks `/bin/claude` to the wrapper, plus the `cacert`
+  `ca-bundle.crt` at `/etc/ssl/certs/` and a hand-rolled
+  `udhcpc/default.script` (busybox's bundled one hardcodes nix-store
+  paths to its own bin/, useless inside the initramfs). Init script
+  now mounts the 9P share, runs `udhcpc -i eth0`, exports
+  `NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-bundle.crt`, and prints a
+  variant-(a) banner with `claude --version` and the credentials
+  listing.
+- `bootstrap/pkgs/default.nix`: passes `claude-code` and `cacert`
+  through to `initramfs` via `callPackage`.
+- `bootstrap/flake.nix`: imports nixpkgs with
+  `config.allowUnfree = true` (claude-code is unfree-licensed).
+  `apps.boot-vm` extended for variant (a): preflight-checks
+  `~/.claude/.credentials.json` on the host, mounts that directory as
+  a read-only 9P share (`mount_tag=claudefs`), attaches a virtio user-
+  network NIC, bumps memory to 1 GB, and adds `-cpu max` so the AVX2
+  /  BMI2 instructions the nixpkgs glibc + bundled Node require don't
+  trap as "Illegal instruction" on QEMU's default `qemu64` CPU.
+
+### DESIGN.md
+
+- Added "Phase 0 (a) — documented deviation: glibc in the bootstrap
+  initramfs" under §Phase 0 decisions. Documents the trade-off
+  (ship the full claude-code Nix closure + `/nix/store` as the
+  CAS-of-convenience for now) and the revisit condition.
+
+### Removed
+
+- `bootstrap/PHASE0_A_PLAN.md` — superseded by this milestone entry.
+
 ### Polish (from first interactive session)
 
 - `bootstrap/pkgs/initramfs.nix`: replaced the hand-curated busybox
