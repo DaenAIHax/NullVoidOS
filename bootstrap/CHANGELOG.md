@@ -8,6 +8,26 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang — composizione esplicita di stringhe: `concat` + `str_of_int` (2026-05-29)
+
+Due builtin **puri** (nessun `World`, nessun effetto): `concat(String, String)
+-> String` e `str_of_int(Int) -> String`. Implementano — non rovesciano —
+l'anti-feature §10 *"compose explicitly"*: niente interpolazione, niente
+overload di `+`, e `concat` è **binario** (niente variadici, §10), quindi
+l'annidamento è il costo voluto. Codegen: `nullang_concat` (malloc + memcpy,
+non liberato — i programmi v0.2 sono short-lived, arena/ownership è §11) e
+`nullang_str_of_int` (snprintf `%ld`). `str_of_bool` rimandato (nessun bisogno
+reale).
+
+Emerso **demand-driven** da una sonda di dogfooding (un decisore di
+supervisione stile nv-rebuild, *non* load-bearing): scritto come lo si vorrebbe
+davvero, con reason dinamica, ha rivelato che il vero muro non erano i `match`
+arm-block (aggirabili con una helper fn, A/B verificato) ma la composizione di
+stringhe — una capability mancante senza workaround. Nuovo esempio
+`examples/supervise.null`, verificato end-to-end: compone e stampa
+`service failed with code 1 after 5 attempts`, esce 255. 26 test verdi (3
+nuovi). Prossimo gap noto: arm-block (ergonomia, §11).
+
 ### Nullang v0.2 — enum payloads: gli enum portano dati (2026-05-29)
 
 Una variante di enum può ora portare **un singolo payload tipato**

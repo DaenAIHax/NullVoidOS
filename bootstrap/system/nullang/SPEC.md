@@ -216,6 +216,24 @@ fn main(world: World) -> Int uses !tty {
 `World` was constructed with; the rest of the program threads `world` to
 reach effectful stdlib functions.
 
+### 4.7 Builtins
+
+Available without declaration. The set is deliberately tiny and grows only
+when the OS needs it (§11):
+
+```nullang
+print(world: World, s: String) -> ()   uses !tty   # writes s + newline
+concat(a: String, b: String) -> String             # pure; BINARY only
+str_of_int(n: Int) -> String                        # pure; decimal
+```
+
+`print` is the one effectful builtin (`!tty`); the rest are pure and need no
+`uses`. There is **no string interpolation and no `+` overload for strings**
+(§10): build dynamic strings by composing `concat`/`str_of_int` explicitly.
+`concat` is strictly binary — there are no variadics (§10), so nesting is the
+intended cost (`concat(concat(a, b), c)`). `str_of_bool` and friends are
+deferred until a real need appears.
+
 ## 5 — Capabilities and effects
 
 The heart of the language, and the seam between the two modes.
@@ -376,8 +394,8 @@ Even in full construction mode, regularity beats cleverness:
 - No implicit numeric/string coercion.
 - No operator overloading, no overloading, no default args, no variadics.
 - No macros, no preprocessor, no conditional compilation.
-- No string interpolation (compose explicitly), no multiple list/record
-  syntaxes (one bracket per concept).
+- No string interpolation (compose explicitly via `concat`/`str_of_int`,
+  §4.7), no multiple list/record syntaxes (one bracket per concept).
 - One control-flow form each (`if`/`match`); no `then`, ternary, or `switch`.
 
 ## 11 — What v0.1 deliberately omits (the roadmap)

@@ -304,6 +304,45 @@ fn main(world: World) -> Int uses !tty { print(world, "x"); to_code(.code(9)) }
     assert!(!c.contains("_ = "));
 }
 
+// --- Explicit string composition (v0.2, SPEC §10) ----------------------
+
+#[test]
+fn string_composition_builtins_lower_to_c() {
+    // `concat`/`str_of_int` are pure: a String-composing fn needs no `uses`.
+    let src = r#"
+fn label(n: Int) -> String { concat("n=", str_of_int(n)) }
+fn main(world: World) -> Int uses !tty { print(world, label(7)); 0 }
+"#;
+    let c = compile_to_c(src, "compose.null").expect("should compile");
+    assert!(c.contains("nullang_concat("));
+    assert!(c.contains("nullang_str_of_int("));
+}
+
+#[test]
+fn concat_is_binary_only() {
+    // §10 forbids variadics; `concat` takes exactly two arguments.
+    let src = r#"
+fn main(world: World) -> Int uses !tty {
+  print(world, concat("a", "b", "c"));
+  0
+}
+"#;
+    let err = compile_to_c(src, "var.null").expect_err("concat is binary");
+    assert_eq!(format!("{:?}", err.code), "Typ002");
+}
+
+#[test]
+fn str_of_int_rejects_non_int() {
+    let src = r#"
+fn main(world: World) -> Int uses !tty {
+  print(world, str_of_int("x"));
+  0
+}
+"#;
+    let err = compile_to_c(src, "soi.null").expect_err("str_of_int wants Int");
+    assert_eq!(format!("{:?}", err.code), "Typ001");
+}
+
 #[test]
 fn capabilities_derived_from_main_uses() {
     let src = r#"

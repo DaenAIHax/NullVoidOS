@@ -66,6 +66,27 @@ fn builtins() -> SigTable {
             c_name: "nullang_print".to_string(),
         },
     );
+    // Explicit string composition (SPEC §10: "compose explicitly"). Pure —
+    // no `World`, no effects. `concat` is strictly BINARY (no variadics /
+    // operator overloading, §10); deep nesting is the intended cost.
+    t.insert(
+        "concat".to_string(),
+        Sig {
+            params: vec![Ty::String, Ty::String],
+            ret: Ty::String,
+            effects: vec![],
+            c_name: "nullang_concat".to_string(),
+        },
+    );
+    t.insert(
+        "str_of_int".to_string(),
+        Sig {
+            params: vec![Ty::Int],
+            ret: Ty::String,
+            effects: vec![],
+            c_name: "nullang_str_of_int".to_string(),
+        },
+    );
     t
 }
 

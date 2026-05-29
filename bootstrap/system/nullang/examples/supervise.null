@@ -1,0 +1,57 @@
+# nullang v0.2 — explicit string composition (SPEC §10) over Result payloads.
+# A supervision decider: a PROBE, not a load-bearing OS component (real
+# capability enforcement is Phase 2). Given a service's restart policy, its
+# last exit code, and how many times we've tried, return a Decision carrying a
+# dynamic, human-meaningful reason — composed explicitly via concat/str_of_int
+# (no interpolation, no `+` overload, no variadics: §10). Nesting is the cost.
+
+enum Restart  = .always | .on_failure | .never;
+enum Decision = .restart(Int) | .give_up(String) | .ignore;
+
+fn reason(exit_code: Int, attempts: Int) -> String {
+  concat(
+    concat(
+      concat(concat("service failed with code ", str_of_int(exit_code)), " after "),
+      str_of_int(attempts)
+    ),
+    " attempts"
+  )
+}
+
+fn decide(policy: Restart, exit_code: Int, attempts: Int) -> Decision {
+  match policy {
+    .always     => .restart(1),
+    .never      => .ignore,
+    .on_failure =>
+      if exit_code == 0 {
+        .ignore
+      } else {
+        if attempts >= 5 {
+          .give_up(reason(exit_code, attempts))
+        } else {
+          .restart(attempts * 2)
+        }
+      }
+  }
+}
+
+# Consumer: arm bodies are single calls — arm-blocks are §11-deferred ergonomics,
+# avoided here with helper fns (the A/B-confirmed workaround).
+fn restart_with(world: World, secs: Int) -> Int uses !tty {
+  print(world, concat("restarting in ", concat(str_of_int(secs), "s")));
+  secs
+}
+
+fn report(world: World, why: String) -> Int uses !tty {
+  print(world, why);
+  -1
+}
+
+fn main(world: World) -> Int uses !tty {
+  let d = decide(.on_failure, 1, 5);   # exit 1, 5th attempt → give up
+  match d {
+    .restart(secs) => restart_with(world, secs),
+    .give_up(why)  => report(world, why),
+    .ignore        => 0,
+  }
+}
