@@ -177,6 +177,133 @@ fn main(world: World) -> Int uses !tty { print(world, "x"); 0 }
     assert_eq!(format!("{:?}", err.code), "Sch010");
 }
 
+// --- Enum payloads (v0.2, SPEC §4.2/§4.5) -------------------------------
+
+const PAYLOAD: &str = r#"
+enum Status = .code(Int) | .message(String) | .none;
+fn to_code(s: Status) -> Int {
+  match s { .code(n) => n, .message(_) => -1, .none => 0 }
+}
+fn main(world: World) -> Int uses !tty {
+  print(world, "x");
+  to_code(.code(42))
+}
+"#;
+
+#[test]
+fn payload_enum_lowers_to_tagged_union() {
+    let c = compile_to_c(PAYLOAD, "payload.null").expect("should compile");
+    // A tagged-union typedef with one member per payload variant.
+    assert!(c.contains("typedef struct"));
+    assert!(c.contains("long _v0;"));
+    assert!(c.contains("const char* _v1;"));
+    // Construction is a compound literal carrying the tag and payload.
+    assert!(c.contains(".tag = 0, .u._v0 = 42"));
+    // The bare variant of a tagged enum still constructs the struct.
+    assert!(c.contains("switch ("));
+    assert!(c.contains(".tag)"));
+    // The match arm binds the payload out of the union.
+    assert!(c.contains("long n = "));
+    assert!(c.contains(".u._v0;"));
+}
+
+#[test]
+fn payload_free_enum_stays_bare_long() {
+    // The existing flag-style enum must not gain a typedef or .tag dispatch.
+    let c = compile_to_c(STATUS, "status.null").expect("should compile");
+    assert!(!c.contains("typedef struct"));
+    assert!(!c.contains(".tag"));
+    assert!(c.contains("code(2)"));
+}
+
+#[test]
+fn payload_type_mismatch_is_typ001() {
+    let src = r#"
+enum Status = .code(Int) | .none;
+fn main(world: World) -> Int uses !tty {
+  print(world, "x");
+  match .code(true) { .code(n) => n, .none => 0 }
+}
+"#;
+    let err = compile_to_c(src, "pt.null").expect_err("payload type mismatch");
+    assert_eq!(format!("{:?}", err.code), "Typ001");
+}
+
+#[test]
+fn missing_payload_is_typ021_with_repair() {
+    let src = r#"
+enum Status = .code(Int) | .none;
+fn main(world: World) -> Int uses !tty {
+  print(world, "x");
+  match .code { .code(n) => n, .none => 0 }
+}
+"#;
+    let err = compile_to_c(src, "mp.null").expect_err("missing payload");
+    assert_eq!(format!("{:?}", err.code), "Typ021");
+    assert_eq!(err.repair.expect("carries a repair").id, "supply-payload");
+}
+
+#[test]
+fn payload_on_bare_variant_is_typ021() {
+    let src = r#"
+enum Status = .code(Int) | .none;
+fn main(world: World) -> Int uses !tty {
+  print(world, "x");
+  match .none(5) { .code(n) => n, .none => 0 }
+}
+"#;
+    let err = compile_to_c(src, "bp.null").expect_err("payload on bare variant");
+    assert_eq!(format!("{:?}", err.code), "Typ021");
+}
+
+#[test]
+fn match_arm_missing_binder_is_typ021() {
+    let src = r#"
+enum Status = .code(Int) | .none;
+fn to_code(s: Status) -> Int { match s { .code => 1, .none => 0 } }
+fn main(world: World) -> Int uses !tty { print(world, "x"); to_code(.none) }
+"#;
+    let err = compile_to_c(src, "nb.null").expect_err("payload arm needs a binder");
+    assert_eq!(format!("{:?}", err.code), "Typ021");
+    assert_eq!(err.repair.expect("carries a repair").id, "bind-payload");
+}
+
+#[test]
+fn match_arm_binder_on_bare_variant_is_typ021() {
+    let src = r#"
+enum Status = .code(Int) | .none;
+fn to_code(s: Status) -> Int { match s { .code(n) => n, .none(x) => x } }
+fn main(world: World) -> Int uses !tty { print(world, "x"); to_code(.none) }
+"#;
+    let err = compile_to_c(src, "bb.null").expect_err("binder on a bare arm");
+    assert_eq!(format!("{:?}", err.code), "Typ021");
+}
+
+#[test]
+fn disallowed_payload_type_is_sch010() {
+    let src = r#"
+enum Inner = .a | .b;
+enum Outer = .wrap(Inner) | .none;
+fn main(world: World) -> Int uses !tty { print(world, "x"); 0 }
+"#;
+    let err = compile_to_c(src, "dp.null").expect_err("enum payloads not allowed yet");
+    assert_eq!(format!("{:?}", err.code), "Sch010");
+}
+
+#[test]
+fn discarded_payload_binder_compiles() {
+    // `_` discards the payload: no binding is emitted, but it still compiles.
+    let src = r#"
+enum Status = .code(Int) | .none;
+fn to_code(s: Status) -> Int { match s { .code(_) => 1, .none => 0 } }
+fn main(world: World) -> Int uses !tty { print(world, "x"); to_code(.code(9)) }
+"#;
+    let c = compile_to_c(src, "disc.null").expect("should compile");
+    assert!(c.contains("switch ("));
+    // No binding variable for the discarded payload.
+    assert!(!c.contains("_ = "));
+}
+
 #[test]
 fn capabilities_derived_from_main_uses() {
     let src = r#"

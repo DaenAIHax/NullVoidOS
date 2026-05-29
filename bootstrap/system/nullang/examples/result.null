@@ -1,0 +1,29 @@
+# nullang — enum payloads (SPEC §4.2, §4.5). Exercises a tagged enum with an
+# Int and a String payload plus a bare variant, constructing payload values,
+# passing a tagged value by-value as an argument, and a `match` that binds and
+# uses the payload (including the `_` discard).
+
+enum Status = .code(Int) | .message(String) | .none;
+
+# Bind the Int payload and return it; discard the String; default the rest.
+fn to_code(s: Status) -> Int {
+  match s {
+    .code(n)    => n,
+    .message(_) => -1,
+    .none       => 0,
+  }
+}
+
+# Bind the String payload and print it; other variants print a fixed line.
+fn announce(world: World, s: Status) -> Unit uses !tty {
+  match s {
+    .code(_)    => print(world, "got a code"),
+    .message(m) => print(world, m),
+    .none       => print(world, "nothing"),
+  }
+}
+
+fn main(world: World) -> Int uses !tty {
+  announce(world, .message("hello from a payload"));
+  to_code(.code(42))             # → exit 42
+}

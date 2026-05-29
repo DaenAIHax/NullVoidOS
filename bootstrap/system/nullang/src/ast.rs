@@ -51,18 +51,34 @@ impl Ty {
     }
 }
 
-/// A user-declared closed symbol set (SPEC §4.2): `enum Restart = .always | …`.
+/// One variant of an enum: a symbol, optionally carrying a single typed
+/// payload (SPEC §4.2). `.always` has no payload; `.ok(Int)` carries one.
 #[derive(Debug, Clone, Serialize)]
-pub struct EnumDef {
+pub struct Variant {
     pub name: String,
-    pub symbols: Vec<String>,
+    /// The payload type as written, or `None` for a bare variant. The
+    /// checker restricts the resolved type to Int/Bool/String (SPEC §4.2).
+    pub payload: Option<TypeRef>,
     pub span: Span,
 }
 
-/// One arm of a `match`: `.symbol => expr` (SPEC §4.5).
+/// A user-declared closed symbol set (SPEC §4.2):
+/// `enum Result = .ok(Int) | .err(String) | .pending`.
+#[derive(Debug, Clone, Serialize)]
+pub struct EnumDef {
+    pub name: String,
+    pub variants: Vec<Variant>,
+    pub span: Span,
+}
+
+/// One arm of a `match`: `.symbol => expr`, or `.symbol(binder) => expr`
+/// when the variant carries a payload (SPEC §4.5). `binder` is `_` to
+/// discard the payload.
 #[derive(Debug, Clone, Serialize)]
 pub struct MatchArm {
     pub symbol: String,
+    /// Name binding the matched payload, or `None` for a payload-free arm.
+    pub binder: Option<String>,
     pub body: Box<Expr>,
     pub span: Span,
 }
@@ -228,8 +244,9 @@ pub enum Expr {
         else_blk: Box<Block>,
         span: Span,
     },
-    /// An enum value: `.always` (SPEC §4.2, §5.3).
-    Symbol { name: String, span: Span },
+    /// An enum value: `.always`, or `.ok(expr)` for a payload variant
+    /// (SPEC §4.2, §5.3). `arg` is `None` for a bare variant.
+    Symbol { name: String, arg: Option<Box<Expr>>, span: Span },
     /// `match scrutinee { .a => e, .b => e }` — exhaustive over an enum
     /// (SPEC §4.5).
     Match {

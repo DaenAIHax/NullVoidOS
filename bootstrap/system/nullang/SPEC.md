@@ -129,9 +129,18 @@ Unit     # the empty result, written ()
 # Struct — nominal record:
 type Point = { x: Int, y: Int };
 
-# Enum — closed symbol set, carries no payload in v0.1:
+# Enum — closed symbol set. A variant may carry a single typed payload
+# (v0.2); payload types are Int/Bool/String (enum/World/Unit deferred, §11):
 enum Restart = .always | .on_failure | .never;
+enum Status  = .code(Int) | .message(String) | .none;
 ```
+
+A payload variant is **constructed** with its argument (`.code(42)`,
+`.message("oops")`); a bare variant takes none (`.none`). A mismatch — a
+payload supplied to a bare variant, or omitted from a payload variant — is
+`TYP021`. Enums with no payloads lower to a bare integer; enums with at
+least one payload lower to a tagged union (§7), so flag-style enums pay
+nothing for the feature.
 
 No type inference for declarations; each value is checked against its
 expected type by position (inherited from `.null` §5.6). Local `let`
@@ -178,11 +187,20 @@ match color {
   .green => 2,
   .blue  => 3,
 }                                  # exhaustive; missing arm is TYP020
+
+match status {                     # payload variants bind their payload (v0.2)
+  .code(n)    => n,
+  .message(m) => length(m),
+  .none       => 0,
+}                                  # use `_` to discard: `.message(_) => 0`
 ```
 
 `if` is an expression (both branches must yield the same type). `match`
 must be exhaustive over the enum; a non-exhaustive match is a type error
-with the missing symbols in `expected`.
+with the missing symbols in `expected`. A payload variant's arm **must**
+bind the payload (`.code(n)` or `.code(_)`); the bound name is in scope in
+the arm body with the payload's type. A bare arm must not bind, and a
+payload arm must — either error is `TYP021`.
 
 ### 4.6 The entry point
 
@@ -322,7 +340,7 @@ construction:
 | Prefix | Domain | Examples |
 |---|---|---|
 | `PAR` | lexical / parse | unexpected token, bad string |
-| `TYP` | type mismatch | branch types differ, non-exhaustive match (`TYP020`) |
+| `TYP` | type mismatch | branch types differ, non-exhaustive match (`TYP020`), enum payload arity (`TYP021`) |
 | `SCH` | schema (declaration mode) | unknown / missing manifest field |
 | `REF` | reference resolution | unknown `pkgs.X`, undefined binding |
 | `CAP` | capability vocabulary | unknown cap name, service requires ungranted cap |
@@ -340,6 +358,9 @@ thread-world             {fn: string}
 extract-to-construction  {span}        # move forbidden decl-mode code to a fn
 rename-binding           {from: string, to: string}
 add-missing-arm          {enum: typename, symbol: string}
+supply-payload           {symbol: string, ty: typename}   # .code → .code(<Int>)
+drop-payload             {symbol: string}                 # .none(x) → .none
+bind-payload             {symbol: string, ty: typename}   # .code => → .code(n) =>
 ```
 
 The set is closed and versioned; adding a repair is a minor bump.
@@ -368,7 +389,9 @@ Each is deferred, not rejected; each ships *only when the OS needs it*:
 - **Float** — when a workload needs numeric computation (none in v0.1).
 - **Generics / parametric types** — when stdlib containers demand it.
 - **Traits / interfaces** — when polymorphism over types is unavoidable.
-- **Enum payloads** (`.some(Int)`) — when results need to carry data.
+- ~~**Enum payloads** (`.some(Int)`)~~ — **landed in v0.2** (§4.2, §4.5): a
+  variant carries at most one Int/Bool/String payload; enum/Unit/World
+  payloads remain deferred (would need indirection or carry nothing).
 - **Module / import system** — coordinate with `.null` §12.1 (namespaced,
   *no* automatic merge).
 - **Self-hosting** — the milestone that certifies sovereignty (§12).

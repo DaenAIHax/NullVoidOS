@@ -8,6 +8,34 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang v0.2 — enum payloads: gli enum portano dati (2026-05-29)
+
+Una variante di enum può ora portare **un singolo payload tipato**
+(`enum Status = .code(Int) | .message(String) | .none`); i tipi di payload
+ammessi sono `Int`/`Bool`/`String` (enum annidati, `World` e `Unit` restano
+rimandati — richiederebbero indirezione o non portano dato, SPEC §11). Chiude
+l'item "Enum payloads" della roadmap §11 e rende reale l'anti-feature §10
+("le operazioni fallibili restituiscono un enum result; il chiamante fa match").
+
+- **Costruzione**: `.code(42)`, `.message("oops")`; le varianti nude (`.none`)
+  restano senza argomento. Il disallineamento è `TYP021`
+  (repair `supply-payload` / `drop-payload`).
+- **`match` con binding**: `.code(n) => n`, `.message(_) => …`; il nome lega il
+  payload nello scope dell'arm col tipo dichiarato. Un arm con payload **deve**
+  legare (`_` per scartare), uno nudo non deve — entrambi `TYP021`
+  (repair `bind-payload`).
+- **Lowering (SPEC §7)**: gli enum **senza** payload restano un `long` nudo
+  (zero costo per i flag); quelli con **almeno un** payload diventano una
+  struct tagged per-enum `{ long tag; union {…} u; }`. Una sintassi, due
+  lowering — paghi la union solo dove serve. Il `match` su enum tagged switcha
+  su `.tag` e legge il payload dalla union; la costruzione è un compound
+  literal C99.
+
+Nuovo codice diagnostico `TYP021` (arità del payload). Loop chiuso verificato
+end-to-end: `examples/result.null` stampa il payload `String` ed esce con il
+payload `Int` (42). 23 test di integrazione verdi (9 nuovi); gli esempi
+`status`/`compute`/`hello` invariati (percorso `long` nudo non regredito).
+
 ### Nullang — `null package` closes the CAS+provenance half of §13 (2026-05-28)
 
 `nullang package <file.null> --name N --version V [--author A] [--install]`

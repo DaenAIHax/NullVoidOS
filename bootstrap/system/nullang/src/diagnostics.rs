@@ -28,6 +28,9 @@ pub enum DiagCode {
     /// Non-exhaustive / ill-formed `match`.
     #[serde(rename = "TYP020")]
     Typ020,
+    /// Enum variant payload arity mismatch (construction or `match` arm).
+    #[serde(rename = "TYP021")]
+    Typ021,
     /// Unknown enum symbol.
     #[serde(rename = "REF010")]
     Ref010,

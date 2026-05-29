@@ -27,11 +27,31 @@ pub struct Sig {
 
 pub type SigTable = HashMap<String, Sig>;
 
-/// Output of checking: signatures plus the enum-symbol → (enum id, index)
-/// map. Codegen lowers a symbol to its index (enums are `long` in C).
+/// One enum variant, resolved: a symbol with an optional payload type
+/// (SPEC §4.2). Payload types are restricted to Int/Bool/String.
+#[derive(Debug, Clone)]
+pub struct VariantInfo {
+    pub name: String,
+    pub payload: Option<Ty>,
+}
+
+/// A resolved enum. `tagged` is true when any variant carries a payload —
+/// codegen then lowers it to a `{ tag, union }` struct rather than a bare
+/// `long` (SPEC §7).
+#[derive(Debug, Clone)]
+pub struct EnumInfo {
+    pub name: String,
+    pub variants: Vec<VariantInfo>,
+    pub tagged: bool,
+}
+
+/// Output of checking: signatures, the enum-symbol → (enum id, variant
+/// index) map, and the resolved enum table. Codegen lowers a payload-free
+/// symbol to its index; a payload-carrying enum lowers to a tagged union.
 pub struct Checked {
     pub sigs: SigTable,
     pub symbols: HashMap<String, (u32, usize)>,
+    pub enums: Vec<EnumInfo>,
 }
 
 /// Seed the builtins available without declaration (SPEC §5, §13).
@@ -50,8 +70,9 @@ fn builtins() -> SigTable {
 }
 
 pub fn check_file(file: &File, src: &str, fname: &str) -> Result<Checked, Diag> {
-    // Pass 0: collect enums and the globally-unique symbol map.
-    let mut enums: Vec<EnumDef> = Vec::new();
+    // Pass 0: collect enums (with resolved, restricted payload types) and
+    // the globally-unique symbol map.
+    let mut enums: Vec<EnumInfo> = Vec::new();
     let mut enum_by_name: HashMap<String, u32> = HashMap::new();
     let mut symbols: HashMap<String, (u32, usize)> = HashMap::new();
     for item in &file.items {
@@ -69,27 +90,44 @@ pub fn check_file(file: &File, src: &str, fname: &str) -> Result<Checked, Diag> 
                 ));
             }
             let id = enums.len() as u32;
-            for (idx, sym) in e.symbols.iter().enumerate() {
-                if let Some((other, _)) = symbols.get(sym) {
+            let mut variants = Vec::new();
+            let mut tagged = false;
+            for (idx, v) in e.variants.iter().enumerate() {
+                if let Some((other, _)) = symbols.get(&v.name) {
                     return Err(Diag::error(
                         DiagCode::Sch010,
                         format!(
                             "symbol `.{}` is declared in two enums (`{}` and `{}`); symbols must be globally unique in v0.1",
-                            sym,
+                            v.name,
                             enums[*other as usize].name,
                             e.name
                         ),
                         "a globally-unique symbol",
-                        format!(".{}", sym),
+                        format!(".{}", v.name),
                         fname,
                         line,
                         col,
                     ));
                 }
-                symbols.insert(sym.clone(), (id, idx));
+                let payload = match &v.payload {
+                    None => None,
+                    Some(tref) => Some(resolve_payload_ty(tref, src, fname)?),
+                };
+                if payload.is_some() {
+                    tagged = true;
+                }
+                symbols.insert(v.name.clone(), (id, idx));
+                variants.push(VariantInfo {
+                    name: v.name.clone(),
+                    payload,
+                });
             }
             enum_by_name.insert(e.name.clone(), id);
-            enums.push(e.clone());
+            enums.push(EnumInfo {
+                name: e.name.clone(),
+                variants,
+                tagged,
+            });
         }
     }
 
@@ -130,7 +168,35 @@ pub fn check_file(file: &File, src: &str, fname: &str) -> Result<Checked, Diag> 
     }
 
     check_main(file, src, fname)?;
-    Ok(Checked { sigs, symbols })
+    Ok(Checked {
+        sigs,
+        symbols,
+        enums,
+    })
+}
+
+/// Resolve an enum payload type, restricting it to the v0.2 set
+/// (Int/Bool/String). Enum-typed and `World`/`Unit` payloads are rejected
+/// — they would require indirection or carry no data (SPEC §4.2, §11).
+fn resolve_payload_ty(t: &TypeRef, src: &str, fname: &str) -> Result<Ty, Diag> {
+    match t.resolved {
+        Some(ty @ (Ty::Int | Ty::Bool | Ty::String)) => Ok(ty),
+        _ => {
+            let (line, col) = line_col(src, t.span.offset);
+            Err(Diag::error(
+                DiagCode::Sch010,
+                format!(
+                    "enum payload type `{}` is not allowed; v0.2 payloads are Int, Bool, or String",
+                    t.name
+                ),
+                "Int, Bool, or String",
+                t.name.clone(),
+                fname,
+                line,
+                col,
+            ))
+        }
+    }
 }
 
 fn resolve_ty(
@@ -196,7 +262,7 @@ struct Checker<'a> {
     src: &'a str,
     fname: &'a str,
     sigs: &'a SigTable,
-    enums: &'a [EnumDef],
+    enums: &'a [EnumInfo],
     symbols: &'a HashMap<String, (u32, usize)>,
 }
 
@@ -304,16 +370,70 @@ impl<'a> Checker<'a> {
                     *span,
                 )
             }),
-            Expr::Symbol { name, span } => match self.symbols.get(name) {
-                Some((id, _)) => Ok(Ty::Enum(*id)),
-                None => Err(self.diag(
-                    DiagCode::Ref010,
-                    format!("unknown enum symbol `.{}`", name),
-                    "a symbol from a declared enum",
-                    format!(".{}", name),
-                    *span,
-                )),
-            },
+            Expr::Symbol { name, arg, span } => {
+                let (id, idx) = match self.symbols.get(name) {
+                    Some(v) => *v,
+                    None => {
+                        return Err(self.diag(
+                            DiagCode::Ref010,
+                            format!("unknown enum symbol `.{}`", name),
+                            "a symbol from a declared enum",
+                            format!(".{}", name),
+                            *span,
+                        ))
+                    }
+                };
+                let variant = &self.enums[id as usize].variants[idx];
+                match (&variant.payload, arg) {
+                    (None, None) => Ok(Ty::Enum(id)),
+                    (Some(pty), Some(e)) => {
+                        let got = self.check_expr(e, locals, caller_uses, caller_name)?;
+                        if got != *pty {
+                            return Err(self.diag(
+                                DiagCode::Typ001,
+                                format!(
+                                    "payload of `.{}` expects {}, got {}",
+                                    name,
+                                    pty.name(),
+                                    got.name()
+                                ),
+                                pty.name(),
+                                got.name().to_string(),
+                                e.span(),
+                            ));
+                        }
+                        Ok(Ty::Enum(id))
+                    }
+                    (Some(pty), None) => Err(self
+                        .diag(
+                            DiagCode::Typ021,
+                            format!(
+                                "`.{}` carries a {} payload but was constructed without one",
+                                name,
+                                pty.name()
+                            ),
+                            &format!(".{}(<{}>)", name, pty.name()),
+                            format!(".{}", name),
+                            *span,
+                        )
+                        .with_repair(
+                            "supply-payload",
+                            serde_json::json!({ "symbol": name, "ty": pty.name() }),
+                        )),
+                    (None, Some(_)) => Err(self
+                        .diag(
+                            DiagCode::Typ021,
+                            format!("`.{}` carries no payload but was given one", name),
+                            &format!(".{}", name),
+                            format!(".{}(…)", name),
+                            *span,
+                        )
+                        .with_repair(
+                            "drop-payload",
+                            serde_json::json!({ "symbol": name }),
+                        )),
+                }
+            }
             Expr::Call { callee, args, span } => {
                 let sig = self.sigs.get(callee).ok_or_else(|| {
                     self.diag(
@@ -446,18 +566,21 @@ impl<'a> Checker<'a> {
                 let mut covered: HashSet<String> = HashSet::new();
                 let mut arm_ty: Option<Ty> = None;
                 for arm in arms {
-                    if !edef.symbols.iter().any(|s| s == &arm.symbol) {
-                        return Err(self.diag(
-                            DiagCode::Typ020,
-                            format!(
-                                "`.{}` is not a variant of enum `{}`",
-                                arm.symbol, edef.name
-                            ),
-                            &format!("one of {}", symbol_list(edef)),
-                            format!(".{}", arm.symbol),
-                            arm.span,
-                        ));
-                    }
+                    let vidx = match edef.variants.iter().position(|v| v.name == arm.symbol) {
+                        Some(i) => i,
+                        None => {
+                            return Err(self.diag(
+                                DiagCode::Typ020,
+                                format!(
+                                    "`.{}` is not a variant of enum `{}`",
+                                    arm.symbol, edef.name
+                                ),
+                                &format!("one of {}", symbol_list(edef)),
+                                format!(".{}", arm.symbol),
+                                arm.span,
+                            ))
+                        }
+                    };
                     if !covered.insert(arm.symbol.clone()) {
                         return Err(self.diag(
                             DiagCode::Typ020,
@@ -467,7 +590,48 @@ impl<'a> Checker<'a> {
                             arm.span,
                         ));
                     }
-                    let bt = self.check_expr(&arm.body, locals, caller_uses, caller_name)?;
+                    // The payload binder must match the variant's payload
+                    // arity; a bound payload is in scope in the arm body.
+                    let mut arm_locals = locals.clone();
+                    match (&edef.variants[vidx].payload, &arm.binder) {
+                        (None, None) => {}
+                        (Some(pty), Some(b)) => {
+                            if b != "_" {
+                                arm_locals.insert(b.clone(), *pty);
+                            }
+                        }
+                        (Some(pty), None) => {
+                            return Err(self
+                                .diag(
+                                    DiagCode::Typ021,
+                                    format!(
+                                        "arm `.{}` must bind its {} payload",
+                                        arm.symbol,
+                                        pty.name()
+                                    ),
+                                    &format!(".{}(<name>) =>", arm.symbol),
+                                    format!(".{} =>", arm.symbol),
+                                    arm.span,
+                                )
+                                .with_repair(
+                                    "bind-payload",
+                                    serde_json::json!({ "symbol": arm.symbol, "ty": pty.name() }),
+                                ))
+                        }
+                        (None, Some(_)) => {
+                            return Err(self.diag(
+                                DiagCode::Typ021,
+                                format!(
+                                    "arm `.{}` binds a payload but the variant carries none",
+                                    arm.symbol
+                                ),
+                                &format!(".{} =>", arm.symbol),
+                                format!(".{}(…) =>", arm.symbol),
+                                arm.span,
+                            ))
+                        }
+                    }
+                    let bt = self.check_expr(&arm.body, &arm_locals, caller_uses, caller_name)?;
                     match arm_ty {
                         None => arm_ty = Some(bt),
                         Some(prev) if prev != bt => {
@@ -488,10 +652,10 @@ impl<'a> Checker<'a> {
                 }
 
                 let missing: Vec<String> = edef
-                    .symbols
+                    .variants
                     .iter()
-                    .filter(|s| !covered.contains(*s))
-                    .cloned()
+                    .map(|v| v.name.clone())
+                    .filter(|s| !covered.contains(s))
                     .collect();
                 if !missing.is_empty() {
                     return Err(self
@@ -570,10 +734,10 @@ impl<'a> Checker<'a> {
     }
 }
 
-fn symbol_list(e: &EnumDef) -> String {
-    e.symbols
+fn symbol_list(e: &EnumInfo) -> String {
+    e.variants
         .iter()
-        .map(|s| format!(".{}", s))
+        .map(|v| format!(".{}", v.name))
         .collect::<Vec<_>>()
         .join(", ")
 }

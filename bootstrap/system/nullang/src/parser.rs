@@ -118,11 +118,25 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::Enum, "to start an enum")?;
         let (name, _) = self.expect_ident("for the enum name")?;
         self.expect(&TokenKind::Eq, "after the enum name")?;
-        let mut symbols = Vec::new();
+        let mut variants = Vec::new();
         loop {
+            let vspan = self.span_here();
             self.expect(&TokenKind::Dot, "before an enum symbol")?;
             let (sym, _) = self.expect_ident("for an enum symbol")?;
-            symbols.push(sym);
+            // Optional single typed payload: `.ok(Int)`.
+            let payload = if *self.peek() == TokenKind::LParen {
+                self.advance();
+                let ty = self.parse_type()?;
+                self.expect(&TokenKind::RParen, "to close an enum payload type")?;
+                Some(ty)
+            } else {
+                None
+            };
+            variants.push(Variant {
+                name: sym,
+                payload,
+                span: vspan,
+            });
             if *self.peek() == TokenKind::Pipe {
                 self.advance();
             } else {
@@ -132,7 +146,7 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::Semi, "to end the enum declaration")?;
         Ok(EnumDef {
             name,
-            symbols,
+            variants,
             span,
         })
     }
@@ -439,7 +453,16 @@ impl<'a> Parser<'a> {
             TokenKind::Dot => {
                 self.advance();
                 let (name, _) = self.expect_ident("for an enum symbol")?;
-                Ok(Expr::Symbol { name, span })
+                // Optional payload argument: `.ok(expr)`.
+                let arg = if *self.peek() == TokenKind::LParen {
+                    self.advance();
+                    let inner = self.parse_expr()?;
+                    self.expect(&TokenKind::RParen, "to close an enum payload")?;
+                    Some(Box::new(inner))
+                } else {
+                    None
+                };
+                Ok(Expr::Symbol { name, arg, span })
             }
             TokenKind::Ident(name) => {
                 self.advance();
@@ -499,10 +522,20 @@ impl<'a> Parser<'a> {
             let arm_span = self.span_here();
             self.expect(&TokenKind::Dot, "before a match arm symbol")?;
             let (symbol, _) = self.expect_ident("for a match arm symbol")?;
+            // Optional payload binder: `.ok(n) =>` or `.ok(_) =>`.
+            let binder = if *self.peek() == TokenKind::LParen {
+                self.advance();
+                let (b, _) = self.expect_ident("for a payload binder")?;
+                self.expect(&TokenKind::RParen, "to close a payload binder")?;
+                Some(b)
+            } else {
+                None
+            };
             self.expect(&TokenKind::FatArrow, "after a match arm symbol")?;
             let body = self.parse_expr()?;
             arms.push(MatchArm {
                 symbol,
+                binder,
                 body: Box::new(body),
                 span: arm_span,
             });
