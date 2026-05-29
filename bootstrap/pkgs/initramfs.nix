@@ -273,6 +273,19 @@ let
     /bin/bash
   '';
 
+  # Nullang's own source, shipped read-only at /usr/src/nullang (Via B of the
+  # self-improvement loop). The in-VM agent copies it to a writable dir, adds a
+  # builtin within BUILTINS_CONTRACT.md's boundary, `cargo build`s, and swaps
+  # /bin/nullang — no GitHub access from the VM, the source travels inside the
+  # versioned image ("the knowledge is already in the depot"). `target/` is
+  # excluded; everything else (Cargo.toml/lock, src, tests, the contract .md)
+  # ships so `cargo build` works offline after the first dependency fetch.
+  nullangSrc = lib.cleanSourceWith {
+    src = ../system/nullang;
+    filter = path: type:
+      baseNameOf (toString path) != "target" && lib.cleanSourceFilter path type;
+  };
+
   # Compute /bin symlinks for the developer substrate. Each package
   # contributes whatever it exports in its $out/bin (typically the
   # `pname`-matching binary, but sometimes a whole family — e.g.
@@ -306,6 +319,10 @@ runCommand "nullvoid-initramfs" {
   # No /nix/store dependency, no closure shipping — they just work.
   cp ${nullLang}/bin/null root/bin/
   cp ${nullang}/bin/nullang root/bin/
+  # Ship Nullang's source so the agent can extend it (Via B). Read-only here
+  # (initramfs); the agent copies it to /var to edit + build.
+  mkdir -p root/usr/src
+  cp -r ${nullangSrc} root/usr/src/nullang
   cp ${nv-pkg}/bin/nv-pkg root/bin/
   cp ${nv-rebuild}/bin/nv-rebuild root/bin/
 

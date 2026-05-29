@@ -56,10 +56,15 @@ sempre reversibile.
 
 Contratto in `system/nullang/BUILTINS_CONTRACT.md`: confine esatto (cosa può/
 non può editare), pattern del builtin, e il rito build→swap→smoke-probe→
-rollback. Prossimi passi: (1) l'agente costruisce la smoke-probe in Nullang puro
-(rete di sicurezza, zero plumbing), (2) montare il sorgente `system/nullang/`
-nella VM, (3) primo builtin auto-servito dall'agente. Orizzonte: self-host
-(Nullang in Nullang) = Wave 6+, dopo `List`/`struct`/`while`/`mut`.
+rollback. Stato: (1) ✅ smoke-probe costruita dall'agente (`nv-smoke-probe`,
+generation-6, 13 check + fault-injection validata); (2) ✅ **consegna sorgente
+= Via B**: `nullang` source infilato nell'immagine a `/usr/src/nullang`
+(read-only; `initramfs.nix` let `nullangSrc`, esclude `target/`) — la VM NON
+tocca GitHub (repo privato + chiave SSH host non autorizzata + niente PAT nella
+VM); l'agente copia in `/var`, edita, `cargo build`, swappa, push-back via diff;
+(3) prossimo: primo builtin auto-servito (preferenza agente: `char_at`).
+Orizzonte: self-host (Nullang in Nullang) = Wave 6+, dopo `List`/`struct`/
+`while`/`mut`.
 
 ### Nullang — `argv`/`argc` (gate Wave 2: tool CLI parametrici) (2026-05-29)
 
