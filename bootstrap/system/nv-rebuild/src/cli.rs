@@ -1,5 +1,5 @@
 use crate::generation;
-use crate::manifest::SystemManifest;
+use crate::manifest::{Capability, SystemManifest};
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -24,6 +24,13 @@ pub enum Command {
     Rollback,
     /// List all generations, marking the active one.
     Generations,
+    /// Launch a declared service from the active generation, confined to
+    /// exactly the capabilities its descriptor grants (Traccia A). The
+    /// process inherits this command's exit code.
+    Run {
+        /// Service name, as declared in system.null `services`.
+        service: String,
+    },
 }
 
 /// Runtime configuration, resolved from environment variables.
@@ -221,6 +228,65 @@ pub fn cmd_generations(cfg: &Config) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// `nv-rebuild run <service>` — launch a declared service under its declared
+/// capabilities. This is the runtime enforcement seam (Traccia A): the
+/// capability set the service was *granted* (its `requires`, persisted into
+/// the active generation's descriptor) becomes the set it can *exercise*.
+///
+/// Slice scope: `!net` is enforced via network-namespace isolation. A service
+/// without a `net` capability is launched in a fresh, empty network namespace
+/// (`unshare -n`) — loopback only, down — so it cannot reach the network. A
+/// service with `!net` stays in the host netns. Other capabilities are
+/// recorded in the audit line but not yet enforced (next increments).
+pub fn cmd_run(cfg: &Config, service: &str) -> Result<()> {
+    let desc_path = cfg
+        .system_root
+        .join("current")
+        .join("etc/services")
+        .join(service);
+    let content = std::fs::read_to_string(&desc_path).with_context(|| {
+        format!(
+            "no descriptor for service `{service}` in the active generation ({})",
+            desc_path.display()
+        )
+    })?;
+
+    let mut exec: Option<String> = None;
+    let mut requires: Vec<Capability> = Vec::new();
+    for line in content.lines() {
+        if let Some(v) = line.strip_prefix("exec=") {
+            exec = Some(v.to_string());
+        } else if let Some(v) = line.strip_prefix("requires=") {
+            requires = v.split_whitespace().map(Capability::parse_token).collect();
+        }
+    }
+    let exec = exec.with_context(|| format!("service `{service}` descriptor has no exec="))?;
+    let net_granted = requires.iter().any(Capability::grants_net);
+
+    // Audit line: what we are about to enforce, before we enforce it.
+    let cap_tokens: Vec<String> = requires.iter().map(Capability::token).collect();
+    eprintln!("nv-rebuild run: service `{service}`");
+    eprintln!("  exec:     {exec}");
+    eprintln!("  requires: [{}]", cap_tokens.join(" "));
+
+    let mut cmd = if net_granted {
+        eprintln!("  net:      GRANTED — host network namespace");
+        std::process::Command::new(&exec)
+    } else {
+        eprintln!("  net:      DENIED — isolated network namespace (unshare -n)");
+        let mut c = std::process::Command::new("unshare");
+        c.arg("-n").arg(&exec);
+        c
+    };
+
+    let status = cmd
+        .status()
+        .with_context(|| format!("failed to launch service `{service}` ({exec})"))?;
+    let code = status.code().unwrap_or(255);
+    eprintln!("  exit:     {code}");
+    std::process::exit(code);
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

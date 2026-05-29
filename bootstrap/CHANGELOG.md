@@ -8,6 +8,60 @@ applicable.
 
 ## [Unreleased]
 
+### Traccia A — capability enforcement a runtime: slice `!net` (kernel + supervisore) (2026-05-29)
+
+La prima capability che NullVoidOS **applica** a runtime invece di limitarsi a
+registrarla. Finora il vocabolario (`!net`, `!fs.*`, `!tty`, …) era
+*recorded-only*: `system.null` concedeva, i pacchetti dichiaravano, `null`
+type-checkava `requires ⊆ caps` — ma nulla impediva a un processo di fare ciò
+che non aveva dichiarato. Questo slice chiude il buco per `!net`. **Stadi 1-2
+fatti e verificati sull'host; Stadio 3 (prova di isolamento in-VM, serve root
+per `unshare -n`) in attesa del prossimo boot.**
+
+**Stadio 1 — kernel** (`pkgs/kernel.nix`). Abilitati `NET_NS` + l'intera
+famiglia namespace (`UTS/IPC/PID/USER_NS`, `NAMESPACES`) + `SECCOMP`/
+`SECCOMP_FILTER`. Root cause scovato: `tinyconfig` setta `EXPERT=y` e disabilita
+`MULTIUSER`+`SYSVIPC`; `CONFIG_NAMESPACES depends on MULTIUSER`, quindi senza
+abilitare prima le dipendenze `olddefconfig` scartava silenziosamente l'intero
+blocco namespace (incluso `NET_NS`). Aggiunti `MULTIUSER`+`SYSVIPC`; ribuild
+verde, tutti i simboli `=y`.
+
+**Stadio 2 — supervisore** (`system/nv-rebuild`). Tre cuciture:
+- `manifest.rs`: nuovo tipo `Capability { path, arg }` + campo `requires` su
+  `Service` (deserializzato da `null eval`).
+- `generation.rs`: `requires` persistito nel descrittore `etc/services/<name>`
+  come riga `requires=<token>` (token compatti: `net`, `net.localhost`,
+  `fs.read:/etc`, `tty`).
+- `cli.rs` + `main.rs`: nuovo comando **`nv-rebuild run <service>`** — legge il
+  descrittore della generation attiva, stampa una audit line, e lancia il
+  processo confinato: senza capability `net` → `unshare -n` (applet busybox,
+  netns fresco, solo loopback down) → niente rete; con `!net` → resta nel netns
+  host. Nessuna nuova dipendenza Rust (vincolo offline: il vendor fetch vuole
+  rete); `cargoHash` invariato.
+
+**Demo riproducibile** (`system/demos/net-enforce/`): un solo binario probe,
+pacchettizzato una volta, dichiarato come **due servizi che differiscono solo
+nelle capability concesse** (`net-granted` = `[!net !tty]`, `net-denied` =
+`[!tty]`). Probe via `/proc/net/dev` (namespaced — riflette il netns, a
+differenza di `/sys/class/net` che ha ingannato una prima versione). Test
+falsificabile: stesso codice, esito opposto deciso solo dalla capability
+dichiarata.
+
+**Verifica host** (nessun boot, store offline): kernel ribuiltato coi simboli
+namespace `=y`; `nv-rebuild` ricompilato offline col comando `run`; host-dry-run
+completo `nv-pkg install → nv-rebuild switch → descrittore → run` — confermato
+che `requires` fluisce fino al descrittore (`requires=net tty` / `requires=tty`)
+e che `run net-granted` esegue confinato nel netns host (exit 0). Il meccanismo
+netns dimostrato con `unshare -rn` + `/proc/net/dev`. Manca solo la prova di
+`net-denied` isolato (richiede root → in-VM).
+
+**Limiti onesti (documentati):** enforce di `!net` soltanto; `!fs` (Landlock),
+`!proc.*`/`!rand` (seccomp) sono i prossimi incrementi (primitive kernel già
+compilate). `!net.localhost` trattato come `!net` pieno per ora. La
+supervisione vive provvisoriamente in `nv-rebuild run` (one-shot, manuale); un
+supervisore di boot con restart policy reali è un pezzo a parte (probabile
+`nv-init`).
+
 ### Milestone — wow-moment: un agente *dentro la VM* autora e dichiara un pacchetto da solo (2026-05-29)
 
 Il deliverable narrativo dell'agent-primary OS. Dato un prompt **goal-level**

@@ -109,7 +109,16 @@ pub fn build_generation(
             crate::manifest::RestartPolicy::OnFailure => "on-failure",
             crate::manifest::RestartPolicy::Never => "never",
         };
-        let content = format!("exec={}\nrestart={}\n", svc.exec, restart);
+        // Persist the granted capability set into the descriptor so the
+        // supervisor can confine the process at launch (Traccia A). Space-
+        // separated compact tokens; an empty `requires=` means "no caps".
+        let caps: Vec<String> = svc.requires.iter().map(|c| c.token()).collect();
+        let content = format!(
+            "exec={}\nrestart={}\nrequires={}\n",
+            svc.exec,
+            restart,
+            caps.join(" ")
+        );
         std::fs::write(services_dir.join(name), &content)
             .with_context(|| format!("cannot write services/{name}"))?;
     }

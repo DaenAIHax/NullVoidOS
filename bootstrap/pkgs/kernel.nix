@@ -137,6 +137,37 @@ stdenv.mkDerivation rec {
       --enable PNP \
       --enable PNPACPI
 
+    # Capability enforcement substrate (Traccia A). The activation engine
+    # confines each declared service to exactly the capabilities its
+    # `requires` set grants — deny-by-default. tinyconfig ships none of
+    # these primitives, so the kernel cannot sandbox a process at all
+    # without them.
+    #   - NET_NS: a service WITHOUT `!net` is launched in a fresh, empty
+    #     network namespace (loopback only, down) → no connectivity. WITH
+    #     `!net` it stays in the host netns. This is the first enforced
+    #     capability end-to-end.
+    #   - The other namespaces + SECCOMP are enabled now (cheap) so future
+    #     increments (`!fs` via Landlock, `!proc.*`/`!rand` via seccomp)
+    #     don't each force a fresh kernel rebuild. Landlock (CONFIG_SECURITY
+    #     + SECURITY_LANDLOCK + LSM list) lands with the `!fs` increment.
+    #
+    # Dependency note: tinyconfig sets EXPERT=y and disables MULTIUSER +
+    # SYSVIPC. CONFIG_NAMESPACES `depends on MULTIUSER`, so without it
+    # olddefconfig silently drops NAMESPACES and every sub-namespace
+    # (NET_NS included). IPC_NS additionally needs SYSVIPC, USER_NS needs
+    # MULTIUSER. Enable the deps first or the namespace block evaporates.
+    scripts/config \
+      --enable MULTIUSER \
+      --enable SYSVIPC \
+      --enable NAMESPACES \
+      --enable UTS_NS \
+      --enable IPC_NS \
+      --enable USER_NS \
+      --enable PID_NS \
+      --enable NET_NS \
+      --enable SECCOMP \
+      --enable SECCOMP_FILTER
+
     # Default hostname before init takes over.
     scripts/config --set-str DEFAULT_HOSTNAME nullvoid
 

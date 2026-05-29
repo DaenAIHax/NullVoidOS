@@ -25,6 +25,55 @@ pub struct SystemManifest {
 pub struct Service {
     pub exec: String,
     pub restart: RestartPolicy,
+    /// Capabilities this service is granted. Emitted by `null eval` as the
+    /// service's `requires` set (already validated ⊆ system `caps`). The
+    /// supervisor confines the launched process to exactly these (Traccia A).
+    #[serde(default)]
+    pub requires: Vec<Capability>,
+}
+
+/// A capability as a structured value, matching `null eval`'s serialization:
+/// `{"path":["net"],"arg":null}`, `{"path":["fs","read"],"arg":"/etc"}`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Capability {
+    pub path: Vec<String>,
+    #[serde(default)]
+    pub arg: Option<String>,
+}
+
+impl Capability {
+    /// Compact single-token form for the service descriptor: the path joined
+    /// by `.`, plus `:<arg>` when an arg is present. `!net` → `net`,
+    /// `!net.localhost` → `net.localhost`, `!fs.read."/etc"` → `fs.read:/etc`.
+    pub fn token(&self) -> String {
+        let base = self.path.join(".");
+        match &self.arg {
+            Some(a) => format!("{base}:{a}"),
+            None => base,
+        }
+    }
+
+    /// Inverse of [`token`]: parse one descriptor token back into a capability.
+    pub fn parse_token(tok: &str) -> Capability {
+        match tok.split_once(':') {
+            Some((p, a)) => Capability {
+                path: p.split('.').map(str::to_string).collect(),
+                arg: Some(a.to_string()),
+            },
+            None => Capability {
+                path: tok.split('.').map(str::to_string).collect(),
+                arg: None,
+            },
+        }
+    }
+
+    /// Whether this capability grants outbound network access. Covers both
+    /// `!net` and `!net.localhost`. NOTE (Traccia A slice): the supervisor
+    /// treats both as "keep host netns"; the loopback-only refinement for
+    /// `.localhost` (isolated netns with `lo` up) is a documented follow-up.
+    pub fn grants_net(&self) -> bool {
+        self.path.first().map(String::as_str) == Some("net")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

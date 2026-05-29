@@ -12,5 +12,6 @@ fn main() -> Result<()> {
         Command::Switch => nv_rebuild::cli::cmd_switch(&cfg),
         Command::Rollback => nv_rebuild::cli::cmd_rollback(&cfg),
         Command::Generations => nv_rebuild::cli::cmd_generations(&cfg),
+        Command::Run { service } => nv_rebuild::cli::cmd_run(&cfg, &service),
     }
 }
