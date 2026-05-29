@@ -2,6 +2,7 @@
 # Useful as a smoke-test: `null eval examples/minimal.null`
 {
   hostname = "nullvoid-minimal";
+  caps = [];
   packages = [];
   services = {};
   environment = {};

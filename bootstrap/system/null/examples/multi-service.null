@@ -4,6 +4,9 @@
 {
   hostname = "nullvoid-dev";
 
+  # System-level capability whitelist; service `requires` must be a subset.
+  caps = [ !tty !net ];
+
   # You can mix literal package strings with pkgs.* references.
   # pkgs.bash expands to "bash-<latest-installed-version>".
   packages = [
@@ -17,19 +20,22 @@
     # The AI agent process — always restart on crash.
     agent = {
       exec = "/run/current/bin/claude";
-      restart = "always";
+      restart = .always;
+      requires = [ !tty !net ];
     };
 
     # A tiny HTTP server — restart only on failure.
     web = {
       exec = "/run/current/bin/http-server";
-      restart = "on-failure";
+      restart = .on-failure;
+      requires = [ !net ];
     };
 
     # A one-shot init helper — never restart.
     setup = {
       exec = "/run/current/bin/setup-env";
-      restart = "never";
+      restart = .never;
+      requires = [];
     };
   };
 

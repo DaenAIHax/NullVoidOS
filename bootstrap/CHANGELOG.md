@@ -8,6 +8,28 @@ applicable.
 
 ## [Unreleased]
 
+### Crossing nullang→.nvpkg→OS validata + fix drift esempi `.null` (2026-05-29)
+
+Esercitata l'intera crossing sull'host in un prefix usa-e-getta (`NV_STORE_ROOT`
+/ `NV_SYSTEM_ROOT` / `NV_CONFIG`, **nessun boot VM**): un programma autorato in
+nullang (`supervise`) ha attraversato `nullang package` → `nv-pkg install` (CAS)
+→ dichiarazione `pkgs.supervise` in `system.null` → `null eval` → `nv-rebuild
+switch` → eseguito da `current/bin` (reason dinamica, exit 255). La **cucitura
+capability** gira nel loop: il pacchetto *consuma* `tty` (`uses` → manifest
+`capabilities:["tty"]`), il sistema lo *concede* via `caps`. Nessun gap di
+linguaggio emerso — Nullang esprime già ciò che la crossing richiede; gli
+arm-block restano §11 non urgenti.
+
+La crossing ha però rivelato che gli esempi declaration-mode di `null`
+(`examples/{minimal,standard,multi-service}.null`) erano **triplamente in
+drift** rispetto allo schema `SystemManifest` e fallivano `null eval`:
+(1) mancava il campo top-level richiesto `caps` (`SCH001`); (2) `restart` era
+una stringa `"always"` invece del simbolo enum `.always`/`.on-failure`/`.never`
+(`TYP004`); (3) i servizi non avevano il campo richiesto `requires`
+(`SCH001`). Corretti tutti e tre con `caps`/`requires` coerenti
+(`requires ⊆ caps`); ora evalano puliti (exit 0). `minimal.null` si
+auto-descrive come smoke-test `null eval` ed era rotto.
+
 ### Nullang — composizione esplicita di stringhe: `concat` + `str_of_int` (2026-05-29)
 
 Due builtin **puri** (nessun `World`, nessun effetto): `concat(String, String)

@@ -3,6 +3,10 @@
 {
   hostname = "nullvoid";
 
+  # System-level capability grant (whitelist). A service's `requires` must
+  # be a subset of this set, otherwise CAP004. Granted but-unused caps are fine.
+  caps = [ !tty !net ];
+
   packages = [
     "bash-5.3.9"
     "neovim-mini-0.1.0"
@@ -13,7 +17,8 @@
   services = {
     agent = {
       exec = "/run/current/bin/claude";
-      restart = "always";
+      restart = .always;
+      requires = [ !tty !net ];
     };
   };
 
