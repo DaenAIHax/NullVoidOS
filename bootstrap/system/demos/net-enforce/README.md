@@ -35,12 +35,15 @@ can see a non-loopback interface and exits `0` (reachable) or `7` (isolated).
   `nv-rebuild run <service>` command. No `!net` capability → the service is
   launched via `unshare -n` (busybox applet); otherwise it stays in the host
   netns.
-- **Probe**: `/proc/net/dev` is per-netns (it resolves through `/proc/self/net`
-  to the reader's network namespace), so it reflects the `unshare -n`
-  isolation without remounting anything and without needing the network to be
-  up — offline-safe. `/sys/class/net` does **not** (it is tied to the netns
-  that mounted sysfs) — an early version of the probe used it and silently
-  reported "reachable" inside an isolated netns.
+- **Probe**: tests for a **default route** in the current netns via
+  `/proc/net/route` (per-netns, like all of `/proc/self/net`). The host netns
+  has a default route via `eth0` (DHCP); a fresh `unshare -n` netns has none.
+  Two earlier probe attempts were wrong and the in-VM run caught both:
+  `/sys/class/net` is tied to the netns that mounted sysfs (not the reader's),
+  so it never reflected the isolation; and "any non-`lo` interface in
+  `/proc/net/dev`" false-positived because a fresh netns auto-creates `sit0`
+  (the IPv6-in-IPv4 tunnel) alongside `lo`. The route is the semantically
+  correct, offline-safe signal of off-link connectivity.
 
 ## Run it (inside the booted VM, as root)
 

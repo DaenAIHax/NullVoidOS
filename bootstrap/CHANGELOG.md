@@ -14,9 +14,9 @@ La prima capability che NullVoidOS **applica** a runtime invece di limitarsi a
 registrarla. Finora il vocabolario (`!net`, `!fs.*`, `!tty`, …) era
 *recorded-only*: `system.null` concedeva, i pacchetti dichiaravano, `null`
 type-checkava `requires ⊆ caps` — ma nulla impediva a un processo di fare ciò
-che non aveva dichiarato. Questo slice chiude il buco per `!net`. **Stadi 1-2
-fatti e verificati sull'host; Stadio 3 (prova di isolamento in-VM, serve root
-per `unshare -n`) in attesa del prossimo boot.**
+che non aveva dichiarato. Questo slice chiude il buco per `!net`. **Tutti e tre
+gli stadi fatti; Stadio 3 (prova falsificabile) PASS in VM headless con kernel
++ `nv-rebuild` nuovi.**
 
 **Stadio 1 — kernel** (`pkgs/kernel.nix`). Abilitati `NET_NS` + l'intera
 famiglia namespace (`UTS/IPC/PID/USER_NS`, `NAMESPACES`) + `SECCOMP`/
@@ -52,8 +52,19 @@ namespace `=y`; `nv-rebuild` ricompilato offline col comando `run`; host-dry-run
 completo `nv-pkg install → nv-rebuild switch → descrittore → run` — confermato
 che `requires` fluisce fino al descrittore (`requires=net tty` / `requires=tty`)
 e che `run net-granted` esegue confinato nel netns host (exit 0). Il meccanismo
-netns dimostrato con `unshare -rn` + `/proc/net/dev`. Manca solo la prova di
-`net-denied` isolato (richiede root → in-VM).
+netns dimostrato con `unshare -rn` + `/proc/net/dev`.
+
+**Stadio 3 — PASS in VM** (headless, QEMU separato senza mount di `~/.ssh`/
+`~/.claude`, solo il repo in 9P read-only, `poweroff` automatico). `net-granted`
+→ default route via `eth0` → exit 0; `net-denied` → `unshare -n` → nessuna
+default route → exit 7. Stesso binario, stesso pacchetto: l'esito opposto è
+deciso solo dalla capability dichiarata. Il run in-VM ha catturato due bug del
+*probe* che l'host non poteva vedere: `/sys/class/net` non riflette il netns del
+lettore, e un netns fresco auto-crea `sit0` (tunnel IPv6-in-IPv4) oltre a `lo` —
+quindi "qualsiasi interfaccia non-`lo`" dava falso positivo. Probe finale: test
+della **default route** in `/proc/net/route` (per-netns, offline-safe). Il
+meccanismo di enforcement era corretto fin dal primo run (in `net-denied`
+`eth0` era già sparito); sbagliava solo il giudizio del probe.
 
 **Limiti onesti (documentati):** enforce di `!net` soltanto; `!fs` (Landlock),
 `!proc.*`/`!rand` (seccomp) sono i prossimi incrementi (primitive kernel già

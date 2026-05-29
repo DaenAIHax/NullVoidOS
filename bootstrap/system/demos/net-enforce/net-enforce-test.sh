@@ -34,15 +34,20 @@ mkdir -p "${PKG_STAGING}/payload/bin"
 
 cat > "${PKG_STAGING}/payload/bin/${NAME}" <<'EOF'
 #!/bin/sh
-# Count non-loopback network interfaces visible in the CURRENT netns.
-# /proc/net/dev is namespaced, so a process confined to a fresh netns sees
-# only `lo` here, while one in the host netns sees eth0 (and friends).
-ifaces=$(awk -F: 'NR>2 { gsub(/ /,"",$1); if ($1 != "lo") print $1 }' /proc/net/dev)
-if [ -n "${ifaces}" ]; then
-  echo "netprobe: network REACHABLE — interfaces: $(echo ${ifaces} | tr '\n' ' ')"
+# "Has a network" == there is a DEFAULT ROUTE in the CURRENT netns.
+# /proc/net/route is per-netns. The host netns has a default route via eth0
+# (DHCP, gateway 10.0.2.2 under QEMU user-net); a fresh `unshare -n` netns has
+# none. We test the route, NOT the mere presence of an interface: a fresh
+# netns auto-gets `lo` AND `sit0` (the IPv6-in-IPv4 tunnel device), so
+# "any non-lo interface" wrongly reads as "reachable" — the route is the
+# semantically correct, offline-safe signal of off-link connectivity.
+# Route table line with Destination 00000000 is the default route.
+if awk 'NR>1 && $2 == "00000000" { found = 1 } END { exit !found }' /proc/net/route; then
+  gw=$(awk 'NR>1 && $2 == "00000000" { print $1; exit }' /proc/net/route)
+  echo "netprobe: network REACHABLE — default route via ${gw}"
   exit 0
 else
-  echo "netprobe: NO network — isolated namespace (loopback only)"
+  echo "netprobe: NO network — no default route (isolated namespace)"
   exit 7
 fi
 EOF
