@@ -38,34 +38,59 @@ Anything that needs new **syntax** (`mut`, `while`, `List` literals, `struct`,
 new operators) or new **types** is language-core surgery → request it from the
 host author. These are the §11 items (`List<T>`, `let mut`, `while`, `struct`).
 
-## The forge ritual (build → swap → probe → rollback)
+## The forge ritual (build → package → switch → probe → rollback)
 
-Never swap a compiler you have not smoke-tested. Suggested loop:
+**The compiler is generation-managed, like every other package — no reboot, no
+lost context.** `nullang` is just a userspace binary, and the init puts
+`/run/current/bin` *ahead* of `/bin` on PATH. So you ship a new compiler the
+same way you ship any package: build it, package it as `nv-toolchain`, declare
+it in `system.null`, `nv-rebuild switch`. `/run/current/bin/nullang` then
+shadows the baked `/bin/nullang`, it **persists in `/var` across reboots**, and
+rollback is a real generation rollback. Do NOT `cp` over `/bin/nullang` — that
+is RAM-only (lost on reboot) and bypasses generations.
 
 ```sh
-# build into /var so target/ never pollutes the (9P-mounted) source tree
+# build into /var so target/ never pollutes the source tree
 export CARGO_TARGET_DIR=/var/cargo-target
-cargo build --release            # in the nullang source dir
-NEW=target/.../release/nullang   # the freshly built binary
+( cd /var/src/nullang && cargo build --release )
+NEW=/var/src/nullang/target/x86_64-unknown-linux-gnu/release/nullang  # or the host triple
 
-cp /bin/nullang /var/nullang.prev          # backup the current good one
-cp "$NEW" /bin/nullang                      # swap in the new one
+# package the fresh compiler as nv-toolchain-<V> (bump V each iteration)
+V=0.1.1
+mkdir -p /var/pkg/nt/payload/bin
+cp "$NEW" /var/pkg/nt/payload/bin/nullang
+cat > /var/pkg/nt/manifest.json <<EOF
+{ "schemaVersion":1, "name":"nv-toolchain", "version":"$V",
+  "description":"Nullang compiler", "authoredBy":"agent-in-vm",
+  "createdAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)", "deps":[],
+  "exposedBins":["nullang"], "capabilities":[], "sourceLanguage":"rust",
+  "buildSteps":["cargo build --release"] }
+EOF
+( cd /var/pkg/nt && tar czf /var/nv-toolchain-$V.nvpkg manifest.json payload/ )
+nv-pkg install /var/nv-toolchain-$V.nvpkg
+
+# declare `pkgs.nv-toolchain` in /etc/nullvoid/system.null's `packages`, then:
+nv-rebuild switch
+
+# smoke-test the now-active compiler (`nullang` resolves to /run/current/bin)
 if nullang run /var/src/smoke-probe.null ; then
-  echo "probe passed — keep"
+  echo "probe passed — generation kept"
 else
-  cp /var/nullang.prev /bin/nullang         # ROLLBACK
+  nv-rebuild rollback   # real generation rollback to the previous nullang
   echo "probe FAILED — rolled back"
 fi
 ```
 
 The smoke probe must exercise every shipped feature (Wave 0 + Wave 1 + argv +
-whatever you add). If the new compiler can't still build+run it, the swap is
-reverted automatically — you never end up with a broken `/bin/nullang`.
+whatever you add). Switch only persists if the probe passes; otherwise
+`nv-rebuild rollback` reverts the generation and `/run/current/bin/nullang`
+goes back to the last good compiler — you never end up stuck on a broken one.
 
-This is safe because `nullang` (construction mode) is **not** in `nv-rebuild`'s
-critical path — `system.null` is evaluated by `null` (declaration mode), a
-separate binary — and `cargo` rebuilds `nullang` without needing `nullang`. So
-a broken build is always recoverable.
+Safe because `nullang` (construction mode) is **not** in `nv-rebuild`'s critical
+path — `system.null` is evaluated by `null` (declaration mode), a separate baked
+binary — and `cargo` rebuilds `nullang` without needing `nullang`. Even a
+totally broken `nv-toolchain` generation rolls back cleanly; the baked
+`/bin/nullang` is the floor.
 
 ## Flow back to the canonical repo
 

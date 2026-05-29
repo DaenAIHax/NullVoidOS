@@ -8,6 +8,29 @@ applicable.
 
 ## [Unreleased]
 
+### Decisione — il compilatore è generation-managed: aggiornamenti a caldo, niente reboot (2026-05-29)
+
+Problema sollevato dall'utente: se ogni miglioria al linguaggio costasse un
+reboot, l'agente in-VM **perderebbe il contesto di sessione ogni volta** che
+sbatte contro un muro del linguaggio. Il loop di auto-miglioramento dev'essere
+a caldo e persistente.
+
+Insight: `nullang` è solo un binario userspace, e l'init mette `/run/current/bin`
+davanti a `/bin` nel PATH. Quindi il compilatore si aggiorna **come ogni altro
+pacchetto** — `nv-pkg install` del nuovo `nullang` (pacchetto `nv-toolchain`) →
+dichiaralo in `system.null` → `nv-rebuild switch`. `/run/current/bin/nullang`
+ombreggia il `/bin/nullang` cotto, **persiste in `/var` (sopravvive al reboot)**,
+e il rollback è `nv-rebuild rollback` (generation reale). È lo stesso modello
+`configuration.nix`+`nixos-rebuild switch` di NixOS, esteso al compilatore.
+Prima: l'agente faceva `cp` su `/bin/nullang` (effimero, solo-RAM, perso al
+reboot). Ora: package+switch (persistente, no reboot, no perdita di contesto).
+
+**Zero codice cambiato** — il meccanismo c'era già: `PATH=/run/current/bin:/bin`,
+nessun hardcode di `/bin/nullang`, `nv-rebuild` usa `null` non `nullang` (niente
+chicken-and-egg). Cambia solo il **rito** in `BUILTINS_CONTRACT.md`
+(build→package→declare→switch→smoke→rollback). Il `/bin/nullang` cotto resta il
+pavimento (primo boot + floor di rollback).
+
 ### Milestone — primo builtin auto-servito dall'agente: `char_at` (loop di auto-miglioramento chiuso) (2026-05-29)
 
 **L'agente in-VM ha esteso il proprio compilatore, da solo, e ha provato di non
