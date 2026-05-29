@@ -478,6 +478,52 @@ fn main(world: World) -> Int uses !tty {
 }
 
 #[test]
+fn mut_and_while_compile_to_a_c_loop() {
+    let src = r#"
+fn main(world: World) -> Int uses !tty {
+  let mut i = 0;
+  let mut sum = 0;
+  while i < 10 {
+    sum = sum + i;
+    i = i + 1;
+  }
+  print(world, str_of_int(sum));
+  0
+}
+"#;
+    let c = compile_to_c(src, "loop.null").expect("mut + while should compile");
+    assert!(c.contains("for (;;)"));
+    assert!(c.contains("if (!("));      // condition re-checked inside the loop
+    assert!(c.contains("nlu_sum = (nlu_sum + nlu_i)"));
+}
+
+#[test]
+fn assigning_a_non_mut_binding_is_rejected() {
+    let src = r#"
+fn main(world: World) -> Int uses !tty {
+  let x = 0;
+  x = 1;
+  0
+}
+"#;
+    let err = compile_to_c(src, "immut.null").expect_err("assigning a let must fail");
+    assert_eq!(format!("{:?}", err.code), "Typ001");
+}
+
+#[test]
+fn while_condition_must_be_bool() {
+    let src = r#"
+fn main(world: World) -> Int uses !tty {
+  let mut i = 0;
+  while i { i = i + 1; }
+  0
+}
+"#;
+    let err = compile_to_c(src, "whilecond.null").expect_err("non-Bool while cond must fail");
+    assert_eq!(format!("{:?}", err.code), "Typ001");
+}
+
+#[test]
 fn char_at_builtin_compiles() {
     // First builtin authored by the in-VM agent (within BUILTINS_CONTRACT.md):
     // a pure O(i) single-char read. Merged host-side.

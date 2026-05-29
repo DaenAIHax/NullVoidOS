@@ -155,8 +155,24 @@ pub struct Block {
 pub enum Stmt {
     Let {
         name: String,
+        /// `let mut` — the binding may be reassigned (SPEC §11 mutable state).
+        /// Plain `let` bindings reject assignment (TYP).
+        mutable: bool,
         ty: Option<TypeRef>,
         value: Expr,
+        span: Span,
+    },
+    /// `name = expr;` — reassign a `let mut` binding in scope.
+    Assign {
+        name: String,
+        value: Expr,
+        span: Span,
+    },
+    /// `while cond { .. }` — loop while `cond` (a Bool) holds. A statement
+    /// (runs for effect); pairs with `let mut` to iterate without recursion.
+    While {
+        cond: Expr,
+        body: Block,
         span: Span,
     },
     Expr(Expr),

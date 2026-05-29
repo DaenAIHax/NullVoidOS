@@ -382,9 +382,10 @@ impl<'a> Checker<'a> {
 
     fn check_func(&self, f: &Func) -> Result<(), Diag> {
         let sig = self.sigs.get(&f.name).expect("signature collected in pass 1");
-        let mut locals: HashMap<String, Ty> = HashMap::new();
+        // Each local maps to (type, mutable). Params are immutable bindings.
+        let mut locals: HashMap<String, (Ty, bool)> = HashMap::new();
         for (p, ty) in f.params.iter().zip(sig.params.iter()) {
-            locals.insert(p.name.clone(), *ty);
+            locals.insert(p.name.clone(), (*ty, false));
         }
         let uses: HashSet<String> = f.uses.iter().map(|c| c.key()).collect();
         let ret = sig.ret;
@@ -413,14 +414,14 @@ impl<'a> Checker<'a> {
     fn check_block(
         &self,
         block: &Block,
-        outer: &HashMap<String, Ty>,
+        outer: &HashMap<String, (Ty, bool)>,
         uses: &HashSet<String>,
         caller_name: &str,
     ) -> Result<Ty, Diag> {
         let mut locals = outer.clone();
         for stmt in &block.stmts {
             match stmt {
-                Stmt::Let { name, ty, value, .. } => {
+                Stmt::Let { name, mutable, ty, value, .. } => {
                     let inferred = self.check_expr(value, &locals, uses, caller_name)?;
                     if let Some(t) = ty {
                         if let Some(declared) = t.resolved {
@@ -440,7 +441,56 @@ impl<'a> Checker<'a> {
                             }
                         }
                     }
-                    locals.insert(name.clone(), inferred);
+                    locals.insert(name.clone(), (inferred, *mutable));
+                }
+                Stmt::Assign { name, value, span } => {
+                    let (ty, mutable) = locals.get(name).copied().ok_or_else(|| {
+                        self.diag(
+                            DiagCode::Ref001,
+                            format!("assignment to unknown variable `{}`", name),
+                            "a variable in scope",
+                            name.clone(),
+                            *span,
+                        )
+                    })?;
+                    if !mutable {
+                        return Err(self.diag(
+                            DiagCode::Typ001,
+                            format!("`{}` is not mutable; declare it `let mut {}`", name, name),
+                            "a `let mut` binding",
+                            format!("immutable `{}`", name),
+                            *span,
+                        ));
+                    }
+                    let got = self.check_expr(value, &locals, uses, caller_name)?;
+                    if got != ty {
+                        return Err(self.diag(
+                            DiagCode::Typ001,
+                            format!(
+                                "cannot assign {} to `{}` of type {}",
+                                got.name(),
+                                name,
+                                ty.name()
+                            ),
+                            ty.name(),
+                            got.name().to_string(),
+                            value.span(),
+                        ));
+                    }
+                }
+                Stmt::While { cond, body, span } => {
+                    let ct = self.check_expr(cond, &locals, uses, caller_name)?;
+                    if ct != Ty::Bool {
+                        return Err(self.diag(
+                            DiagCode::Typ001,
+                            format!("`while` condition must be Bool, got {}", ct.name()),
+                            "Bool",
+                            ct.name().to_string(),
+                            *span,
+                        ));
+                    }
+                    // The body runs for effect; check it in a child scope.
+                    self.check_block(body, &locals, uses, caller_name)?;
                 }
                 Stmt::Expr(e) => {
                     self.check_expr(e, &locals, uses, caller_name)?;
@@ -461,7 +511,7 @@ impl<'a> Checker<'a> {
     fn check_expr(
         &self,
         e: &Expr,
-        locals: &HashMap<String, Ty>,
+        locals: &HashMap<String, (Ty, bool)>,
         caller_uses: &HashSet<String>,
         caller_name: &str,
     ) -> Result<Ty, Diag> {
@@ -469,7 +519,7 @@ impl<'a> Checker<'a> {
             Expr::Str { .. } => Ok(Ty::String),
             Expr::Int { .. } => Ok(Ty::Int),
             Expr::Bool { .. } => Ok(Ty::Bool),
-            Expr::Ident { name, span } => locals.get(name).copied().ok_or_else(|| {
+            Expr::Ident { name, span } => locals.get(name).map(|(t, _)| *t).ok_or_else(|| {
                 self.diag(
                     DiagCode::Ref001,
                     format!("unknown identifier `{}`", name),
@@ -705,7 +755,7 @@ impl<'a> Checker<'a> {
                         (None, None) => {}
                         (Some(pty), Some(b)) => {
                             if b != "_" {
-                                arm_locals.insert(b.clone(), *pty);
+                                arm_locals.insert(b.clone(), (*pty, false));
                             }
                         }
                         (Some(pty), None) => {

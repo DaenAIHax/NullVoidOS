@@ -332,6 +332,22 @@ impl<'a> Codegen<'a> {
                 }
                 None => out.push_str("  return;\n"),
             },
+            Stmt::Assign { name, value, .. } => {
+                let v = self.lower(value, locals, out, fresh);
+                if !v.is_empty() {
+                    out.push_str(&format!("  {} = {};\n", mangle(name), v));
+                }
+            }
+            Stmt::While { cond, body, .. } => {
+                // `for(;;)` with the condition re-lowered inside the loop: the
+                // cond may emit prelude statements (a lowered if/match), which
+                // must run every iteration, not once before it.
+                out.push_str("  for (;;) {\n");
+                let c = self.lower(cond, locals, out, fresh);
+                out.push_str(&format!("  if (!({})) break;\n", c));
+                self.lower_block_stmt(body, locals, out, fresh);
+                out.push_str("  }\n");
+            }
         }
     }
 

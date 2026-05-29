@@ -8,6 +8,32 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang — `let mut` + `while`: stato mutabile e iterazione (Direzione B, 1/2) (2026-05-29)
+
+La chirurgia parser/typer che l'agente NON può fare (fuori dal confine builtin),
+quindi lavoro host. **Uccide il muro #3** della mappa gap: la ricorsione
+esauriva lo stack sui file >~qualche kB; ora si itera. Da sola **sblocca la
+Wave 2** (sed/grep batch: scandisci una String con un indice mutabile in un
+`while`, accumula l'output — niente `List` necessaria).
+
+- `let mut name = expr;` — binding riassegnabile; `name = expr;` lo riassegna.
+  Assegnare un binding non-`mut` → `TYP001`; il tipo del valore deve combaciare.
+- `while cond { ... }` — loop mentre `cond` (Bool) regge; è uno statement.
+
+Toccate tutte le fasi: lexer (keyword `mut`/`while`), AST (`Stmt::Assign`,
+`Stmt::While`, flag `mutable` su `Let`), parser (assegnamento = ident seguito da
+`=`; solo una variabile è lvalue), checker (mappa locali ora `(Ty, bool)`:
+traccia la mutabilità; valida mut+tipo sull'assegnamento, Bool sulla cond),
+codegen (`Assign` → `x = v;`; `While` → `for(;;){ <cond>; if(!c) break; <body> }`
+così la cond si rivaluta a ogni giro anche se è un if/match abbassato). I locali
+C erano già mutabili (non-const), quindi `mut` è puramente disciplina di
+typecheck.
+
+Suite `nullang` 38/38 (3 nuovi: loop→C, assign-a-non-mut→TYP001, cond-non-Bool→
+TYP001). Smoke host: somma iterativa 0..9 = 45; scan iterativo di stringa (conta
+'a' con indice mutabile, **niente ricorsione**) = 6. Niente nuove dipendenze.
+Prossimo in B: `List<T>` (buffer a righe indicizzato).
+
 ### Decisione — il compilatore è generation-managed: aggiornamenti a caldo, niente reboot (2026-05-29)
 
 Problema sollevato dall'utente: se ogni miglioria al linguaggio costasse un

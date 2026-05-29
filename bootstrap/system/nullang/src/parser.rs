@@ -272,10 +272,29 @@ impl<'a> Parser<'a> {
         while *self.peek() != TokenKind::RBrace && *self.peek() != TokenKind::Eof {
             match self.peek() {
                 TokenKind::Let => stmts.push(self.parse_let()?),
+                TokenKind::While => stmts.push(self.parse_while()?),
                 TokenKind::Return => stmts.push(self.parse_return()?),
                 _ => {
                     let expr = self.parse_expr()?;
-                    if *self.peek() == TokenKind::Semi {
+                    if *self.peek() == TokenKind::Eq {
+                        // Assignment: `<ident> = <value>;`. Only a bare
+                        // variable is assignable (no field/index lvalues yet).
+                        let span = expr.span();
+                        let name = match expr {
+                            Expr::Ident { name, .. } => name,
+                            _ => {
+                                return Err(self.err(
+                                    DiagCode::Par010,
+                                    "only a variable can be assigned (left of `=`)",
+                                    "an identifier",
+                                ))
+                            }
+                        };
+                        self.advance(); // `=`
+                        let value = self.parse_expr()?;
+                        self.expect(&TokenKind::Semi, "to end the assignment")?;
+                        stmts.push(Stmt::Assign { name, value, span });
+                    } else if *self.peek() == TokenKind::Semi {
                         self.advance();
                         stmts.push(Stmt::Expr(expr));
                     } else {
@@ -293,6 +312,13 @@ impl<'a> Parser<'a> {
     fn parse_let(&mut self) -> Result<Stmt, Diag> {
         let span = self.span_here();
         self.expect(&TokenKind::Let, "to start a binding")?;
+        // Optional `mut`: a reassignable binding (SPEC §11).
+        let mutable = if *self.peek() == TokenKind::Mut {
+            self.advance();
+            true
+        } else {
+            false
+        };
         let (name, _) = self.expect_ident("for the binding name")?;
         let ty = if *self.peek() == TokenKind::Colon {
             self.advance();
@@ -305,10 +331,19 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::Semi, "to end the binding")?;
         Ok(Stmt::Let {
             name,
+            mutable,
             ty,
             value,
             span,
         })
+    }
+
+    fn parse_while(&mut self) -> Result<Stmt, Diag> {
+        let span = self.span_here();
+        self.expect(&TokenKind::While, "to start a loop")?;
+        let cond = self.parse_expr()?;
+        let body = self.parse_block()?;
+        Ok(Stmt::While { cond, body, span })
     }
 
     fn parse_return(&mut self) -> Result<Stmt, Diag> {

@@ -19,6 +19,8 @@ pub enum TokenKind {
     Else,
     Enum,
     Match,
+    Mut,
+    While,
 
     // Identifiers (values and type names; the parser disambiguates by position)
     Ident(String),
@@ -71,6 +73,8 @@ impl fmt::Display for TokenKind {
             Else => write!(f, "else"),
             Enum => write!(f, "enum"),
             Match => write!(f, "match"),
+            Mut => write!(f, "mut"),
+            While => write!(f, "while"),
             Ident(s) => write!(f, "{}", s),
             LParen => write!(f, "("),
             RParen => write!(f, ")"),
@@ -233,6 +237,8 @@ impl<'a> Lexer<'a> {
             "else" => TokenKind::Else,
             "enum" => TokenKind::Enum,
             "match" => TokenKind::Match,
+            "mut" => TokenKind::Mut,
+            "while" => TokenKind::While,
             "true" => TokenKind::Bool(true),
             "false" => TokenKind::Bool(false),
             _ => TokenKind::Ident(s),

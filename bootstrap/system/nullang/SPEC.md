@@ -168,12 +168,17 @@ fn add(a: Int, b: Int) -> Int {
 ```nullang
 let n = add(2, 3);
 let label: String = "count";   # annotation optional, inferred otherwise
+let mut i = 0;                 # reassignable binding
+i = i + 1;                     # assignment; only `let mut` is assignable
 ```
 
-- `let name = expr;` introduces an immutable binding in the current block.
+- `let name = expr;` introduces an **immutable** binding in the current block.
+- `let mut name = expr;` introduces a **mutable** binding; `name = expr;`
+  reassigns it (same type). Assigning a non-`mut` binding is a type error;
+  the assignment value's type must match the binding's.
 - No `let in`; no shadowing in the same block (`MOD002`, repair `rename-binding`).
-- Mutability is **not** in v0.1 — there is no `mut`, no reassignment.
-  State that must change is rebuilt and rebound (§11 defers `mut`).
+- Mutable state pairs with `while` (§4.5) to iterate without recursion — the
+  way to scan a large input without exhausting the stack.
 
 ### 4.5 Control flow
 
@@ -181,6 +186,8 @@ Exactly one form each — no `then`, no ternary, no `switch`/`case` alias:
 
 ```nullang
 if cond { a } else { b }          # both branches required; an expression
+
+while cond { ... }                # loop while cond (Bool) holds; a statement
 
 match color {
   .red   => 1,
@@ -320,8 +327,8 @@ trivial:
   user-visible semantics.
 - Allocation is arena/region-scoped per `main` invocation; freed on exit.
   Long-running services get a region reset hook (deferred detail).
-- **No borrow checker, no `mut`, no manual free in v0.1.** Ownership and
-  lifetimes are §11 deferrals. This trades runtime efficiency for a
+- **No borrow checker, no manual free.** `let mut` exists (§4.4), but ownership
+  and lifetimes are §11 deferrals. This trades runtime efficiency for a
   compiler an agent can fully model today; the effect system (§5), not the
   memory model, is where v0.1 invests.
 
@@ -417,7 +424,7 @@ The set is closed and versioned; adding a repair is a minor bump.
 
 Even in full construction mode, regularity beats cleverness:
 
-- No mutable variables / reassignment in v0.1 (`mut` deferred, §11).
+- Mutation only via explicit `let mut` (§4.4) — no implicit or hidden mutation.
 - No exceptions / panics as control flow — fallible operations return an
   enum result; the caller matches it.
 - No global mutable state. No implicit `main` globals.
@@ -426,13 +433,13 @@ Even in full construction mode, regularity beats cleverness:
 - No macros, no preprocessor, no conditional compilation.
 - No string interpolation (compose explicitly via `concat`/`str_of_int`,
   §4.7), no multiple list/record syntaxes (one bracket per concept).
-- One control-flow form each (`if`/`match`); no `then`, ternary, or `switch`.
+- One control-flow form each (`if`/`match`/`while`); no `then`, ternary, or `switch`.
 
 ## 11 — What v0.1 deliberately omits (the roadmap)
 
 Each is deferred, not rejected; each ships *only when the OS needs it*:
 
-- **`mut` / mutable state** — needed once services hold evolving state.
+- ~~**`mut` / mutable state**~~ — LANDED (`let mut` + `while`, §4.4/§4.5).
 - **Ownership / borrow checker** — when arena allocation stops being enough.
 - **Float** — when a workload needs numeric computation (none in v0.1).
 - **Generics / parametric types** — when stdlib containers demand it.
