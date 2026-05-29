@@ -3,6 +3,7 @@
 , pkgsStatic
 , zerolang
 , nullLang
+, nullang
 , nv-pkg
 , nv-rebuild
 , claude-code
@@ -196,6 +197,7 @@ let
     echo "zero:     $(zero --version 2>/dev/null || echo missing)"
     echo "claude:   $(claude --version 2>/dev/null || echo missing)"
     echo "null:     $(null --version 2>/dev/null || echo missing)"
+    echo "nullang:  $(nullang --version 2>/dev/null || echo missing)"
     echo "nv-pkg:   $(nv-pkg --version 2>/dev/null || echo missing)"
     echo "nv-rbld:  $(nv-rebuild --version 2>/dev/null || echo missing)"
     echo "python:   $(python3 --version 2>/dev/null || echo missing)"
@@ -303,6 +305,7 @@ runCommand "nullvoid-initramfs" {
   # Phase 1 system tooling: copied as standalone musl-static binaries.
   # No /nix/store dependency, no closure shipping — they just work.
   cp ${nullLang}/bin/null root/bin/
+  cp ${nullang}/bin/nullang root/bin/
   cp ${nv-pkg}/bin/nv-pkg root/bin/
   cp ${nv-rebuild}/bin/nv-rebuild root/bin/
 

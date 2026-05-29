@@ -36,6 +36,25 @@ end-to-end: `examples/result.null` stampa il payload `String` ed esce con il
 payload `Int` (42). 23 test di integrazione verdi (9 nuovi); gli esempi
 `status`/`compute`/`hello` invariati (percorso `long` nudo non regredito).
 
+### Nullang cablato nell'initramfs — affiancato a `null` (2026-05-29)
+
+`bootstrap/pkgs/nullang.nix` impacchetta il crate `nullang` come binario
+musl-statico (`pkgsStatic.rustPlatform.buildRustPackage`, `cargoHash`
+`sha256-ZH//AvI/0IiQGvjTmhHfaBLyZAtenSsA38keNbLVYws=`, `doCheck = false`).
+La `src` usa `lib.cleanSourceWith` con esclusione esplicita di `target/`
+(l'agente builda in-tree, e `lib.cleanSource` da solo non strippa `target/`).
+Esposto come `.#nullang` via `default.nix`, copiato in `/bin/nullang`
+nell'initramfs e aggiunto al banner di boot.
+
+**Affiancato, non sostituito.** Il binario `null` resta nel critical path del
+loop Phase 1 (nv-rebuild valuta `system.null` tramite lui); `nullang` viaggia
+accanto per il dogfooding in-VM. Il ritiro di `null` aspetta la verifica che
+nullang declaration mode legga `system.null` in modo identico (la CLI attuale
+di `nullang` non espone ancora `eval`). Build verde verificata
+(`nix build .#nullang` exit 0, `nullang 0.1.0`); wiring dell'initramfs
+verificato via eval del `.drvPath`. Realizzazione completa dell'initramfs
+rimandata a chiusura degli enum payloads, per shippare il compilatore finale.
+
 ### Nullang — `null package` closes the CAS+provenance half of §13 (2026-05-28)
 
 `nullang package <file.null> --name N --version V [--author A] [--install]`

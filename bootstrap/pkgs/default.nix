@@ -9,11 +9,16 @@ let
     # `nullLang` avoids the bare-`null` Nix keyword clash; the binary on
     # disk is still called `null` (the `.null` CLI per SPEC).
     nullLang   = pkgs.callPackage ./null.nix { };
+    # Nullang — the re-locked Layer 3 language (one language, two modes).
+    # Shipped alongside `null` (nullLang), not replacing it, while the
+    # Phase 1 loop still evaluates system.null via `null`. Distinct binary
+    # name `nullang`, so no bare-`null` Nix keyword clash on the attr.
+    nullang    = pkgs.callPackage ./nullang.nix { };
     nv-pkg     = pkgs.callPackage ./nv-pkg.nix { };
     nv-rebuild = pkgs.callPackage ./nv-rebuild.nix { };
 
     initramfs = pkgs.callPackage ./initramfs.nix {
-      inherit (self) zerolang nullLang nv-pkg nv-rebuild;
+      inherit (self) zerolang nullLang nullang nv-pkg nv-rebuild;
       # `claude-code` is unfree — only resolvable because the flake
       # imports nixpkgs with `config.allowUnfree = true`.
       inherit (pkgs) claude-code cacert bash dropbear e2fsprogs;
