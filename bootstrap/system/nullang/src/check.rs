@@ -237,7 +237,11 @@ pub fn check_file(file: &File, src: &str, fname: &str) -> Result<Checked, Diag> 
                     params,
                     ret,
                     effects,
-                    c_name: f.name.clone(),
+                    // Mangle user fn names so a C keyword (`double`, `int`, …)
+                    // or a runtime-symbol clash can't reach the emitted C.
+                    // Builtins keep their `nullang_*` c_name; `main` is erased
+                    // by mangle. Call sites read this, so defs and calls agree.
+                    c_name: crate::codegen::mangle(&f.name),
                 },
             );
         }

@@ -17,7 +17,7 @@ fn hello_compiles_to_c() {
     let c = compile_to_c(HELLO, "hello.null").expect("hello should compile");
     // main takes argv so the argc/argv builtins can reach the command line.
     assert!(c.contains("int main(int argc, char** argv)"));
-    assert!(c.contains("nullang_print(greeting())"));
+    assert!(c.contains("nullang_print(nlu_greeting())"));
     assert!(c.contains("return 0;"));
     // World is erased: the call has no `world` argument.
     assert!(!c.contains("world"));
@@ -76,7 +76,7 @@ fn main(world: World) -> Int uses !tty {
 fn arithmetic_and_if_compile() {
     let c = compile_to_c(COMPUTE, "compute.null").expect("should compile");
     assert!(c.contains("(6 * 7)"));
-    assert!(c.contains("(area - 42)"));
+    assert!(c.contains("(nlu_area - 42)"));
     // `if` is lowered to a temporary + statement, not left in expression form.
     assert!(c.contains("if ("));
 }
@@ -475,4 +475,29 @@ fn main(world: World) -> Int uses !tty {
     // main now receives the command line.
     assert!(c.contains("int main(int argc, char** argv)"));
     assert!(c.contains("nl_argc = argc; nl_argv = argv;"));
+}
+
+#[test]
+fn user_identifiers_clashing_with_c_keywords_are_mangled() {
+    // `double` is a C keyword; a Nullang fn/param/let named so must not reach
+    // the emitted C verbatim (it did, and broke the cc step — found by the
+    // in-VM smoke probe). Everything user-named is prefixed `nlu_`.
+    let src = r#"
+fn double(int: Int) -> Int {
+  let static = int + int;
+  static
+}
+fn main(world: World) -> Int uses !tty {
+  print(world, str_of_int(double(21)));
+  0
+}
+"#;
+    let c = compile_to_c(src, "kw.null").expect("C-keyword identifiers must compile");
+    // Definition, call, param and let are all prefixed; no bare keyword leaks.
+    assert!(c.contains("nlu_double("));
+    assert!(c.contains("nlu_int"));   // param `int`
+    assert!(c.contains("nlu_static")); // let `static`
+    // main stays the C entry point, unmangled.
+    assert!(c.contains("int main(int argc, char** argv)"));
+    assert!(!c.contains("nlu_main"));
 }

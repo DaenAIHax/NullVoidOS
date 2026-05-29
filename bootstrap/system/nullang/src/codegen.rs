@@ -186,7 +186,7 @@ impl<'a> Codegen<'a> {
                 .unwrap_or(Ty::Int);
             locals.insert(p.name.clone(), ty);
             if ty != Ty::World {
-                params.push(format!("{} {}", self.c_type_of(ty), p.name));
+                params.push(format!("{} {}", self.c_type_of(ty), mangle(&p.name)));
             }
         }
         let param_list = if params.is_empty() {
@@ -194,7 +194,12 @@ impl<'a> Codegen<'a> {
         } else {
             params.join(", ")
         };
-        out.push_str(&format!("{} {}({}) {{\n", self.c_type_of(ret), f.name, param_list));
+        let c_fn = self
+            .sigs
+            .get(&f.name)
+            .map(|s| s.c_name.clone())
+            .unwrap_or_else(|| mangle(&f.name));
+        out.push_str(&format!("{} {}({}) {{\n", self.c_type_of(ret), c_fn, param_list));
 
         let mut fresh = 0usize;
         let tail = self.lower_block(&f.body, &locals, out, &mut fresh);
@@ -294,7 +299,7 @@ impl<'a> Codegen<'a> {
                 let ty = self.ty_of(value, locals);
                 let v = self.lower(value, locals, out, fresh);
                 if !v.is_empty() {
-                    out.push_str(&format!("  {} {} = {};\n", self.c_type_of(ty), name, v));
+                    out.push_str(&format!("  {} {} = {};\n", self.c_type_of(ty), mangle(name), v));
                 }
                 locals.insert(name.clone(), ty);
             }
@@ -325,7 +330,7 @@ impl<'a> Codegen<'a> {
             Expr::Str { value, .. } => c_string_literal(value),
             Expr::Int { value, .. } => format!("{}", value),
             Expr::Bool { value, .. } => (if *value { "1" } else { "0" }).to_string(),
-            Expr::Ident { name, .. } => name.clone(),
+            Expr::Ident { name, .. } => mangle(name),
             Expr::Symbol { name, arg, .. } => {
                 let (id, idx) = self.symbols.get(name).copied().unwrap_or((0, 0));
                 // A payload-free enum is a bare index; a tagged enum (even a
@@ -358,7 +363,7 @@ impl<'a> Codegen<'a> {
             }
             Expr::Call { callee, args, .. } => {
                 let sig = self.sigs.get(callee);
-                let c_name = sig.map(|s| s.c_name.clone()).unwrap_or_else(|| callee.clone());
+                let c_name = sig.map(|s| s.c_name.clone()).unwrap_or_else(|| mangle(callee));
                 let mut emitted = Vec::new();
                 for (i, arg) in args.iter().enumerate() {
                     let is_world = sig
@@ -425,7 +430,7 @@ impl<'a> Codegen<'a> {
                                 out.push_str(&format!(
                                     "  {} {} = {}.u._v{};\n",
                                     self.c_type_of(pty),
-                                    binder,
+                                    mangle(binder),
                                     sv,
                                     idx
                                 ));
@@ -497,6 +502,20 @@ impl<'a> Codegen<'a> {
                 None => Ty::Unit,
             },
         }
+    }
+}
+
+/// Mangle a user identifier for C. A Nullang name like `double`, `int`,
+/// `return` is a C keyword and would not compile; prefixing dodges every C
+/// keyword *and* our runtime symbols (`nullang_*`, `nl_argc`/`nl_argv`,
+/// `nlenum*`, `_t*` — none start with `nlu_`). `main` is the C entry point and
+/// stays verbatim (it is never referenced as a value, so no call site relies on
+/// the prefix). The map is injective, so distinct names stay distinct.
+pub fn mangle(name: &str) -> String {
+    if name == "main" {
+        "main".to_string()
+    } else {
+        format!("nlu_{}", name)
     }
 }
 

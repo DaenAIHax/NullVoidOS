@@ -8,6 +8,22 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang — fix: mangling degli identificatori utente (collisione con keyword C) (2026-05-29)
+
+Bug trovato dalla smoke-probe dell'agente in-VM: `fn double(...)` (o un `let`/
+param chiamato `int`, `static`, `return`, …) finiva verbatim nel C emesso e
+collideva con la keyword C → `cc` falliva (`expected identifier before 'long'`).
+Fuori dal confine builtin dell'agente (è codegen), quindi fix dell'autore host.
+
+`codegen::mangle(name)`: ogni identificatore utente (nomi di funzione, parametri,
+`let`, binder di `match`) viene prefissato `nlu_` — schema iniettivo che schiva
+tutte le keyword C e i simboli runtime (`nullang_*`, `nl_argc/argv`, `nlenum*`,
+`_t*`). `main` resta verbatim (entry point C, mai referenziato come valore).
+`check.rs` setta il `c_name` dei func utente a `mangle(name)`, così definizioni e
+chiamate combaciano; i builtin tengono il loro `nullang_*`. Suite 34/34 (nuovo
+test keyword + aggiornate 2 asserzioni che leggevano il C non-manglato). e2e
+host: il repro esatto dell'agente (`fn double`) compila e stampa 42.
+
 ### Build — compressione initramfs parallela (pigz) + niente rebuild sui doc (2026-05-29)
 
 Due fix d'igiene al ciclo di rebuild dell'initramfs (1.16 GB, ricostruito a ogni
