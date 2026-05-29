@@ -8,6 +8,42 @@ applicable.
 
 ## [Unreleased]
 
+### Traccia A — capability enforcement a runtime: slice `!fs` via Landlock (2026-05-29)
+
+La seconda capability applicata a runtime, dopo `!net`. Dove `!net` usa un
+network namespace, `!fs` usa **Landlock** — l'access control path-scoped e
+deny-by-default del kernel, mappato 1:1 sul vocabolario (`!fs.read."P"`,
+`!fs.write."P"`). **PASS in VM** con kernel Landlock.
+
+**Kernel** (`pkgs/kernel.nix`): `CONFIG_SECURITY` + `CONFIG_SECURITY_LANDLOCK`
++ `CONFIG_LSM="landlock"`. tinyconfig spedisce `SECURITY` off, quindi Landlock
+va acceso e aggiunto alla lista LSM attiva o i syscall danno ENOSYS.
+
+**Supervisore** (`system/nv-rebuild`): `nv-rebuild run` estrae le capability
+`fs.read`/`fs.write` dal descrittore, costruisce un ruleset Landlock e fa
+`restrict_self` **prima** dello spawn. Il ruleset è ereditato attraverso
+fork+execve (e attraverso il trampolino `unshare` di `!net`), quindi i due
+confinamenti compongono sul binario finale. Nuova dipendenza Rust `landlock`
+0.4 (la rete era tornata → `cargo generate-lockfile` + `cargoHash` ricalcolato).
+
+**Baseline.** Deny-by-default bloccherebbe un servizio dal leggere il *proprio*
+binario (l'execve lo risolve sotto il ruleset), quindi il supervisore concede
+sempre un baseline di runtime: read+execute sui tree di codice (`/bin`,
+`/nix/store`, `/run`, `/var/lib/nv-store`, `/lib`, `/usr`, `/proc`) e read+write
+su `/dev` e `/tmp`. Lo smoke host ha colto che un `/dev` read-only rompe perfino
+un `2>/dev/null`. Il vocabolario protegge i path *dati* fuori dal baseline.
+
+**Demo** `system/demos/fs-enforce/`: un binario, due servizi che differiscono
+solo in `!fs.read."/srv"` (entrambi con `!net` per isolare la variabile fs). Una
+canary in `/srv`. Verifica host (Landlock è unprivileged → prova piena del
+meccanismo) + **PASS in VM headless**: `fs-granted` legge la canary (exit 0),
+`fs-denied` bloccato da Landlock (exit 7). Stesso binario, esito opposto deciso
+solo dalla capability dichiarata.
+
+**Limiti onesti:** subtree granularity (`PathBeneath`); il baseline è grossolano
+(tightening al solo store path del binario è follow-up); `!proc.*`/`!rand`
+(seccomp) restano il prossimo incremento (`SECCOMP` già compilato).
+
 ### Traccia A — capability enforcement a runtime: slice `!net` (kernel + supervisore) (2026-05-29)
 
 La prima capability che NullVoidOS **applica** a runtime invece di limitarsi a

@@ -235,11 +235,18 @@ pub fn cmd_generations(cfg: &Config) -> Result<()> {
 /// capability set the service was *granted* (its `requires`, persisted into
 /// the active generation's descriptor) becomes the set it can *exercise*.
 ///
-/// Slice scope: `!net` is enforced via network-namespace isolation. A service
-/// without a `net` capability is launched in a fresh, empty network namespace
-/// (`unshare -n`) — loopback only, down — so it cannot reach the network. A
-/// service with `!net` stays in the host netns. Other capabilities are
-/// recorded in the audit line but not yet enforced (next increments).
+/// Enforced so far:
+///   - `!net` via network-namespace isolation: no `net` capability → launched
+///     in a fresh, empty netns (`unshare -n`, loopback down) → no network;
+///     with `!net` → stays in the host netns.
+///   - `!fs.read."P"` / `!fs.write."P"` via Landlock: the process is confined
+///     (deny-by-default) to a baseline of runtime/code paths plus exactly the
+///     declared subtrees — read+execute for `fs.read`, read+write for
+///     `fs.write`. A path not declared (and not baseline) is unreadable.
+/// Order matters: Landlock `restrict_self` runs in this process before the
+/// spawn, and the ruleset is inherited across fork+execve (and through the
+/// `unshare` trampoline), so both confinements compose on the final binary.
+/// `!proc.*`/`!rand` are recorded in the audit line but not yet enforced.
 pub fn cmd_run(cfg: &Config, service: &str) -> Result<()> {
     let desc_path = cfg
         .system_root
@@ -264,12 +271,24 @@ pub fn cmd_run(cfg: &Config, service: &str) -> Result<()> {
     }
     let exec = exec.with_context(|| format!("service `{service}` descriptor has no exec="))?;
     let net_granted = requires.iter().any(Capability::grants_net);
+    let fs_read: Vec<String> = requires.iter().filter_map(Capability::fs_read_path).collect();
+    let fs_write: Vec<String> = requires.iter().filter_map(Capability::fs_write_path).collect();
 
     // Audit line: what we are about to enforce, before we enforce it.
     let cap_tokens: Vec<String> = requires.iter().map(Capability::token).collect();
     eprintln!("nv-rebuild run: service `{service}`");
     eprintln!("  exec:     {exec}");
     eprintln!("  requires: [{}]", cap_tokens.join(" "));
+
+    // Filesystem confinement (Landlock). Applied to THIS process before the
+    // spawn; inherited by the child (and the `unshare` trampoline) across
+    // execve. Deny-by-default: baseline runtime paths + the declared subtrees.
+    eprintln!(
+        "  fs:       read={:?} write={:?} (+ runtime baseline) — Landlock",
+        fs_read, fs_write
+    );
+    apply_landlock(&fs_read, &fs_write)
+        .with_context(|| "failed to apply Landlock filesystem confinement")?;
 
     let mut cmd = if net_granted {
         eprintln!("  net:      GRANTED — host network namespace");
@@ -287,6 +306,72 @@ pub fn cmd_run(cfg: &Config, service: &str) -> Result<()> {
     let code = status.code().unwrap_or(255);
     eprintln!("  exit:     {code}");
     std::process::exit(code);
+}
+
+/// Build and enforce a Landlock ruleset for the current process: a baseline of
+/// runtime/code paths (read+execute) plus the service's declared `fs.read`
+/// (read+execute) and `fs.write` (read+write) subtrees. Everything else is
+/// denied. The ruleset is inherited across fork+execve, so the spawned service
+/// inherits exactly this confinement.
+fn apply_landlock(read_paths: &[String], write_paths: &[String]) -> Result<()> {
+    use landlock::{
+        Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr,
+        RulesetStatus, ABI,
+    };
+
+    // ABI v1 is the floor (Linux 5.13); our kernel is 6.6, so it is present.
+    let abi = ABI::V1;
+    let read_exec = AccessFs::from_read(abi); // ReadFile | ReadDir | Execute
+    let read_write = AccessFs::from_all(abi); // read group + write/create/remove group
+
+    // Baseline: the code + runtime a confined service needs just to start —
+    // its own binary lives under /run/current -> /var/lib/nv-store, the
+    // musl/busybox closure under /nix/store + /bin, procfs for /proc/net, etc.
+    // These are CODE/runtime, not the data the capability vocabulary protects.
+    //   - read+execute: code/runtime trees (no write — a service can't tamper
+    //     with its own binaries or the store).
+    //   - read+write: /dev (writes to /dev/null, /dev/tty are routine and a
+    //     read-only /dev breaks even a `2>/dev/null` redirect) and /tmp
+    //     (scratch). /proc is read-only.
+    const BASELINE_RX: &[&str] = &[
+        "/bin",
+        "/nix/store",
+        "/run",
+        "/var/lib/nv-store",
+        "/lib",
+        "/usr",
+        "/proc",
+    ];
+    const BASELINE_RW: &[&str] = &["/dev", "/tmp"];
+
+    let mut ruleset = Ruleset::default().handle_access(read_write)?.create()?;
+
+    // A missing baseline path is fine (the initramfs may lack /usr or /lib) —
+    // skip it rather than fail the whole confinement.
+    for p in BASELINE_RX {
+        if let Ok(fd) = PathFd::new(p) {
+            ruleset = ruleset.add_rule(PathBeneath::new(fd, read_exec))?;
+        }
+    }
+    for p in BASELINE_RW {
+        if let Ok(fd) = PathFd::new(p) {
+            ruleset = ruleset.add_rule(PathBeneath::new(fd, read_write))?;
+        }
+    }
+    for p in read_paths {
+        let fd = PathFd::new(p).with_context(|| format!("fs.read path not openable: {p}"))?;
+        ruleset = ruleset.add_rule(PathBeneath::new(fd, read_exec))?;
+    }
+    for p in write_paths {
+        let fd = PathFd::new(p).with_context(|| format!("fs.write path not openable: {p}"))?;
+        ruleset = ruleset.add_rule(PathBeneath::new(fd, read_write))?;
+    }
+
+    let status = ruleset.restrict_self()?;
+    if status.ruleset == RulesetStatus::NotEnforced {
+        bail!("Landlock not enforced by the kernel (missing CONFIG_SECURITY_LANDLOCK or not in the LSM list)");
+    }
+    Ok(())
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

@@ -10,7 +10,7 @@ pkgsStatic.rustPlatform.buildRustPackage {
   src = lib.cleanSource ../system/nv-rebuild;
 
   # See null.nix for why this uses cargoHash instead of cargoLock.lockFile.
-  cargoHash = "sha256-nlo0eObxoSs0w/ZxNkwMqLDtLewGGbZLqfUWOtpFc80=";
+  cargoHash = "sha256-55div2P3uiqWzZNo9ZlVfbYkxDoBRRPFDV6FKLdP4gM=";
 
   doCheck = false;
 

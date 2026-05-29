@@ -146,10 +146,11 @@ stdenv.mkDerivation rec {
     #     network namespace (loopback only, down) → no connectivity. WITH
     #     `!net` it stays in the host netns. This is the first enforced
     #     capability end-to-end.
-    #   - The other namespaces + SECCOMP are enabled now (cheap) so future
-    #     increments (`!fs` via Landlock, `!proc.*`/`!rand` via seccomp)
-    #     don't each force a fresh kernel rebuild. Landlock (CONFIG_SECURITY
-    #     + SECURITY_LANDLOCK + LSM list) lands with the `!fs` increment.
+    #   - LANDLOCK (+ CONFIG_SECURITY + the LSM list) backs the `!fs` slice:
+    #     the supervisor grants a Landlock ruleset matching `!fs.read."…"` /
+    #     `!fs.write."…"` and `restrict_self`s before execve, so a service
+    #     reaches exactly the paths it declared and nothing else.
+    #   - SECCOMP stays enabled for the future `!proc.*`/`!rand` increments.
     #
     # Dependency note: tinyconfig sets EXPERT=y and disables MULTIUSER +
     # SYSVIPC. CONFIG_NAMESPACES `depends on MULTIUSER`, so without it
@@ -167,6 +168,15 @@ stdenv.mkDerivation rec {
       --enable NET_NS \
       --enable SECCOMP \
       --enable SECCOMP_FILTER
+
+    # Landlock LSM for the `!fs` slice. SECURITY_LANDLOCK depends on SECURITY;
+    # Landlock must also appear in the active LSM list (it is stackable) or the
+    # syscalls return ENOSYS at runtime. tinyconfig ships CONFIG_SECURITY off,
+    # so none of this exists by default.
+    scripts/config \
+      --enable SECURITY \
+      --enable SECURITY_LANDLOCK \
+      --set-str LSM "landlock"
 
     # Default hostname before init takes over.
     scripts/config --set-str DEFAULT_HOSTNAME nullvoid

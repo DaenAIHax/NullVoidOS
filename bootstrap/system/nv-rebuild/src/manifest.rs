@@ -74,6 +74,22 @@ impl Capability {
     pub fn grants_net(&self) -> bool {
         self.path.first().map(String::as_str) == Some("net")
     }
+
+    /// The subtree path of a `!fs.read."P"` capability, if this is one.
+    pub fn fs_read_path(&self) -> Option<String> {
+        match (self.path.first().map(String::as_str), self.path.get(1).map(String::as_str)) {
+            (Some("fs"), Some("read")) => self.arg.clone(),
+            _ => None,
+        }
+    }
+
+    /// The subtree path of a `!fs.write."P"` capability, if this is one.
+    pub fn fs_write_path(&self) -> Option<String> {
+        match (self.path.first().map(String::as_str), self.path.get(1).map(String::as_str)) {
+            (Some("fs"), Some("write")) => self.arg.clone(),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
