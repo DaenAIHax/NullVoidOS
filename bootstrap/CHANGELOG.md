@@ -8,6 +8,30 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang — `argv`/`argc` (gate Wave 2: tool CLI parametrici) (2026-05-29)
+
+Dopo che l'agente in-VM ha chiuso Wave 1 (`nv-edit 0.1.0` = `cat -n` reale,
+generation-5), la sua richiesta #1 era `argv` — senza, un `sed`-like opera solo
+su parametri cablati a build-time, non è un tool. Aggiunti due builtin **puri**
+(niente World, niente effetto): `argc() -> Int` e `argv(i: Int) -> String`
+(convenzione C: `argv(0)` = nome programma, fuori range → `""`).
+
+Scelta: **puri**, non gated. argv è dato di startup (non un effetto continuo);
+gateggiarlo con `!proc.argv` aggiungerebbe cerimonia e un mismatch col
+vocabolario di `null` (che non ha `proc.argv`). La forma ergonomica
+`fn main(world, args: List<String>)` aspetta `List<T>` (§11).
+
+Codegen: il `main` C passa da `int main(void)` a `int main(int argc, char**
+argv)` e fa lo stash in due globali (`nl_argc`/`nl_argv`) che i builtin leggono
+(le globali sono sempre assegnate — innocue se inutilizzate). Suite `nullang`
+33/33 (1 nuovo test argv; aggiornata l'asserzione sulla firma di `main`). Smoke
+e2e host: `build` + esecuzione del binario con argomenti reali → `argc=3`,
+`argv(1)=alpha`, `argv(2)=beta`, `argv(99)=""`. Niente nuove dipendenze.
+
+Sblocca Wave 2 (sed-like batch parametrico). Ancora pesanti per le ondate dopo:
+`List<T>` + `mut`/`while` (buffer + scansione senza esaurire lo stack), poi
+`read_line`/raw-TTY per l'interattività (Wave 4-5).
+
 ### Nullang Tier 0 — decomposizione stringhe, `==` su String, file I/O (2026-05-29)
 
 Risposta diretta alla mappa dei gap dell'esperimento "costruisci un editor"

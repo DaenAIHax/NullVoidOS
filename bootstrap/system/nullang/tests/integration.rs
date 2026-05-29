@@ -15,7 +15,8 @@ fn main(world: World) -> Int uses !tty {
 #[test]
 fn hello_compiles_to_c() {
     let c = compile_to_c(HELLO, "hello.null").expect("hello should compile");
-    assert!(c.contains("int main(void)"));
+    // main takes argv so the argc/argv builtins can reach the command line.
+    assert!(c.contains("int main(int argc, char** argv)"));
     assert!(c.contains("nullang_print(greeting())"));
     assert!(c.contains("return 0;"));
     // World is erased: the call has no `world` argument.
@@ -455,4 +456,23 @@ fn main(world: World) -> Int uses !fs.read, !fs.write, !tty {
 "#;
     let f = parse_only(src, "seam.null").expect("parses");
     assert_eq!(capabilities_of_main(&f), vec!["fs:read", "fs:write", "tty"]);
+}
+
+#[test]
+fn argv_builtins_compile_and_need_no_effect() {
+    // argc/argv are pure (no World, no `uses`): a CLI tool reads its args
+    // without declaring a capability. Gate for `cat <file>`/`sed`-likes.
+    let src = r#"
+fn main(world: World) -> Int uses !tty {
+  print(world, str_of_int(argc()));
+  print(world, argv(1));
+  0
+}
+"#;
+    let c = compile_to_c(src, "argv.null").expect("argv/argc should compile");
+    assert!(c.contains("nullang_argc()"));
+    assert!(c.contains("nullang_argv(1)"));
+    // main now receives the command line.
+    assert!(c.contains("int main(int argc, char** argv)"));
+    assert!(c.contains("nl_argc = argc; nl_argv = argv;"));
 }

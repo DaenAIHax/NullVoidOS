@@ -84,6 +84,15 @@ static void nullang_write_file(const char* path, const char* content) {
   fputs(content, f);
   fclose(f);
 }
+
+/* Process arguments (Wave 2). `main` stashes argc/argv here at entry; the
+   builtins read them. Pure from Nullang's view (startup data, no World). */
+static int nl_argc = 0;
+static char** nl_argv = 0;
+static long nullang_argc(void) { return (long)nl_argc; }
+static const char* nullang_argv(long i) {
+  return (i >= 0 && i < (long)nl_argc) ? nl_argv[i] : \"\";
+}
 ";
 
 pub fn emit(file: &File, checked: &Checked) -> String {
@@ -204,7 +213,10 @@ impl<'a> Codegen<'a> {
         for p in &f.params {
             locals.insert(p.name.clone(), p.ty.resolved.unwrap_or(Ty::World));
         }
-        out.push_str("int main(void) {\n");
+        // argv form so `argc`/`argv` builtins can reach the command line;
+        // the globals are always assigned (cheap, no warning) even when unused.
+        out.push_str("int main(int argc, char** argv) {\n");
+        out.push_str("  nl_argc = argc; nl_argv = argv;\n");
         let mut fresh = 0usize;
         let tail = self.lower_block(&f.body, &locals, out, &mut fresh);
         match tail {

@@ -132,6 +132,30 @@ fn builtins() -> SigTable {
             c_name: "nullang_write_file".to_string(),
         },
     );
+    // Process arguments (Wave 2 — gate for `cat <file>`/`grep`/`sed`-likes).
+    // Pure: argv is startup data the runtime provides, like a constant — no
+    // World, no effect (and so no `!proc.argv` to add to `null`'s vocabulary).
+    // C convention: `argv(0)` is the program name; `argc()` counts it;
+    // out-of-range `argv(i)` returns "". `List<String>` is the §11 ergonomic
+    // form, deferred with the rest of the collection work.
+    t.insert(
+        "argc".to_string(),
+        Sig {
+            params: vec![],
+            ret: Ty::Int,
+            effects: vec![],
+            c_name: "nullang_argc".to_string(),
+        },
+    );
+    t.insert(
+        "argv".to_string(),
+        Sig {
+            params: vec![Ty::Int],
+            ret: Ty::String,
+            effects: vec![],
+            c_name: "nullang_argv".to_string(),
+        },
+    );
     t
 }
 

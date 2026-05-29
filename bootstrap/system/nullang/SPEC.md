@@ -229,6 +229,8 @@ str_len(s: String) -> Int                                         # pure (Tier 0
 substr(s: String, start: Int, len: Int) -> String                 # pure; indices clamp (Tier 0)
 read_file(world: World, path: String) -> String   uses !fs.read   # "" on error (Tier 0)
 write_file(world: World, path: String, content: String) -> ()   uses !fs.write   # (Tier 0)
+argc() -> Int                                                     # pure; arg count incl. argv(0)
+argv(i: Int) -> String                                            # pure; "" out of range
 ```
 
 `print`/`read_file`/`write_file` are the effectful builtins; the rest are pure
@@ -249,6 +251,12 @@ variant (§10) is the follow-up. `str_of_bool` and friends are still deferred.
 **String equality.** `==` and `!=` work on `String` (lowered to `strcmp`), in
 addition to `Int`/`Bool` — needed to recognise commands and keystrokes. No
 ordering (`<`, `>`) on strings yet.
+
+**Process arguments.** `argc()`/`argv(i)` give the command line (gate for
+`cat <file>`/`grep`/`sed`-likes). They are **pure** — argv is startup data, not
+an ongoing effect, so no `World` and no `uses` (and nothing to add to `null`'s
+capability vocabulary). C convention: `argv(0)` is the program name. The
+ergonomic `fn main(world, args: List<String>)` form waits on `List<T>` (§11).
 
 ## 5 — Capabilities and effects
 
