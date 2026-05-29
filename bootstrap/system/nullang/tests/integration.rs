@@ -478,6 +478,22 @@ fn main(world: World) -> Int uses !tty {
 }
 
 #[test]
+fn char_at_builtin_compiles() {
+    // First builtin authored by the in-VM agent (within BUILTINS_CONTRACT.md):
+    // a pure O(i) single-char read. Merged host-side.
+    let src = r#"
+fn main(world: World) -> Int uses !tty {
+  print(world, char_at("banana", 2));
+  0
+}
+"#;
+    let c = compile_to_c(src, "charat.null").expect("char_at should compile");
+    assert!(c.contains("nullang_char_at("));
+    // pure: no World threaded into the C call
+    assert!(c.contains("nullang_char_at(\"banana\", 2)"));
+}
+
+#[test]
 fn user_identifiers_clashing_with_c_keywords_are_mangled() {
     // `double` is a C keyword; a Nullang fn/param/let named so must not reach
     // the emitted C verbatim (it did, and broke the cc step — found by the

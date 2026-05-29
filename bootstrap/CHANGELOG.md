@@ -8,6 +8,27 @@ applicable.
 
 ## [Unreleased]
 
+### Milestone — primo builtin auto-servito dall'agente: `char_at` (loop di auto-miglioramento chiuso) (2026-05-29)
+
+**L'agente in-VM ha esteso il proprio compilatore, da solo, e ha provato di non
+averlo rotto.** Dentro la VM (modello intermedio, `BUILTINS_CONTRACT.md`): ha
+copiato `/usr/src/nullang` in `/var`, aggiunto `char_at(s: String, i: Int) ->
+String` come builtin puro (Sig in `check.rs::builtins()` + funzione C nel
+`PRELUDE`, **solo le due regioni del contratto**), `cargo build`, backup+swap di
+`/bin/nullang`, lanciato la sua smoke-probe (5 casi char_at: 0/middle/last/
+past-end/negative) → exit 0, niente rollback. Demo: conta le 'a' in "banana
+republic of bananas" → 6 (scan ricorsivo L→R via `char_at`).
+
+Autocritica notevole dell'agente: aveva scritto "O(1)", l'ha **ritrattata da
+solo** nel corretto "O(i), evita l'O(n²) di `substr`+`strlen` su uno scan L→R",
+ricompilato e ri-verificato. Esattamente il rigore che rende l'esperimento
+credibile.
+
+Merge host-side: applicate verbatim le due regioni, `cargo build` + suite 35/35
+(nuovo test `char_at`) + e2e (demo conta-'a' → 6 riprodotta). `Cargo.lock`
+invariato → nessun ricalcolo `cargoHash`. È il primo passo concreto verso il
+self-host: la forgia che migliora sé stessa, con la rete di sicurezza che regge.
+
 ### Nullang — fix: mangling degli identificatori utente (collisione con keyword C) (2026-05-29)
 
 Bug trovato dalla smoke-probe dell'agente in-VM: `fn double(...)` (o un `let`/

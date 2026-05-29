@@ -59,6 +59,22 @@ static const char* nullang_substr(const char* s, long start, long len) {
   return r;
 }
 
+/* char_at(s, i): O(i) single-byte read — walks s only up to index i (not a
+   full strlen the way substr does), stops at NUL, returns \"\" past end or for
+   negative i. A left-to-right scan is O(n) instead of substr's O(n^2).
+   Authored by the in-VM agent (first self-served builtin); merged host-side. */
+static const char* nullang_char_at(const char* s, long i) {
+  if (i < 0) return \"\";
+  for (long k = 0; k < i; k++) {
+    if (s[k] == '\\0') return \"\";
+  }
+  if (s[i] == '\\0') return \"\";
+  char* r = malloc(2);
+  r[0] = s[i];
+  r[1] = '\\0';
+  return r;
+}
+
 /* Tier 0 file I/O. World is erased at codegen, so it is not a C parameter;
    the capability lives in the fn's `uses` clause (checked) and the grant in
    system.null (enforced by Landlock at run time). Errors are swallowed into

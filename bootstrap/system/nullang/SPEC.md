@@ -227,6 +227,8 @@ concat(a: String, b: String) -> String                            # pure; BINARY
 str_of_int(n: Int) -> String                                      # pure; decimal
 str_len(s: String) -> Int                                         # pure (Tier 0)
 substr(s: String, start: Int, len: Int) -> String                 # pure; indices clamp (Tier 0)
+char_at(s: String, i: Int) -> String                              # pure; 1-char, O(i), "" out of range
+
 read_file(world: World, path: String) -> String   uses !fs.read   # "" on error (Tier 0)
 write_file(world: World, path: String, content: String) -> ()   uses !fs.write   # (Tier 0)
 argc() -> Int                                                     # pure; arg count incl. argv(0)
@@ -239,7 +241,11 @@ strings** (§10): build dynamic strings by composing `concat`/`str_of_int`
 explicitly. `concat` is strictly binary (§10), so nesting is the intended cost.
 
 **Tier 0 (string decomposition + file I/O).** `concat` builds strings up;
-`str_len`/`substr` take them apart (`char_at(s,i)` is just `substr(s,i,1)`).
+`str_len`/`substr`/`char_at` take them apart. `char_at(s,i)` returns the same
+1-char string as `substr(s,i,1)` but is O(i) (it stops at `i`) rather than O(n)
+(`substr` does a full `strlen`), so a left-to-right scan is O(n) not O(n²) —
+the first builtin **authored by the in-VM agent itself** (see
+`BUILTINS_CONTRACT.md`).
 `substr` clamps its indices so it is total (no panics, no error type). File I/O
 is effectful and **path-less in the language**: an fn that reads files declares
 `uses !fs.read` (no path) — the path is a runtime `String`, and the *system*

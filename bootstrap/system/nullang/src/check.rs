@@ -109,6 +109,20 @@ fn builtins() -> SigTable {
             c_name: "nullang_substr".to_string(),
         },
     );
+    // char_at(s, i) — the 1-char String at index i. Equivalent to
+    // substr(s, i, 1) but O(i) not O(n): it stops at i instead of strlen-ing
+    // the whole string, so a left-to-right scan is O(n) not O(n^2). "" out of
+    // range. AUTHORED BY THE IN-VM AGENT (first self-served builtin, within
+    // BUILTINS_CONTRACT.md); merged + verified host-side.
+    t.insert(
+        "char_at".to_string(),
+        Sig {
+            params: vec![Ty::String, Ty::Int],
+            ret: Ty::String,
+            effects: vec![],
+            c_name: "nullang_char_at".to_string(),
+        },
+    );
     // Tier 0 — file I/O. Effectful (World-gated, like `print`). The LANGUAGE
     // effect is path-less (`fs.read`/`fs.write`): the path is a runtime
     // String, and the system-level grant in `system.null` scopes it — which
