@@ -1,0 +1,78 @@
+# nv-watchdog: aggregates three (simulated) system metrics into an overall
+# Severity, prints a structured report, and returns 0/1/2 for ok/warn/crit.
+
+enum Severity = .healthy | .warning | .critical;
+
+fn classify(value: Int, warn_at: Int, crit_at: Int) -> Severity {
+  if value >= crit_at {
+    .critical
+  } else {
+    if value >= warn_at {
+      .warning
+    } else {
+      .healthy
+    }
+  }
+}
+
+fn sev_code(s: Severity) -> Int {
+  match s {
+    .healthy => 0,
+    .warning => 1,
+    .critical => 2,
+  }
+}
+
+fn sev_label(s: Severity) -> String {
+  match s {
+    .healthy => "ok",
+    .warning => "warn",
+    .critical => "crit",
+  }
+}
+
+fn sev_from_code(c: Int) -> Severity {
+  if c >= 2 {
+    .critical
+  } else {
+    if c >= 1 {
+      .warning
+    } else {
+      .healthy
+    }
+  }
+}
+
+fn max_int(a: Int, b: Int) -> Int {
+  if a >= b { a } else { b }
+}
+
+fn worst(a: Severity, b: Severity, c: Severity) -> Severity {
+  sev_from_code(max_int(max_int(sev_code(a), sev_code(b)), sev_code(c)))
+}
+
+fn line(metric: String, value: Int, s: Severity) -> String {
+  concat(
+    concat(concat("  ", metric), concat("=", str_of_int(value))),
+    concat("  [", concat(sev_label(s), "]"))
+  )
+}
+
+fn main(world: World) -> Int uses !tty {
+  let cpu = 72;
+  let mem = 91;
+  let disk = 34;
+
+  let s_cpu  = classify(cpu,  70, 90);
+  let s_mem  = classify(mem,  70, 90);
+  let s_disk = classify(disk, 70, 90);
+  let overall = worst(s_cpu, s_mem, s_disk);
+
+  print(world, "nv-watchdog: snapshot");
+  print(world, line("cpu",  cpu,  s_cpu));
+  print(world, line("mem",  mem,  s_mem));
+  print(world, line("disk", disk, s_disk));
+  print(world, concat("overall: ", sev_label(overall)));
+
+  sev_code(overall)
+}

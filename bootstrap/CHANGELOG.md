@@ -8,6 +8,52 @@ applicable.
 
 ## [Unreleased]
 
+### Milestone — wow-moment: un agente *dentro la VM* autora e dichiara un pacchetto da solo (2026-05-29)
+
+Il deliverable narrativo dell'agent-primary OS. Dato un prompt **goal-level**
+(non passo-passo) a `claude` *dentro la VM bootata*, l'agente ha attraversato
+l'intera pipeline `author → package → declare → switch → run` **da solo**,
+imparando il linguaggio dalle sole diagnostiche del compilatore — la proprietà
+"tooling auto-documentante" (bundle `skills`, `explain`, codici stabili + repair
+tipati) ha pagato: 5 round di diagnostica (`SCH001`, `TYP001`/`TYP002`,
+`EFF001` → repair `add-uses-clause`, `PAR010`) e zero intervento umano sulla
+sintassi.
+
+**Cosa ha costruito** — `nv-watchdog` (Nullang construction mode): `enum
+Severity = .healthy | .warning | .critical`, helper puri (`classify`,
+`sev_code`/`sev_label`/`sev_from_code`, `max_int`), `worst(a,b,c)` che aggrega
+tre severity prendendo il massimo via round-trip su `Int`, e `line(...)` che
+compone un report dinamico con `concat`/`str_of_int` annidati. `main(world:
+World) -> Int uses !tty` — capability dichiarata nella signature, richiesta
+dall'effetto `print`.
+
+**Pipeline eseguita in-VM:**
+
+1. `nullang package … --install` → `e61a95da…-nv-watchdog-0.1.0` nel CAS;
+2. `/etc/nullvoid/system.null` esteso con `pkgs.nv-watchdog` e un servizio
+   `watchdog` (`restart = .on-failure` — **simbolo enum**, non stringa;
+   `requires = [ !tty ]` ⊆ `caps`);
+3. `null check` ok → `nv-rebuild check` ok → `nv-rebuild switch` ha attivato
+   **`generation-3`** (l'accumulatore è monotòno attraverso i reboot: lo
+   stretch test umano-guidato si era fermato a `generation-2`);
+4. `/run/current/bin/nv-watchdog` → report strutturato; `mem=91 ≥ 90` →
+   `overall: crit` → **exit code 2** (semantica 0/1/2 = ok/warn/crit).
+
+**Verifica indipendente host-side** (questa sessione, **nessun boot**, store
+offline): ricostruito `nullang` dal sorgente corrente (`cargoHash` valido,
+`Cargo.lock` invariato) → ricompilato `nv-watchdog` via codegen→`cc`→ELF →
+riprodotto exit 2 con output identico (`cpu=72 [warn]`, `mem=91 [crit]`,
+`disk=34 [ok]`, `overall: crit`); `null eval` sul `system.null` → manifest
+pulito con `restart: "on-failure"` (simbolo enum serializzato), `requires ⊆
+caps`. Il fallimento di `null check` con `pkgs.*` su host è solo `REF002`
+(`nv-pkg` assente dal PATH) — l'ambiente `pkgs.*` funziona, i pacchetti vivono
+nel CAS della VM.
+
+**Delta vs lo stretch test Phase 1** (real Rust ELF, umano-guidato): lì la
+sequenza la guidava l'umano; qui la guida l'agente, da un obiettivo. Artefatto
+catturato: `bootstrap/system/nullang/examples/nv-watchdog.null` (estensione
+normalizzata `.nullang` → `.null`, convenzione del repo).
+
 ### null — test di regressione anti-drift sugli esempi (2026-05-29)
 
 `all_examples_eval_clean` evala ogni `examples/*.null` via `null::run_eval` e
