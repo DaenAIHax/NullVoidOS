@@ -8,6 +8,30 @@ applicable.
 
 ## [Unreleased]
 
+### Decisione — loop di auto-miglioramento dell'agente: "intermedio, solo builtin" (2026-05-29)
+
+L'agente in-VM ha proposto di chiudere il loop sul linguaggio stesso (provo →
+muro → aggiungo la feature → ricostruisco → ritento), notando che la fucina è
+già nella VM (rustc/cargo/cc) e manca solo il sorgente + l'autorità di
+sostituire `/bin/nullang`. Insight suo: il modello generation+rollback di
+NullVoidOS vale anche per il compiler.
+
+Deciso (utente): **posizione intermedia — l'agente può aggiungere solo
+builtin**, non toccare parser/typer/Ty. Razionale: i builtin sono ~70% delle
+richieste e hanno blast radius minimo (un bug rompe un builtin); la sintassi/
+tipi (`List`/`mut`/`while`/`struct`) ha blast radius totale (rompe la
+compilazione di tutto) e resta all'autore host. Sicuro perché `nullang`
+(construction) non è nel critical path di `nv-rebuild` (che usa `null`,
+declaration) e `cargo` lo ricostruisce senza dipendere da `nullang` → swap
+sempre reversibile.
+
+Contratto in `system/nullang/BUILTINS_CONTRACT.md`: confine esatto (cosa può/
+non può editare), pattern del builtin, e il rito build→swap→smoke-probe→
+rollback. Prossimi passi: (1) l'agente costruisce la smoke-probe in Nullang puro
+(rete di sicurezza, zero plumbing), (2) montare il sorgente `system/nullang/`
+nella VM, (3) primo builtin auto-servito dall'agente. Orizzonte: self-host
+(Nullang in Nullang) = Wave 6+, dopo `List`/`struct`/`while`/`mut`.
+
 ### Nullang — `argv`/`argc` (gate Wave 2: tool CLI parametrici) (2026-05-29)
 
 Dopo che l'agente in-VM ha chiuso Wave 1 (`nv-edit 0.1.0` = `cat -n` reale,
