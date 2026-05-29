@@ -69,9 +69,12 @@ a broken build is always recoverable.
 
 ## Flow back to the canonical repo
 
-The source is the host repo's `bootstrap/system/nullang/` (9P-mounted). Edits
-you make to `check.rs`/`codegen.rs` land in the host working tree, where the
-host author reviews the diff, recomputes `cargoHash` if (and only if) `Cargo.lock`
-changed — builtins add no dependencies, so it will not — and rebuilds the
-shipped initramfs `nullang`. Keep edits inside the two allowed regions so the
-review is a glance, not an audit.
+Source delivery is **git**: clone the repo inside the VM (it lives on GitHub),
+edit your clone's `bootstrap/system/nullang/{check.rs,codegen.rs}` inside the
+two allowed regions, build/swap/probe, then commit and push to a **separate
+branch** (e.g. `nullang-builtins-wip`). The host author reviews that branch as a
+PR, recomputes `cargoHash` only if `Cargo.lock` changed — builtins add no
+dependencies, so it will not — rebuilds the shipped initramfs `nullang`, and
+merges. The branch is the review gate; keep edits inside the two regions so the
+review is a glance, not an audit. (A 9P source mount is the tighter-loop
+alternative, deferred — git keeps the host working tree untouched.)
