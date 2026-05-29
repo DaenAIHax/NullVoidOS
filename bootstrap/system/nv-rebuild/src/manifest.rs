@@ -90,6 +90,26 @@ impl Capability {
             _ => None,
         }
     }
+
+    fn is(&self, a: &str, b: Option<&str>) -> bool {
+        self.path.first().map(String::as_str) == Some(a)
+            && self.path.get(1).map(String::as_str) == b
+    }
+
+    /// `!proc.spawn` — may create new processes (fork/clone family).
+    pub fn grants_proc_spawn(&self) -> bool {
+        self.is("proc", Some("spawn"))
+    }
+
+    /// `!proc.exec` — may exec other binaries.
+    pub fn grants_proc_exec(&self) -> bool {
+        self.is("proc", Some("exec"))
+    }
+
+    /// `!rand` — may read kernel randomness (`getrandom`).
+    pub fn grants_rand(&self) -> bool {
+        self.is("rand", None)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

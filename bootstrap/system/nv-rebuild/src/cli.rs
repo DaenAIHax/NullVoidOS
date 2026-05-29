@@ -2,6 +2,10 @@ use crate::generation;
 use crate::manifest::{Capability, SystemManifest};
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
+// libc comes in re-exported through `nix` (already a dependency), so the
+// seccomp syscalls need no extra crate — important while crates.io is flaky.
+use nix::libc;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 
 /// NullVoidOS activation engine
@@ -243,10 +247,15 @@ pub fn cmd_generations(cfg: &Config) -> Result<()> {
 ///     (deny-by-default) to a baseline of runtime/code paths plus exactly the
 ///     declared subtrees — read+execute for `fs.read`, read+write for
 ///     `fs.write`. A path not declared (and not baseline) is unreadable.
-/// Order matters: Landlock `restrict_self` runs in this process before the
-/// spawn, and the ruleset is inherited across fork+execve (and through the
-/// `unshare` trampoline), so both confinements compose on the final binary.
-/// `!proc.*`/`!rand` are recorded in the audit line but not yet enforced.
+///   - `!proc.spawn` and `!rand` via seccomp-bpf: a missing capability denies
+///     the process-creation family (`fork`/`vfork`/`clone`/`clone3`) or
+///     `getrandom` with EPERM. The filter is installed in the child by
+///     `pre_exec`, so the launch `execve` is never blocked.
+/// Order: Landlock `restrict_self` runs in this process before the spawn;
+/// seccomp + the netns are applied per-child. All three compose on the final
+/// binary (inherited across fork+execve and the `unshare` trampoline).
+/// `!proc.exec` is recorded but NOT enforced — stateless cBPF cannot allow only
+/// the launch execve while blocking later ones (needs USER_NOTIF/ptrace).
 pub fn cmd_run(cfg: &Config, service: &str) -> Result<()> {
     let desc_path = cfg
         .system_root
@@ -273,6 +282,9 @@ pub fn cmd_run(cfg: &Config, service: &str) -> Result<()> {
     let net_granted = requires.iter().any(Capability::grants_net);
     let fs_read: Vec<String> = requires.iter().filter_map(Capability::fs_read_path).collect();
     let fs_write: Vec<String> = requires.iter().filter_map(Capability::fs_write_path).collect();
+    let spawn_granted = requires.iter().any(Capability::grants_proc_spawn);
+    let exec_granted = requires.iter().any(Capability::grants_proc_exec);
+    let rand_granted = requires.iter().any(Capability::grants_rand);
 
     // Audit line: what we are about to enforce, before we enforce it.
     let cap_tokens: Vec<String> = requires.iter().map(Capability::token).collect();
@@ -290,6 +302,21 @@ pub fn cmd_run(cfg: &Config, service: &str) -> Result<()> {
     apply_landlock(&fs_read, &fs_write)
         .with_context(|| "failed to apply Landlock filesystem confinement")?;
 
+    // Syscall confinement (seccomp-bpf). A missing capability denies the
+    // matching syscalls with EPERM. `!proc.exec` is recorded but not enforced
+    // here — see build_seccomp_filter's note (stateless cBPF cannot allow only
+    // the launch execve). The filter is installed in the child via pre_exec.
+    eprintln!(
+        "  proc:     spawn={} exec={} (exec not enforced — needs a tracer)",
+        if spawn_granted { "GRANTED" } else { "DENIED" },
+        if exec_granted { "granted" } else { "denied" },
+    );
+    eprintln!(
+        "  rand:     {}",
+        if rand_granted { "GRANTED" } else { "DENIED — getrandom blocked" }
+    );
+    let seccomp = build_seccomp_filter(!spawn_granted, !rand_granted);
+
     let mut cmd = if net_granted {
         eprintln!("  net:      GRANTED — host network namespace");
         std::process::Command::new(&exec)
@@ -299,6 +326,37 @@ pub fn cmd_run(cfg: &Config, service: &str) -> Result<()> {
         c.arg("-n").arg(&exec);
         c
     };
+
+    if let Some(prog) = seccomp {
+        // SAFETY: the closure runs post-fork/pre-execve in the child. It only
+        // issues prctl(2) syscalls (async-signal-safe) over a Vec allocated
+        // here in the parent — no allocation happens in the child.
+        unsafe {
+            cmd.pre_exec(move || {
+                const PR_SET_NO_NEW_PRIVS: libc::c_int = 38;
+                const PR_SET_SECCOMP: libc::c_int = 22;
+                const SECCOMP_MODE_FILTER: libc::c_ulong = 2;
+                if libc::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let fprog = libc::sock_fprog {
+                    len: prog.len() as u16,
+                    filter: prog.as_ptr() as *mut libc::sock_filter,
+                };
+                if libc::prctl(
+                    PR_SET_SECCOMP,
+                    SECCOMP_MODE_FILTER,
+                    &fprog as *const libc::sock_fprog as libc::c_ulong,
+                    0,
+                    0,
+                ) != 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
 
     let status = cmd
         .status()
@@ -372,6 +430,72 @@ fn apply_landlock(read_paths: &[String], write_paths: &[String]) -> Result<()> {
         bail!("Landlock not enforced by the kernel (missing CONFIG_SECURITY_LANDLOCK or not in the LSM list)");
     }
     Ok(())
+}
+
+/// Build a seccomp cBPF program that allows every syscall except the denied
+/// ones, which return `EPERM`. Returns `None` when nothing is denied (so the
+/// caller can skip installing a filter at all).
+///
+/// `deny_spawn` blocks the process-creation family (`fork`/`vfork`/`clone`/
+/// `clone3`) — enforcement of a *missing* `!proc.spawn`. `deny_rand` blocks
+/// `getrandom` — a missing `!rand`. The filter is installed in the child via
+/// `pre_exec` (post-fork, pre-execve): the launch `execve` is never blocked
+/// (we do not filter it), and `unshare(2)` is a distinct syscall from the
+/// clone family, so the `!net` trampoline still works.
+fn build_seccomp_filter(deny_spawn: bool, deny_rand: bool) -> Option<Vec<libc::sock_filter>> {
+    let mut denied: Vec<libc::c_long> = Vec::new();
+    if deny_spawn {
+        denied.extend_from_slice(&[
+            libc::SYS_fork,
+            libc::SYS_vfork,
+            libc::SYS_clone,
+            libc::SYS_clone3,
+        ]);
+    }
+    if deny_rand {
+        denied.push(libc::SYS_getrandom);
+    }
+    if denied.is_empty() {
+        return None;
+    }
+
+    // Classic BPF opcodes / seccomp return values.
+    const BPF_LD_W_ABS: u16 = 0x00 | 0x00 | 0x20;
+    const BPF_JEQ_K: u16 = 0x05 | 0x10 | 0x00;
+    const BPF_RET_K: u16 = 0x06 | 0x00;
+    const AUDIT_ARCH_X86_64: u32 = 0xC000_003E;
+    const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
+    const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
+    const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
+    const EPERM: u32 = 1;
+    // struct seccomp_data: nr @ offset 0 (u32), arch @ offset 4 (u32).
+    const OFF_NR: u32 = 0;
+    const OFF_ARCH: u32 = 4;
+
+    let stmt = |code: u16, k: u32| libc::sock_filter { code, jt: 0, jf: 0, k };
+    let jeq = |k: u32, jt: u8, jf: u8| libc::sock_filter {
+        code: BPF_JEQ_K,
+        jt,
+        jf,
+        k,
+    };
+
+    let n = denied.len();
+    let mut prog: Vec<libc::sock_filter> = Vec::with_capacity(n + 6);
+    // Guard the architecture: a mismatched arch can renumber syscalls, so kill.
+    prog.push(stmt(BPF_LD_W_ABS, OFF_ARCH));
+    prog.push(jeq(AUDIT_ARCH_X86_64, 1, 0)); // == x86_64 → skip the kill
+    prog.push(stmt(BPF_RET_K, SECCOMP_RET_KILL_PROCESS));
+    prog.push(stmt(BPF_LD_W_ABS, OFF_NR));
+    // One equality test per denied syscall; a match jumps forward to DENY,
+    // which sits just past the default-ALLOW return.
+    for (i, sysno) in denied.iter().enumerate() {
+        let to_deny = (n - i) as u8; // skip the remaining jeqs + the ALLOW ret
+        prog.push(jeq(*sysno as u32, to_deny, 0));
+    }
+    prog.push(stmt(BPF_RET_K, SECCOMP_RET_ALLOW)); // default: allow
+    prog.push(stmt(BPF_RET_K, SECCOMP_RET_ERRNO | EPERM)); // DENY
+    Some(prog)
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

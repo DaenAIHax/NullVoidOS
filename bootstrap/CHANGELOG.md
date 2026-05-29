@@ -8,6 +8,44 @@ applicable.
 
 ## [Unreleased]
 
+### Traccia A — capability enforcement a runtime: slice `!proc.spawn` + `!rand` via seccomp (2026-05-29)
+
+Terza e quarta capability applicate a runtime, dopo `!net` (netns) e `!fs`
+(Landlock). Usano **seccomp-bpf**: un filtro cBPF che restituisce `EPERM` per i
+syscall che una capability mancante deve vietare. **PASS in VM** (verifica host
+verde su tutti e 4 i casi prima del boot).
+
+**Kernel:** nessun rebuild — `SECCOMP`/`SECCOMP_FILTER` erano già abilitati col
+blocco `!net`.
+
+**Supervisore** (`system/nv-rebuild`): `nv-rebuild run` costruisce un programma
+cBPF (allow-all, `EPERM` sui syscall vietati) e lo installa nel figlio via
+`pre_exec` — `prctl(PR_SET_NO_NEW_PRIVS)` poi `prctl(PR_SET_SECCOMP,
+SECCOMP_MODE_FILTER)`. Installato post-fork/pre-execve, quindi l'execve di
+lancio non è mai bloccato e `unshare(2)` (syscall distinto dalla famiglia clone)
+continua a funzionare per il trampolino `!net`. Mancante `!proc.spawn` → deny
+`fork`/`vfork`/`clone`/`clone3`; mancante `!rand` → deny `getrandom`.
+
+**Niente nuova dipendenza.** Il filtro è cBPF a mano via `libc`, raggiunto come
+`nix::libc` (ri-esportato da `nix`, già dipendenza) — quindi `Cargo.toml`/
+`Cargo.lock`/`cargoHash` invariati. Scelta forzata e fortunata: crates.io era
+intermittente, `seccompiler`/`libc`-diretto non scaricabili; il vendor FOD col
+lock cambiato voleva ri-fetchare tutto e falliva offline. `nix::libc` evita
+del tutto il problema.
+
+**Demo** `system/demos/procrand-enforce/`: un pacchetto, due probe C compilati
+in-VM (`getrandom`, `fork`), quattro servizi che differiscono in una sola
+capability. Host (seccomp è unprivileged con `NO_NEW_PRIVS`) + VM:
+`rand-granted`/`spawn-granted` exit 0, `rand-denied`/`spawn-denied` exit 7.
+
+**`!proc.exec` NON enforced (onesto):** cBPF stateless non può permettere solo
+l'execve di lancio e bloccare i successivi — serve seccomp `USER_NOTIF` o un
+supervisore ptrace. Negare `!proc.spawn` già blocca il pattern fork+exec di
+helper (la minaccia pratica); l'audit line stampa `exec=denied` ma il filtro non
+agisce. Le quattro capability del vocabolario ancora recorded-only restano
+`!net.localhost` (raffinamento di `!net`) e `!activate.system` (privilegio già
+implicito).
+
 ### Traccia A — capability enforcement a runtime: slice `!fs` via Landlock (2026-05-29)
 
 La seconda capability applicata a runtime, dopo `!net`. Dove `!net` usa un
