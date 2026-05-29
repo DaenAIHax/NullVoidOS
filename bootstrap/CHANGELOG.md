@@ -8,6 +8,13 @@ applicable.
 
 ## [Unreleased]
 
+### null — test di regressione anti-drift sugli esempi (2026-05-29)
+
+`all_examples_eval_clean` evala ogni `examples/*.null` via `null::run_eval` e
+panica rumorosamente su qualsiasi errore, più un assert che fallisce se la glob
+non matcha nulla (niente pass vacuo). Chiude la classe del drift triplo che era
+marcito in silenzio perché nessuno rievaluava quei file. Suite `null` 54/54.
+
 ### Crossing nullang→.nvpkg→OS validata + fix drift esempi `.null` (2026-05-29)
 
 Esercitata l'intera crossing sull'host in un prefix usa-e-getta (`NV_STORE_ROOT`

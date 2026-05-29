@@ -772,3 +772,38 @@ fn caps_restart_string_emits_typ004_with_fix_enum_symbol_repair() {
     let repair = err.repair.as_ref().expect("expected a fix-enum-symbol repair");
     assert_eq!(repair.id, "fix-enum-symbol");
 }
+
+// ---------------------------------------------------------------------------
+// Regression: every shipped example must `null eval` clean (no silent drift)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn all_examples_eval_clean() {
+    // The triple drift (missing `caps`, restart-as-string, missing `requires`)
+    // rotted silently because nothing re-evaluated these files. This guards
+    // every `examples/*.null` against the same rot: each must parse, type-check,
+    // and eval. The examples use only literal package strings (no `pkgs.*`), so
+    // an empty env suffices — exactly what `null eval examples/X.null` does.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let mut paths: Vec<_> = std::fs::read_dir(&dir)
+        .expect("examples/ dir must exist")
+        .map(|e| e.expect("readable dir entry").path())
+        .filter(|p| p.extension().map_or(false, |x| x == "null"))
+        .collect();
+    paths.sort();
+
+    for path in &paths {
+        let src = std::fs::read_to_string(path).expect("readable example");
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        if let Err(d) = null::run_eval(&src, &name, &empty_env()) {
+            panic!(
+                "example `{}` failed `null eval` ({:?}): {}",
+                name, d.code, d.message
+            );
+        }
+    }
+
+    // Fail loudly if the glob ever matches nothing — a vacuous pass would
+    // re-open the exact silent-drift hole this test closes.
+    assert!(!paths.is_empty(), "no examples/*.null found to evaluate");
+}
