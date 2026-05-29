@@ -20,12 +20,17 @@ pkgsStatic.rustPlatform.buildRustPackage {
   # The agent builds in-tree, so a `target/` directory exists and would
   # otherwise be copied into the store (impure, huge, hash churns on
   # every local rebuild). cleanSource only strips VCS metadata, so we
-  # compose an explicit `target/` exclusion on top of it.
+  # compose an explicit `target/` exclusion on top of it. We also drop
+  # `*.md` (SPEC, BUILTINS_CONTRACT, README): docs are not compiler input,
+  # and editing them must NOT churn the source hash and force a full
+  # nullang + initramfs rebuild (which is exactly what bit us once).
   src = lib.cleanSourceWith {
     src = ../system/nullang;
     filter = path: type:
       let base = baseNameOf (toString path);
-      in base != "target" && lib.cleanSourceFilter path type;
+      in base != "target"
+         && !(lib.hasSuffix ".md" base)
+         && lib.cleanSourceFilter path type;
   };
 
   # See null.nix for why this uses cargoHash instead of cargoLock.lockFile.

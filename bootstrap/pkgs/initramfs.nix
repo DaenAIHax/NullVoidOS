@@ -1,5 +1,5 @@
 { lib, runCommand, writeText, closureInfo
-, cpio, gzip
+, cpio, pigz
 , pkgsStatic
 , zerolang
 , nullLang
@@ -282,7 +282,7 @@ let
     (p: "${p}/bin") devSubstrate;
 in
 runCommand "nullvoid-initramfs" {
-  nativeBuildInputs = [ cpio gzip ];
+  nativeBuildInputs = [ cpio pigz ];
 
   meta = with lib; {
     description = "NullVoidOS Phase 0 initramfs (variant a): busybox + zero + claude-code closure";
@@ -363,8 +363,11 @@ runCommand "nullvoid-initramfs" {
   chmod +x root/init
 
   mkdir -p $out
+  # pigz = parallel gzip: same gzip format (the kernel's RD_GZIP decompresses
+  # it identically), but compresses the ~1.1 GB image across all build cores
+  # instead of pinning one. `-p $NIX_BUILD_CORES` respects Nix's allocation.
   (cd root && find . -print0 | cpio --null -H newc -o 2>/dev/null \
-     | gzip -9 > $out/initramfs.cpio.gz)
+     | pigz -9 -p ''${NIX_BUILD_CORES:-$(nproc)} > $out/initramfs.cpio.gz)
 
   echo ""
   echo "=== initramfs built ==="

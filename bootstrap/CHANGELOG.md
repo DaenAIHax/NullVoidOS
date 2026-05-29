@@ -8,6 +8,19 @@ applicable.
 
 ## [Unreleased]
 
+### Build — compressione initramfs parallela (pigz) + niente rebuild sui doc (2026-05-29)
+
+Due fix d'igiene al ciclo di rebuild dell'initramfs (1.16 GB, ricostruito a ogni
+modifica di `nullang`):
+- **`pigz` al posto di `gzip`** (`pkgs/initramfs.nix`): `gzip` è single-thread e
+  pinnava 1 core su 16 per minuti. `pigz -9 -p $NIX_BUILD_CORES` comprime su
+  tutti i core; output gzip-compatibile, il kernel lo decomprime identico
+  (`RD_GZIP`). ~10-15× sulla fase di compressione.
+- **`*.md` esclusi dal `src` di `nullang`** (`pkgs/nullang.nix`): editare
+  `SPEC.md`/`BUILTINS_CONTRACT.md` cambiava l'hash del sorgente e forzava un
+  rebuild completo di `nullang` + initramfs (è successo). I doc non sono input
+  del compilatore: ora non triggerano più nulla.
+
 ### Decisione — loop di auto-miglioramento dell'agente: "intermedio, solo builtin" (2026-05-29)
 
 L'agente in-VM ha proposto di chiudere il loop sul linguaggio stesso (provo →
