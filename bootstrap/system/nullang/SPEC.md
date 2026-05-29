@@ -222,17 +222,33 @@ Available without declaration. The set is deliberately tiny and grows only
 when the OS needs it (§11):
 
 ```nullang
-print(world: World, s: String) -> ()   uses !tty   # writes s + newline
-concat(a: String, b: String) -> String             # pure; BINARY only
-str_of_int(n: Int) -> String                        # pure; decimal
+print(world: World, s: String) -> ()              uses !tty       # writes s + newline
+concat(a: String, b: String) -> String                            # pure; BINARY only
+str_of_int(n: Int) -> String                                      # pure; decimal
+str_len(s: String) -> Int                                         # pure (Tier 0)
+substr(s: String, start: Int, len: Int) -> String                 # pure; indices clamp (Tier 0)
+read_file(world: World, path: String) -> String   uses !fs.read   # "" on error (Tier 0)
+write_file(world: World, path: String, content: String) -> ()   uses !fs.write   # (Tier 0)
 ```
 
-`print` is the one effectful builtin (`!tty`); the rest are pure and need no
-`uses`. There is **no string interpolation and no `+` overload for strings**
-(§10): build dynamic strings by composing `concat`/`str_of_int` explicitly.
-`concat` is strictly binary — there are no variadics (§10), so nesting is the
-intended cost (`concat(concat(a, b), c)`). `str_of_bool` and friends are
-deferred until a real need appears.
+`print`/`read_file`/`write_file` are the effectful builtins; the rest are pure
+and need no `uses`. There is **no string interpolation and no `+` overload for
+strings** (§10): build dynamic strings by composing `concat`/`str_of_int`
+explicitly. `concat` is strictly binary (§10), so nesting is the intended cost.
+
+**Tier 0 (string decomposition + file I/O).** `concat` builds strings up;
+`str_len`/`substr` take them apart (`char_at(s,i)` is just `substr(s,i,1)`).
+`substr` clamps its indices so it is total (no panics, no error type). File I/O
+is effectful and **path-less in the language**: an fn that reads files declares
+`uses !fs.read` (no path) — the path is a runtime `String`, and the *system*
+grant in `system.null` (`!fs.read."/dir"`) scopes it, which is what Landlock
+enforces at `nv-rebuild run`. So the language effect maps 1:1 onto the runtime
+capability. `read_file` returns `""` on error today; a `Result`-returning
+variant (§10) is the follow-up. `str_of_bool` and friends are still deferred.
+
+**String equality.** `==` and `!=` work on `String` (lowered to `strcmp`), in
+addition to `Int`/`Bool` — needed to recognise commands and keystrokes. No
+ordering (`<`, `>`) on strings yet.
 
 ## 5 — Capabilities and effects
 

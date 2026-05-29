@@ -8,6 +8,44 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang Tier 0 — decomposizione stringhe, `==` su String, file I/O (2026-05-29)
+
+Risposta diretta alla mappa dei gap dell'esperimento "costruisci un editor"
+(l'agente in-VM aveva sbattuto sul fatto che Nullang sa *comporre* stringhe ma
+non *scomporle*, non legge input/file, e `==` non vale su String). Tier 0 sblocca
+gli strumenti **batch** (`cat -n`, `wc`, un `ed` non interattivo).
+
+Cinque builtin + un operatore, tutti senza chirurgia su parser/tipi (modello
+`concat`):
+- `str_len(String) -> Int` e `substr(String, Int, Int) -> String` — puri; gli
+  indici di `substr` clampano, quindi è totale (niente panic, niente tipo
+  errore). `char_at(s,i)` = `substr(s,i,1)`.
+- `read_file(World, String) -> String uses !fs.read` e `write_file(World,
+  String, String) uses !fs.write` — effectful (World-gated come `print`).
+- `==`/`!=` su `String` (typechecker esteso; codegen → `strcmp(a,b) {==,!=} 0`,
+  non confronto di puntatori).
+
+**La cucitura linguaggio↔capability si chiude qui.** L'effetto del linguaggio è
+*path-less* (`uses !fs.read`, senza path — il path è un `String` a runtime); il
+grant in `system.null` (`!fs.read."/dir"`) lo scopa, e **Landlock lo impone** a
+`nv-rebuild run` (il lavoro `!fs` di prima). Verificato: `nullang package`
+deriva `capabilities: ["fs:read","fs:write"]` dal `uses` di `main`, e
+`read_file` senza `uses !fs.read` dà `EFF001 + repair add-uses-clause`.
+Estendere il set di effetti di Nullang **accende** l'enforcement senza altro
+codice.
+
+Implementazione in `check.rs` (4 builtin + `==` su String in `check_binary`) e
+`codegen.rs` (impl C in PRELUDE + `strcmp` per l'uguaglianza di stringhe).
+`read_file` ritorna `""` su errore per ora (un `Result` enum, §10, è il
+follow-up). Suite `nullang` 32/32 (6 nuovi test Tier 0). Smoke end-to-end
+host (codegen→cc→run): `str_len`/`substr`/`==`/round-trip `write_file`→
+`read_file` tutti corretti, file scritto davvero su disco. Nessuna nuova
+dipendenza, build offline.
+
+Prossimo (dalla mappa gap dell'editor): Tier 1 (`read_line`/stdin → editor di linea),
+Tier 2 (`List`+`struct`, chirurgia su parser/tipi → buffer vero), Tier 3 (`mut`
++ raw tty → TUI).
+
 ### Traccia A — capability enforcement a runtime: slice `!proc.spawn` + `!rand` via seccomp (2026-05-29)
 
 Terza e quarta capability applicate a runtime, dopo `!net` (netns) e `!fs`

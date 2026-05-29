@@ -374,3 +374,85 @@ fn manifest_is_schema_v1_nullang() {
     assert!(j.contains("\"exposedBins\""));
     assert!(j.contains("notes"));
 }
+
+// ─── Tier 0 — string decomposition, String ==, file I/O ───────────────────────
+
+#[test]
+fn tier0_string_decomposition_compiles() {
+    let src = r#"
+fn main(world: World) -> Int uses !tty {
+  print(world, substr("hello", 0, 2));
+  str_len("hello")
+}
+"#;
+    let c = compile_to_c(src, "dec.null").expect("str_len/substr should compile");
+    assert!(c.contains("nullang_str_len("));
+    assert!(c.contains("nullang_substr("));
+}
+
+#[test]
+fn tier0_string_equality_lowers_to_strcmp() {
+    let src = r#"
+fn main(world: World) -> Int uses !tty {
+  if "a" == "a" { 0 } else { 1 }
+}
+"#;
+    let c = compile_to_c(src, "eq.null").expect("String == should compile");
+    // Content comparison, not pointer comparison.
+    assert!(c.contains("strcmp("));
+    assert!(c.contains(") == 0)"));
+}
+
+#[test]
+fn tier0_string_equality_rejects_mixed_operands() {
+    let src = r#"
+fn main(world: World) -> Int uses !tty {
+  if "a" == 1 { 0 } else { 1 }
+}
+"#;
+    let err = compile_to_c(src, "mix.null").expect_err("String == Int must fail");
+    assert_eq!(format!("{:?}", err.code), "Typ001");
+}
+
+#[test]
+fn tier0_file_io_requires_fs_effects() {
+    // read_file exercises !fs.read; main does not declare it.
+    let src = r#"
+fn main(world: World) -> Int uses !tty {
+  print(world, read_file(world, "/etc/hostname"));
+  0
+}
+"#;
+    let err = compile_to_c(src, "noeff.null").expect_err("read_file needs uses !fs.read");
+    assert_eq!(format!("{:?}", err.code), "Eff001");
+    assert_eq!(err.repair.expect("repair").id, "add-uses-clause");
+}
+
+#[test]
+fn tier0_file_io_compiles_with_effects_and_erases_world() {
+    let src = r#"
+fn main(world: World) -> Int uses !fs.read, !fs.write {
+  write_file(world, "/tmp/x", read_file(world, "/tmp/y"));
+  0
+}
+"#;
+    let c = compile_to_c(src, "io.null").expect("file I/O should compile with effects");
+    // World erased: the C calls take only the data arguments.
+    assert!(c.contains("nullang_read_file(\"/tmp/y\")"));
+    assert!(c.contains("nullang_write_file(\"/tmp/x\", nullang_read_file(\"/tmp/y\"))"));
+}
+
+#[test]
+fn tier0_file_effects_flow_into_package_capabilities() {
+    // The seam to Traccia A: a file-reading/writing program's capabilities are
+    // derived from its `uses` clause, so nv-rebuild's Landlock confinement
+    // gates exactly what the language declared.
+    let src = r#"
+fn main(world: World) -> Int uses !fs.read, !fs.write, !tty {
+  write_file(world, "/tmp/x", "data");
+  0
+}
+"#;
+    let f = parse_only(src, "seam.null").expect("parses");
+    assert_eq!(capabilities_of_main(&f), vec!["fs:read", "fs:write", "tty"]);
+}

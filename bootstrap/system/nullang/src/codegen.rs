@@ -41,6 +41,49 @@ static const char* nullang_str_of_int(long n) {
   snprintf(r, 24, \"%ld\", n);
   return r;
 }
+
+/* Tier 0 string decomposition. */
+static long nullang_str_len(const char* s) { return (long)strlen(s); }
+
+/* substr(s, start, len): indices clamp to bounds so it is total. */
+static const char* nullang_substr(const char* s, long start, long len) {
+  long n = (long)strlen(s);
+  if (start < 0) start = 0;
+  if (start > n) start = n;
+  if (len < 0) len = 0;
+  long avail = n - start;
+  if (len > avail) len = avail;
+  char* r = malloc((size_t)len + 1);
+  memcpy(r, s + start, (size_t)len);
+  r[len] = '\\0';
+  return r;
+}
+
+/* Tier 0 file I/O. World is erased at codegen, so it is not a C parameter;
+   the capability lives in the fn's `uses` clause (checked) and the grant in
+   system.null (enforced by Landlock at run time). Errors are swallowed into
+   an empty string / no-op for now — a Result-returning variant (SPEC §10) is
+   the follow-up. Allocations are not freed (short-lived programs, §11). */
+static const char* nullang_read_file(const char* path) {
+  FILE* f = fopen(path, \"rb\");
+  if (!f) return \"\";
+  if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return \"\"; }
+  long sz = ftell(f);
+  if (sz < 0) { fclose(f); return \"\"; }
+  rewind(f);
+  char* buf = malloc((size_t)sz + 1);
+  size_t got = fread(buf, 1, (size_t)sz, f);
+  buf[got] = '\\0';
+  fclose(f);
+  return buf;
+}
+
+static void nullang_write_file(const char* path, const char* content) {
+  FILE* f = fopen(path, \"wb\");
+  if (!f) return;
+  fputs(content, f);
+  fclose(f);
+}
 ";
 
 pub fn emit(file: &File, checked: &Checked) -> String {
@@ -292,7 +335,14 @@ impl<'a> Codegen<'a> {
             Expr::Binary { op, lhs, rhs, .. } => {
                 let l = self.lower(lhs, locals, out, fresh);
                 let r = self.lower(rhs, locals, out, fresh);
-                format!("({} {} {})", l, op.c_op(), r)
+                // String equality compares contents, not pointers: lower to
+                // `strcmp(l, r) == 0` / `!= 0`. The checker guarantees both
+                // sides are String here.
+                if op.is_equality() && self.ty_of(lhs, locals) == Ty::String {
+                    format!("(strcmp({}, {}) {} 0)", l, r, op.c_op())
+                } else {
+                    format!("({} {} {})", l, op.c_op(), r)
+                }
             }
             Expr::Call { callee, args, .. } => {
                 let sig = self.sigs.get(callee);

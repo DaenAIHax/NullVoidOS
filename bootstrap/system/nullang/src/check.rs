@@ -87,6 +87,51 @@ fn builtins() -> SigTable {
             c_name: "nullang_str_of_int".to_string(),
         },
     );
+    // Tier 0 — string DEcomposition (the dual of `concat`). Pure. `concat`
+    // builds up; these take apart, the wall the editor experiment hit first.
+    t.insert(
+        "str_len".to_string(),
+        Sig {
+            params: vec![Ty::String],
+            ret: Ty::Int,
+            effects: vec![],
+            c_name: "nullang_str_len".to_string(),
+        },
+    );
+    // `substr(s, start, len) -> String`. Indices clamp to bounds, so it is
+    // total (no panics, no error type needed). `char_at(s,i)` is `substr(s,i,1)`.
+    t.insert(
+        "substr".to_string(),
+        Sig {
+            params: vec![Ty::String, Ty::Int, Ty::Int],
+            ret: Ty::String,
+            effects: vec![],
+            c_name: "nullang_substr".to_string(),
+        },
+    );
+    // Tier 0 — file I/O. Effectful (World-gated, like `print`). The LANGUAGE
+    // effect is path-less (`fs.read`/`fs.write`): the path is a runtime
+    // String, and the system-level grant in `system.null` scopes it — which
+    // is exactly what Landlock then enforces at `nv-rebuild run`. So an fn
+    // that reads files declares `uses !fs.read` (no path); the path is data.
+    t.insert(
+        "read_file".to_string(),
+        Sig {
+            params: vec![Ty::World, Ty::String],
+            ret: Ty::String,
+            effects: vec!["fs.read".to_string()],
+            c_name: "nullang_read_file".to_string(),
+        },
+    );
+    t.insert(
+        "write_file".to_string(),
+        Sig {
+            params: vec![Ty::World, Ty::String, Ty::String],
+            ret: Ty::Unit,
+            effects: vec!["fs.write".to_string()],
+            c_name: "nullang_write_file".to_string(),
+        },
+    );
     t
 }
 
@@ -731,16 +776,18 @@ impl<'a> Checker<'a> {
             }
             Ok(Ty::Bool)
         } else if op.is_equality() {
-            if lt != rt || !matches!(lt, Ty::Int | Ty::Bool) {
+            // Tier 0: String equality (lowered to strcmp in codegen) joins
+            // Int/Bool. Needed to recognise commands and keystrokes.
+            if lt != rt || !matches!(lt, Ty::Int | Ty::Bool | Ty::String) {
                 return Err(self.diag(
                     DiagCode::Typ001,
                     format!(
-                        "operator `{}` compares two Int or two Bool, got {} and {}",
+                        "operator `{}` compares two Int, two Bool, or two String, got {} and {}",
                         op.c_op(),
                         lt.name(),
                         rt.name()
                     ),
-                    "matching Int or Bool operands",
+                    "matching Int, Bool, or String operands",
                     format!("{} and {}", lt.name(), rt.name()),
                     span,
                 ));
