@@ -24,6 +24,38 @@ fn hello_compiles_to_c() {
 }
 
 #[test]
+fn mutual_recursion_emits_forward_declarations() {
+    // A recursive-descent parser written in Nullang is a call cycle with no
+    // valid emission order (SPEC §12 self-host). Every non-main function is
+    // forward-declared before any body so C accepts the cycle.
+    let src = r#"
+fn is_even(n: Int) -> Bool {
+  if n == 0 { true } else { is_odd(n - 1) }
+}
+fn is_odd(n: Int) -> Bool {
+  if n == 0 { false } else { is_even(n - 1) }
+}
+fn main(world: World) -> Int uses !tty {
+  print(world, if is_even(10) { "yes" } else { "no" });
+  0
+}
+"#;
+    let c = compile_to_c(src, "mutrec.null").expect("mutual recursion should compile");
+    // Each non-main function appears as a prototype (`;`-terminated) before its
+    // body (`{`-opened), and both forms must be present.
+    let proto_even = c.find("int nlu_is_even(long nlu_n);");
+    let body_even = c.find("int nlu_is_even(long nlu_n) {");
+    assert!(proto_even.is_some(), "is_even should be prototyped");
+    assert!(body_even.is_some(), "is_even should be defined");
+    assert!(
+        proto_even.unwrap() < body_even.unwrap(),
+        "the prototype must precede the body"
+    );
+    // main is the entry point, never prototyped.
+    assert!(!c.contains("int main(int argc, char** argv);"));
+}
+
+#[test]
 fn effect_discipline_rejects_undeclared_capability() {
     // main calls print (requires !tty) without declaring `uses !tty`.
     let src = r#"

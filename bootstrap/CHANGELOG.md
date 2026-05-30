@@ -46,6 +46,47 @@ Solo documentazione, zero codice. Layer 4 / Phase 4+, *davanti* al bootstrap
 di Phase 0/1 — si costruisce quando il bootstrap respira. Cullis resta la
 scommessa commerciale. Scelta utente: "Visione scritta (hobby)".
 
+### Nullang self-host: il parser — discesa ricorsiva in Nullang + due muri caduti (2026-05-30)
+
+`examples/selfhost-parser.null`: il cuore RICORSIVO di un compilatore scritto
+in Nullang. Lexer embedded (token) → discesa ricorsiva con precedence-climbing
+(Pratt) → AST, provato da un tree-printer su 10 frammenti Nullang reali. La
+precedenza esce giusta (`1 + 2 * 3 - 4` → `((1+(2*3))-4)`), il meno unario lega
+più stretto del binario, chiamate annidate, letterali-struct, accesso campo
+incatenato, indicizzazione, `let mut`, `while`, `if/else` — tutti corretti.
+
+Due muri sono caduti per renderlo possibile, entrambi in questa sessione:
+
+- **Mutua ricorsione (cresce-il-compilatore).** Un parser a discesa ricorsiva
+  è un ciclo intrinseco (`parse_expr` ⇄ `parse_unary` ⇄ `parse_postfix` ⇄
+  `parse_primary` ⇄ `parse_args` → `parse_expr`): nessun ordine di emissione
+  lo soddisfa, e il C rifiuta una chiamata a funzione non ancora dichiarata.
+  Il codegen ora **emette le forward-declaration C** di ogni funzione non-`main`
+  prima di tutti i corpi. Modifica minima al compilatore Rust, guidata
+  strettamente da ciò che il self-host richiede (SPEC §12 tempo 2). Sblocca
+  ogni codice Nullang ricorsivo, non solo questo parser. Coperta da test
+  (`mutual_recursion_emits_forward_declarations`); suite 72→73 verde.
+- **Stato mutabile condiviso senza parametri `mut`.** Il cursore sui token e
+  l'arena dei nodi devono mutare attraverso la ricorsione, ma i parametri non
+  sono `let mut`. Si sfrutta la **semantica a riferimento**: dentro ogni
+  funzione si ri-lega il parametro a un `let mut` locale — alias dello stesso
+  handle heap — che rende `push`/field-write legali E condivisi col chiamante.
+  Verificato in `examples/probe-mutshare.null` (cursore + List condivisi a 5
+  livelli di ricorsione).
+
+Tecniche di design notevoli: **AST ad arena piatta** — niente handle null per i
+figli mancanti (enum/Option differiti, §11), i nodi vivono in una `List<Node>`
+e si riferiscono per INDICE Int (`-1` = assente); le liste a lunghezza variabile
+(argomenti, campi, statement) si incatenano con un campo `next`. **Disciplina
+`else` obbligatorio**: in Nullang ogni `if` è un'espressione e pretende `else`,
+quindi i "consuma-se-c'è" diventano funzioni `eat_*` con else chiamate come
+statement, e il dispatch del printer è una catena if/else annidata. **Flag
+`nostruct`**: dentro la condizione di `if`/`while` una `Ident {` è il BLOCCO, non
+un letterale-struct — disambiguazione identica a Rust, verificata (`while i < n {`
+non cattura `n { … }`). Loop host-dry-run verde (build→cc→run senza VM).
+Prossima onda: statement/funzioni completi fino a far mangiare al parser la
+propria coda, come il lexer.
+
 ### Nullang self-host: il lexer mangia la propria coda (2026-05-30)
 
 `examples/selfhost-lexer.null` da nucleo-su-input-giocattolo a lexer che legge

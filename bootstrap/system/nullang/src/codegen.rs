@@ -272,6 +272,24 @@ pub fn emit(file: &File, checked: &Checked) -> String {
         out.push('\n');
     }
 
+    // Forward-declare every non-main function before any body, so functions
+    // may call each other in any order — mutual recursion, which C otherwise
+    // rejects (a call to a not-yet-declared function). This is what unlocks a
+    // recursive-descent parser written in Nullang (parse_expr ⇄ parse_primary):
+    // the cycle has no valid emission order, only a prototype resolves it.
+    let mut wrote_proto = false;
+    for item in &file.items {
+        if let Item::Func(f) = item {
+            if f.name != "main" {
+                out.push_str(&format!("{};\n", cg.c_signature(f)));
+                wrote_proto = true;
+            }
+        }
+    }
+    if wrote_proto {
+        out.push('\n');
+    }
+
     for item in &file.items {
         if let Item::Func(f) = item {
             if f.name != "main" {
@@ -348,9 +366,11 @@ impl<'a> Codegen<'a> {
         out.push_str(&format!("  }} u;\n}} {};\n\n", enum_struct_name(id)));
     }
 
-    fn emit_func(&self, out: &mut String, f: &Func) {
+    /// The C signature line for a function — `"{ret} {cname}({params})"`,
+    /// without the trailing ` {` or `;`. Shared by the prototype pass and the
+    /// definition so the two can never drift apart.
+    fn c_signature(&self, f: &Func) -> String {
         let ret = self.sigs.get(&f.name).map(|s| s.ret).unwrap_or(Ty::Unit);
-        let mut locals: HashMap<String, Ty> = HashMap::new();
         let mut params = Vec::new();
         for (i, p) in f.params.iter().enumerate() {
             let ty = self
@@ -358,7 +378,6 @@ impl<'a> Codegen<'a> {
                 .get(&f.name)
                 .and_then(|s| s.params.get(i).copied())
                 .unwrap_or(Ty::Int);
-            locals.insert(p.name.clone(), ty);
             if ty != Ty::World {
                 params.push(format!("{} {}", self.c_type_of(ty), mangle(&p.name)));
             }
@@ -373,7 +392,21 @@ impl<'a> Codegen<'a> {
             .get(&f.name)
             .map(|s| s.c_name.clone())
             .unwrap_or_else(|| mangle(&f.name));
-        out.push_str(&format!("{} {}({}) {{\n", self.c_type_of(ret), c_fn, param_list));
+        format!("{} {}({})", self.c_type_of(ret), c_fn, param_list)
+    }
+
+    fn emit_func(&self, out: &mut String, f: &Func) {
+        let ret = self.sigs.get(&f.name).map(|s| s.ret).unwrap_or(Ty::Unit);
+        let mut locals: HashMap<String, Ty> = HashMap::new();
+        for (i, p) in f.params.iter().enumerate() {
+            let ty = self
+                .sigs
+                .get(&f.name)
+                .and_then(|s| s.params.get(i).copied())
+                .unwrap_or(Ty::Int);
+            locals.insert(p.name.clone(), ty);
+        }
+        out.push_str(&format!("{} {{\n", self.c_signature(f)));
 
         let mut fresh = 0usize;
         let tail = self.lower_block(&f.body, &locals, out, &mut fresh);
