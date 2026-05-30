@@ -991,6 +991,98 @@ static const char* nullang_char_at(const char* s, long i) {
   return r;
 }
 
+static long nullang_char_code(const char* s, long i) {
+  if (i < 0) return -1;
+  for (long k = 0; k < i; k++) {
+    if (s[k] == '\\0') return -1;
+  }
+  unsigned char c = (unsigned char)s[i];
+  if (c == 0) return -1;
+  return (long)c;
+}
+
+static long nullang_int_of_str(const char* s) {
+  long i = 0, sign = 1, n = 0;
+  if (s[i] == '-') { sign = -1; i++; }
+  while (s[i] >= '0' && s[i] <= '9') {
+    n = n * 10 + (s[i] - '0');
+    i++;
+  }
+  return sign * n;
+}
+
+static long nullang_index_of(const char* s, const char* sub) {
+  long m = (long)strlen(sub);
+  if (m == 0) return 0;
+  long n = (long)strlen(s);
+  for (long i = 0; i + m <= n; i++) {
+    if (memcmp(s + i, sub, (size_t)m) == 0) return i;
+  }
+  return -1;
+}
+
+static nl_list nullang_split(const char* s, const char* sep) {
+  nl_list l = nl_list_new();
+  long m = (long)strlen(sep);
+  long n = (long)strlen(s);
+  if (m == 0) {
+    char* whole = malloc((size_t)n + 1);
+    memcpy(whole, s, (size_t)n);
+    whole[n] = '\\0';
+    nl_list_push(l, (long)(intptr_t)whole);
+    return l;
+  }
+  long start = 0;
+  long i = 0;
+  while (i + m <= n) {
+    if (memcmp(s + i, sep, (size_t)m) == 0) {
+      long seglen = i - start;
+      char* seg = malloc((size_t)seglen + 1);
+      memcpy(seg, s + start, (size_t)seglen);
+      seg[seglen] = '\\0';
+      nl_list_push(l, (long)(intptr_t)seg);
+      i += m;
+      start = i;
+    } else {
+      i++;
+    }
+  }
+  long seglen = n - start;
+  char* seg = malloc((size_t)seglen + 1);
+  memcpy(seg, s + start, (size_t)seglen);
+  seg[seglen] = '\\0';
+  nl_list_push(l, (long)(intptr_t)seg);
+  return l;
+}
+
+static const char* nullang_read_file(const char* path) {
+  FILE* f = fopen(path, \"rb\");
+  if (!f) return \"\";
+  if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return \"\"; }
+  long sz = ftell(f);
+  if (sz < 0) { fclose(f); return \"\"; }
+  rewind(f);
+  char* buf = malloc((size_t)sz + 1);
+  size_t got = fread(buf, 1, (size_t)sz, f);
+  buf[got] = '\\0';
+  fclose(f);
+  return buf;
+}
+
+static void nullang_write_file(const char* path, const char* content) {
+  FILE* f = fopen(path, \"wb\");
+  if (!f) return;
+  fputs(content, f);
+  fclose(f);
+}
+
+static int nl_argc = 0;
+static char** nl_argv = 0;
+static long nullang_argc(void) { return (long)nl_argc; }
+static const char* nullang_argv(long i) {
+  return (i >= 0 && i < (long)nl_argc) ? nl_argv[i] : \"\";
+}
+
 "
 }
 
@@ -1110,24 +1202,23 @@ fn mangle(toks: List<Token>, src: String, tok: Int) -> String {
   concat("nlu_", tok_lex(toks, src, tok))
 }
 
-# I builtin che il codegen conosce in Wave 2: il loro nome C è `nullang_<name>`
-# (uniforme col codegen Rust). Cresce insieme al preludio.
+# I builtin che il codegen conosce: il loro nome C è `nullang_<name>` (uniforme
+# col codegen Rust). Set completo (preludio) per reggere il compilatore intero.
 fn is_builtin(name: String) -> Bool {
   name == "print" || name == "concat" || name == "str_of_int"
   || name == "str_len" || name == "substr" || name == "char_at"
-}
-
-# Builtin che prendono `World` come primo argomento: a runtime World è cancellato
-# (vive nella clausola `uses` + grant Landlock), quindi il primo arg si droppa.
-fn world_gated(name: String) -> Bool {
-  name == "print" || name == "read_file" || name == "write_file"
+  || name == "char_code" || name == "int_of_str" || name == "index_of"
+  || name == "split" || name == "read_file" || name == "write_file"
+  || name == "argc" || name == "argv"
 }
 
 # Tipo di ritorno di un builtin (per inferire il tipo di un `let`).
 fn builtin_ret_tc(name: String) -> Int {
-  if name == "concat" || name == "str_of_int" || name == "substr" || name == "char_at" {
+  if name == "concat" || name == "str_of_int" || name == "substr"
+     || name == "char_at" || name == "read_file" || name == "argv" {
     tc_str()
-  } else { tc_int() }
+  } else { if name == "split" { 1000 + tc_str() }
+  else { tc_int() } }
 }
 
 # Cerca una fn utente per nome fra gli item top-level e ne ritorna il codice del
@@ -1287,6 +1378,26 @@ fn emit_finits(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: L
   out
 }
 
+# Ri-escapa un lessema-stringa per C: Nullang ammette newline REALI dentro un
+# literal (vedi c_prelude), il C no. I caratteri di controllo grezzi diventano
+# escape; le sequenze già escapate (\" \\ \n scritte col backslash) passano
+# invariate carattere per carattere. Le virgolette esterne fanno parte del lessema.
+fn c_string_escape(s: String) -> String {
+  let n = str_len(s);
+  let mut out = "";
+  let mut i = 0;
+  while i < n {
+    let ch = char_at(s, i);
+    let piece = if ch == "\n" { "\\n" }
+      else { if ch == "\t" { "\\t" }
+      else { if ch == "\r" { "\\r" }
+      else { ch } } };
+    out = concat(out, piece);
+    i = i + 1;
+  }
+  out
+}
+
 # Espressione → {pre, expr}. Le precedenze sono già nell'albero: ogni binop si
 # para con le parentesi. `ctr` per i temp dell'if-espressione e dei letterali.
 fn emit_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, ctr: Ctr, idx: Int) -> ExprC {
@@ -1298,7 +1409,7 @@ fn emit_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: Lis
     else { if nd.kind == nd_bool() {
       ec_pure(if tok_lex(toks, src, nd.tok) == "true" { "1" } else { "0" })
     }
-    else { if nd.kind == nd_str() { ec_pure(tok_lex(toks, src, nd.tok)) }
+    else { if nd.kind == nd_str() { ec_pure(c_string_escape(tok_lex(toks, src, nd.tok))) }
     else { if nd.kind == nd_unary() {
       let c = emit_expr(toks, src, ns, root, env, ctr, nd.a);
       ExprC { pre: c.pre, expr: concat("(-", concat(c.expr, ")")) }
@@ -1349,11 +1460,8 @@ fn emit_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: Lis
         else {
           let bi = is_builtin(name);
           let cname = if bi { concat("nullang_", name) } else { concat("nlu_", name) };
-          # Droppa il primo argomento (World) per i builtin World-gated.
-          let argh = if bi && world_gated(name) {
-            if nd.b < 0 { 0 - 1 } else { let h = ns[nd.b]; h.next }
-          } else { nd.b };
-          let ac = emit_args(toks, src, ns, root, env, ctr, argh);
+          # Gli argomenti World vengono droppati da emit_args (regola uniforme).
+          let ac = emit_args(toks, src, ns, root, env, ctr, nd.b);
           ExprC { pre: ac.pre, expr: concat(cname, concat("(", concat(ac.expr, ")"))) }
         } } }
       } else {
@@ -1436,6 +1544,9 @@ fn emit_list_elems(toks: List<Token>, src: String, ns: List<Node>, root: Int, en
 }
 
 # Catena di argomenti (via `next`) → {pre = unione dei pre, expr = "a, b, c"}.
+# Gli argomenti di tipo World si DROPPANO (World è cancellato a runtime): vale
+# sia per i builtin (print/read_file/write_file) sia per le fn utente che
+# prendono World — l'unica regola, uniforme.
 fn emit_args(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, ctr: Ctr, head: Int) -> ExprC {
   let mut cur = head;
   let mut pre = "";
@@ -1446,10 +1557,14 @@ fn emit_args(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: Lis
     if cur < 0 { going = false; }
     else {
       let e = ns[cur];
-      let ec = emit_expr(toks, src, ns, root, env, ctr, cur);
-      pre = concat(pre, ec.pre);
-      out = if first { ec.expr } else { concat(out, concat(", ", ec.expr)) };
-      first = false;
+      if type_of_expr(toks, src, ns, root, env, cur) == tc_world() {
+        pre = pre; out = out;
+      } else {
+        let ec = emit_expr(toks, src, ns, root, env, ctr, cur);
+        pre = concat(pre, ec.pre);
+        out = if first { ec.expr } else { concat(out, concat(", ", ec.expr)) };
+        first = false;
+      }
       cur = e.next;
     }
   }
@@ -1573,7 +1688,7 @@ fn emit_params(toks: List<Token>, src: String, ns: List<Node>, root: Int, head: 
 fn c_sig(toks: List<Token>, src: String, ns: List<Node>, root: Int, fnidx: Int) -> String {
   let nd = ns[fnidx];
   let nm = tok_lex(toks, src, nd.tok);
-  if nm == "main" { "int main(void)" }
+  if nm == "main" { "int main(int argc, char** argv)" }
   else {
     concat(c_type(tc_of_typetok(toks, src, ns, root, nd.c)), concat(" nlu_", concat(nm,
       concat("(", concat(emit_params(toks, src, ns, root, nd.a), ")")))))
@@ -1593,8 +1708,10 @@ fn emit_fn(toks: List<Token>, src: String, ns: List<Node>, root: Int, fnidx: Int
     else { let pe = ns[p]; env_push(env, pe.tok, tc_of_typetok(toks, src, ns, root, pe.b)); p = pe.next; }
   }
   let ctr = Ctr { n: 0 };
+  # `main` cattura argc/argv per i builtin argc()/argv() (World cancellato).
+  let shim = if tok_lex(toks, src, nd.tok) == "main" { "  nl_argc = argc; nl_argv = argv;\n" } else { "" };
   concat(c_sig(toks, src, ns, root, fnidx),
-    concat(" {\n", concat(emit_block(toks, src, ns, root, env, ctr, nd.b, tm_return(), ""), "}\n")))
+    concat(" {\n", concat(shim, concat(emit_block(toks, src, ns, root, env, ctr, nd.b, tm_return(), ""), "}\n"))))
 }
 
 # Emette i typedef degli struct: prima i forward dei handle (`typedef struct
@@ -1739,7 +1856,7 @@ fn src_path() -> String {
 # MANGIA LA PROPRIA CODA. Legge l'intero sorgente, lo lessa, lo parsa in un AST,
 # e ne stampa l'indice degli item top-level. Se questo gira sul proprio file,
 # il parser di Nullang ha appena letto sé stesso.
-fn ingest(world: World, path: String) -> Int uses !tty, !fs.read {
+fn ingest(world: World, path: String) -> Int uses !tty, !fs.read, !fs.write {
   print(world, "");
   print(world, concat("=== mangia la propria coda: ", concat(path, " ===")));
   let src = read_file(world, path);
@@ -1753,6 +1870,12 @@ fn ingest(world: World, path: String) -> Int uses !tty, !fs.read {
   print(world, concat("nodi AST: ", concat(str_of_int(list_len(nodes)),
         concat("   item top-level: ", str_of_int(count_chain(nodes, r.a))))));
   print_toc(world, toks, src, nodes, root);
+  # FIXPOINT: emette il C del PROPRIO sorgente. Se gcc lo compila e il binario
+  # si comporta come questo compilatore, il self-host è raggiunto.
+  let c = gen(toks, src, nodes, root);
+  write_file(world, "/tmp/nlcg-self.c", c);
+  print(world, concat("C di sé stesso: ", concat(str_of_int(str_len(c)),
+        " byte → /tmp/nlcg-self.c")));
   0
 }
 

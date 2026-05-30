@@ -8,6 +8,43 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang self-host: FIXPOINT RAGGIUNTO — il compilatore compila sé stesso (2026-05-30)
+
+SPEC §12 chiuso. Il compilatore-in-Nullang (lexer+parser+codegen, ~2000 righe in
+`selfhost-parser.null`) emette il C del PROPRIO sorgente, gcc lo compila, e il
+binario risultante è il compilatore. **Fixpoint verificato due volte:**
+
+- **Comportamento identico** — il binario auto-compilato (stage1) produce lo
+  stesso identico output del compilatore compilato da Rust (stage0): `diff` vuoto
+  su tutta l'esecuzione (tutti i demo + il self-ingest 140/140 item).
+- **C identico (stage1 == stage2)** — il C che il compilatore auto-compilato
+  emette di sé stesso è BYTE-IDENTICO a quello emesso dal compilatore Rust. Il
+  punto fisso del bootstrap. **Rust è ora solo il seme (stage0), rimovibile.**
+
+Zero costruzioni realmente non gestite (le 2 `/*?*/` residue sono stringhe-
+letterali nei rami-fallback del codegen stesso, non gap). 98452 byte di C
+generato, 0 errori gcc.
+
+Per arrivarci, tre fix sul codegen:
+
+- **Preludio completo + shim argc/argv.** Aggiunti al preludio tutti i builtin
+  (`char_code`/`int_of_str`/`index_of`/`split`/`read_file`/`write_file`/`argc`/
+  `argv`) e il runtime `nl_list_*`; `main` ora emesso `int main(int argc, char**
+  argv)` con `nl_argc = argc; nl_argv = argv;` così i builtin `argc()`/`argv()`
+  funzionano (usati da `ingest`/`src_path`).
+- **Cancellazione di World uniforme.** Prima solo i builtin droppavano l'arg
+  `World`; le fn utente che passano `world` ad altre fn (`print_node(world, …)`)
+  emettevano `nlu_world` (inesistente, World cancellato dalle firme). Ora
+  `emit_args` droppa OGNI argomento di tipo World — una sola regola, builtin e
+  fn utente uguali. Rimosso `world_gated` (non più necessario).
+- **Escape dei literal multi-riga.** Nullang ammette newline REALI dentro un
+  literal (vedi `c_prelude`); il C no. `c_string_escape` ri-escapa i caratteri
+  di controllo grezzi (`\n`/`\t`/`\r`) lasciando intatte le sequenze già
+  escapate. Senza questo, la stringa-preludio spezzava il C generato.
+
+Da qui il loop di self-improvement in-VM può girare sul compilatore nella sua
+stessa lingua. Resta da formalizzare il bootstrap a stadi (congelare stage0).
+
 ### Nullang self-host: codegen Wave 6b — liste (2026-05-30)
 
 Aggregati, seconda metà: le liste. **Bug del parser corretto**: `parse_primary`
