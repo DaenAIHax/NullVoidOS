@@ -1,44 +1,49 @@
-# selfhost-lexer.null — un frammento del lexer di Nullang, scritto IN Nullang.
+# selfhost-lexer.null — il lexer di Nullang, scritto IN Nullang.
 #
-# Scopo: primo passo misurabile verso il self-host (SPEC §12) e primo banco di
-# prova reale di List<T> (v0.3) + struct (v0.4). Non è il lexer completo: è il
-# nucleo (whitespace, numeri, identificatori/keyword, punteggiatura) — quanto
-# basta per esercitare le strutture dati del compilatore contro un input vero.
+# Scopo: passo misurabile verso il self-host (SPEC §12). Non più un nucleo
+# isolato su input giocattolo: questa versione MANGIA LA PROPRIA CODA — legge
+# un file sorgente Nullang vero (via argv) con read_file e lo tokenizza.
 #
-# STORIA: la prima versione di questa sonda aveva trovato il muro `List<struct>`
-# (la forma naturale della tabella token è `List<Token>`, ma `List` ammetteva
-# solo scalari) e usava il workaround "struct-of-arrays" — tre `List<Int>`
-# parallele. Quel muro ora è CADUTO (v0.4): gli struct sono elementi di lista
-# validi (un handle è un puntatore a 64 bit → entra nello slot uniforme). Questa
-# versione usa la forma naturale `List<Token>`, niente più liste parallele.
+# STORIA dei muri caduti:
+#  - v0.4: `List<struct>` → la tabella token è `List<Token>` naturale.
+#  - escape `\"` e `\\` nelle stringhe → verificati, quindi scan_string esiste.
+#  - read_file (!fs.read) + argv → il lexer legge il proprio file invece di una
+#    costante cablata. Il confine fs è una capability: Landlock confina la
+#    lettura senza che il lexer ne sappia nulla.
 #
-# Attrito ancora aperto, minore: niente char→Int né ordinamento su String, quindi
-# le classi di caratteri si esprimono per enumerazione/negazione (is_digit a 10
-# rami; is_ident_char per negazione). `||`/`&&` FUNZIONANO (nessun blocco lì).
+# COSA copre ora (abbastanza per tokenizzare il proprio sorgente senza rompersi):
+#  - whitespace, numeri, identificatori/keyword
+#  - STRINGHE con escape (\" \\ \n \t) — prima erano un muro
+#  - COMMENTI `#` fino a fine riga — saltati come il whitespace
+#  - PUNTEGGIATURA strutturale single-char: ( ) { } [ ] , ;
+#  - OPERATORI multi-char con maximal munch: -> == != || && <= >= :: ecc.
+#    (prima finivano scambiati per identificatori — muro silenzioso)
+#
+# Attrito ancora aperto: niente char→range, quindi le classi di carattere si
+# esprimono per enumerazione/negazione. Accettabile: il punto è la STRUTTURA.
 
-# Token kinds (niente const nel linguaggio: interi nudi con nome via kind_name).
-fn k_number() -> Int { 0 }
-fn k_ident()  -> Int { 1 }
+# --- Token kinds (interi nudi con nome via kind_name; niente const) ---
+fn k_number()  -> Int { 0 }
+fn k_ident()   -> Int { 1 }
 fn k_keyword() -> Int { 2 }
-fn k_punct()  -> Int { 3 }
+fn k_punct()   -> Int { 3 }   # punteggiatura strutturale
+fn k_op()      -> Int { 4 }   # operatori (run di char-operatore)
+fn k_string()  -> Int { 5 }
 
 fn kind_name(k: Int) -> String {
   if k == 0 { "number" }
-  else {
-    if k == 1 { "ident" }
-    else {
-      if k == 2 { "keyword" }
-      else { "punct" }
-    }
-  }
+  else { if k == 1 { "ident" }
+  else { if k == 2 { "keyword" }
+  else { if k == 3 { "punct" }
+  else { if k == 4 { "op" }
+  else { "string" } } } } }
 }
 
-# Un token: dove inizia, quanto è lungo, di che classe. Reference semantics —
-# costruito da scan_run e restituito per handle (verifica struct + ritorno).
+# Un token: dove inizia, quanto è lungo, di che classe. Reference semantics.
 type Token = { kind: Int, start: Int, len: Int };
 
 fn is_ws(c: String) -> Bool {
-  c == " " || c == "\n" || c == "\t"
+  c == " " || c == "\n" || c == "\t" || c == "\r"
 }
 
 fn is_digit(c: String) -> Bool {
@@ -46,36 +51,43 @@ fn is_digit(c: String) -> Bool {
   || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
 }
 
-fn is_punct(c: String) -> Bool {
+# Puntegg. strutturale: ogni char è un token a sé (mai coalizzato).
+fn is_structural(c: String) -> Bool {
   c == "(" || c == ")" || c == "{" || c == "}"
-  || c == ";" || c == "," || c == ":" || c == "="
+  || c == "[" || c == "]" || c == "," || c == ";"
 }
 
-# Un char di identificatore = tutto ciò che non è spazio, punteggiatura o vuoto
-# (fine input). Evita di enumerare a-z: il linguaggio non ha range su char.
+# Char-operatore: una corsa contigua = un token (così -> == != || && :: ecc.
+# escono come UN solo token, maximal munch, come in un lexer vero).
+fn is_op_char(c: String) -> Bool {
+  c == "+" || c == "-" || c == "*" || c == "/"
+  || c == "<" || c == ">" || c == "=" || c == "!"
+  || c == "|" || c == "&" || c == "." || c == ":"
+}
+
+# Char-identificatore = tutto ciò che non è già classificato e non è vuoto.
 fn is_ident_char(c: String) -> Bool {
-  c != "" && is_ws(c) == false && is_punct(c) == false
+  c != "" && is_ws(c) == false && is_structural(c) == false
+  && is_op_char(c) == false && c != "\"" && c != "#"
 }
 
-# Le 4 keyword che questo nucleo riconosce (campione, non l'insieme completo).
+# Le keyword che questo lexer distingue dagli identificatori.
 fn is_keyword(word: String) -> Bool {
-  word == "fn" || word == "let" || word == "if" || word == "while"
+  word == "fn" || word == "let" || word == "mut" || word == "if"
+  || word == "else" || word == "while" || word == "type"
+  || word == "uses" || word == "true" || word == "false"
 }
 
-# Scansiona una corsa di cifre a partire da `start`; ritorna il Token numero.
-fn scan_number(src: String, start: Int) -> Token {
+fn scan_number(src: String, start: Int, n: Int) -> Token {
   let mut i = start;
-  let n = str_len(src);
   while i < n && is_digit(char_at(src, i)) {
     i = i + 1;
   }
   Token { kind: k_number(), start: start, len: i - start }
 }
 
-# Scansiona una corsa di char-identificatore; classifica ident vs keyword.
-fn scan_word(src: String, start: Int) -> Token {
+fn scan_word(src: String, start: Int, n: Int) -> Token {
   let mut i = start;
-  let n = str_len(src);
   while i < n && is_ident_char(char_at(src, i)) {
     i = i + 1;
   }
@@ -84,45 +96,115 @@ fn scan_word(src: String, start: Int) -> Token {
   Token { kind: kind, start: start, len: i - start }
 }
 
-fn main(world: World) -> Int uses !tty {
-  # Un frammento di Nullang come input. Lo lexer NON deve capirne il senso,
-  # solo spezzarlo in token — il test è che le strutture dati reggano.
-  let src = "fn add(a, b) { let x = 12; }";
+# Corsa di char-operatore: maximal munch.
+fn scan_op(src: String, start: Int, n: Int) -> Token {
+  let mut i = start;
+  while i < n && is_op_char(char_at(src, i)) {
+    i = i + 1;
+  }
+  Token { kind: k_op(), start: start, len: i - start }
+}
 
-  # La tabella token come UNA lista di struct (la forma naturale, v0.4).
-  let mut toks: List<Token> = [];
+# Stringa: parte da `"`, salta gli escape `\x`, finisce al `"` di chiusura.
+# Il len include entrambe le virgolette.
+fn scan_string(src: String, start: Int, n: Int) -> Token {
+  let mut i = start + 1;            # oltre la virgoletta di apertura
+  let mut done = false;
+  while i < n && done == false {
+    let c = char_at(src, i);
+    if c == "\"" {
+      done = true;                  # virgoletta di chiusura: ci fermiamo su di essa
+    } else {
+      if c == "\\" {
+        i = i + 2;                  # escape: salta il backslash e il char che segue
+      } else {
+        i = i + 1;
+      }
+    }
+  }
+  # i punta alla virgoletta di chiusura (o a fine input se non chiusa)
+  let endpos = if i < n { i + 1 } else { i };
+  Token { kind: k_string(), start: start, len: endpos - start }
+}
 
+# Salta un commento `#...` fino a newline (o fine input). Ritorna il prossimo i.
+fn skip_comment(src: String, start: Int, n: Int) -> Int {
+  let mut i = start;
+  while i < n && char_at(src, i) != "\n" {
+    i = i + 1;
+  }
+  i
+}
+
+fn main(world: World) -> Int uses !tty, !fs.read {
+  # Sorgente da tokenizzare: argv(1). Se assente, si legge da solo.
+  let path = if argc() < 2 { "examples/selfhost-lexer.null" } else { argv(1) };
+  let src = read_file(world, path);
   let n = str_len(src);
+
+  let mut toks: List<Token> = [];
   let mut i = 0;
   while i < n {
     let c = char_at(src, i);
     if is_ws(c) {
-      i = i + 1;                      # salta gli spazi
+      i = i + 1;
     } else {
-      # Decide il tipo di run da scandire e ottiene un Token (uno struct).
-      let t = if is_digit(c) {
-        scan_number(src, i)
+      if c == "#" {
+        i = skip_comment(src, i, n);
       } else {
-        if is_ident_char(c) {
-          scan_word(src, i)
-        } else {
-          Token { kind: k_punct(), start: i, len: 1 }
-        }
-      };
-      push(toks, t);                 # il Token (handle) entra direttamente
-      i = t.start + t.len;           # avanza oltre il token appena letto
+        let t = if is_digit(c) { scan_number(src, i, n) }
+          else { if c == "\"" { scan_string(src, i, n) }
+          else { if is_op_char(c) { scan_op(src, i, n) }
+          else { if is_structural(c) {
+            Token { kind: k_punct(), start: i, len: 1 }
+          } else {
+            scan_word(src, i, n)
+          } } } };
+        push(toks, t);
+        i = t.start + t.len;
+      }
     }
   }
 
-  # Stampa la tabella token: "<kind> '<lexeme>'" una per riga.
+  # Resoconto: conteggio totale + istogramma per classe.
   let count = list_len(toks);
+  print(world, concat("file: ", path));
   print(world, concat("tokens: ", str_of_int(count)));
+
+  let mut n_num = 0;
+  let mut n_id = 0;
+  let mut n_kw = 0;
+  let mut n_pu = 0;
+  let mut n_op = 0;
+  let mut n_str = 0;
   let mut j = 0;
   while j < count {
     let t = toks[j];
+    let k = t.kind;
+    if k == 0 { n_num = n_num + 1; }
+    else { if k == 1 { n_id = n_id + 1; }
+    else { if k == 2 { n_kw = n_kw + 1; }
+    else { if k == 3 { n_pu = n_pu + 1; }
+    else { if k == 4 { n_op = n_op + 1; }
+    else { n_str = n_str + 1; } } } } }
+    j = j + 1;
+  }
+  print(world, concat("  number:  ", str_of_int(n_num)));
+  print(world, concat("  ident:   ", str_of_int(n_id)));
+  print(world, concat("  keyword: ", str_of_int(n_kw)));
+  print(world, concat("  punct:   ", str_of_int(n_pu)));
+  print(world, concat("  op:      ", str_of_int(n_op)));
+  print(world, concat("  string:  ", str_of_int(n_str)));
+
+  # Prime 24 token come prova visiva (kind + lessema).
+  print(world, "--- first tokens ---");
+  let mut p = 0;
+  let limit = if count < 24 { count } else { 24 };
+  while p < limit {
+    let t = toks[p];
     let lexeme = substr(src, t.start, t.len);
     print(world, concat(kind_name(t.kind), concat(" '", concat(lexeme, "'"))));
-    j = j + 1;
+    p = p + 1;
   }
   0
 }

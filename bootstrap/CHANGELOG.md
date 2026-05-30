@@ -8,6 +8,31 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang self-host: il lexer mangia la propria coda (2026-05-30)
+
+`examples/selfhost-lexer.null` da nucleo-su-input-giocattolo a lexer che legge
+un sorgente Nullang vero via `read_file` (`!fs.read`) + `argv` e lo tokenizza.
+Muri caduti rispetto alla prima sonda:
+
+- **Stringhe** con escape (`\"`, `\\`, `\n`, `\t`) — prima un muro; ora
+  `scan_string` salta gli escape e chiude sulla virgoletta giusta. Verificato:
+  `"ha#sh and \"quote\" inside"` esce come UN token (il `#` interno non apre
+  commento, le virgolette escaped non chiudono).
+- **Commenti** `#...` saltati come il whitespace; una virgoletta dentro un
+  commento non apre una stringa.
+- **Operatori multi-char** con maximal munch (`->`, `==`, `!=`, `||`, `&&`,
+  `::`, `<=` …): corsa contigua di char-operatore = un solo token. Prima
+  finivano scambiati per identificatori — muro silenzioso, ora chiuso.
+- Classi token distinte: number / ident / keyword / punct-strutturale / op /
+  string, con istogramma nel resoconto.
+
+Prova self-host: il lexer letto su se stesso emette 1400 token classificati
+(48 number, 430 ident, 126 keyword, 455 punct, 271 op, 70 string). Loop
+host-dry-run verde (build→cc→run senza VM). Il confine `fs` resta capability:
+Landlock confinerebbe la lettura a runtime senza che il lexer ne sappia nulla.
+Prossima onda self-host: il parser (recursive-descent in Nullang sul flusso di
+token) — nuova caccia ai muri, sessione propria.
+
 ### DESIGN: orizzonte "tutto in VM" — visione, non task corrente (2026-05-30)
 
 Nuova sezione `DESIGN.md` "Horizon — everything in the VM", subito dopo il
