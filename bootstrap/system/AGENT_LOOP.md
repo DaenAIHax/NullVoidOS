@@ -53,6 +53,18 @@ re-bakes the initramfs), and the agent resumes. **Source-of-truth lives on the
 host/repo; the VM proposes, the host disposes** — consistent with the Trust
 model in DESIGN.md.
 
+## Gotcha — start compiler work from fresh `/usr/src`, not `/var/work`
+
+`/var` persists across reboots, so a `/var/work/nullang` rw copy can be **stale**
+— a fork made in an earlier session, missing host commits since. Building from it
+produces an old compiler and *false* walls (e.g. 2026-05-30: the self-host
+fixpoint read red because `/var/work` predated the forward-declaration codegen
+fix `0efca8d` — `/usr/src` had it all along). **Before touching the compiler,
+re-sync:** `rm -rf /var/work/nullang && cp -r /usr/src/nullang /var/work/`, or
+just use the fresh initramfs floor `/bin/nullang`. The image's `/usr/src` is
+re-baked from the committed repo on every `nix run .#boot-vm`, so it is the
+source of truth inside the VM.
+
 ## Boundaries (do not fight these — they're walls by design)
 
 - `/` is RAM-only; only **`/var`** persists. Keep durable work and notes in `/var`.
