@@ -94,8 +94,9 @@
               set -eu
 
               # Phase 0 (a) ships Claude Code inside the VM and reuses
-              # the host's Max-subscription credentials over a read-only
-              # 9P share. Fail fast if the host hasn't logged in yet —
+              # the host's Max-subscription credentials over a 9P share
+              # (RW — see THREAT-MODEL note at the claudefs -virtfs line
+              # below). Fail fast if the host hasn't logged in yet —
               # otherwise `claude` inside the VM would just sit at the
               # login prompt with no way to complete it.
               CRED_DIR="''${HOME}/.claude"
@@ -164,6 +165,20 @@
               # Either way we expose modern x86-64 (AVX2, BMI2, FMA),
               # because the nixpkgs glibc + bundled Node abort with
               # "Illegal instruction" on the default `qemu64` CPU.
+              #
+              # THREAT-MODEL (DESIGN.md "Trust model & sandboxing"): the
+              # qemu invocation below has two known sharp edges, accepted
+              # for single-user alpha but the first things to tighten
+              # before any untrusted / multi-tenant use:
+              #   (1) -netdev user gives the guest general NAT egress, not
+              #       a single whitelisted hole — replace with an egress
+              #       proxy scoped to the model endpoint.
+              #   (2) the claudefs -virtfs share of ~/.claude is RW, so a
+              #       god-inside agent can read host credentials AND write
+              #       back into the host's Claude config (inject MCP
+              #       servers/hooks that later run on the HOST). The
+              #       perimeter-as-jail model needs a CLEAN perimeter —
+              #       narrow this to RO creds + a separate writable scratch.
               if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
                 ACCEL_ARGS="-accel kvm -cpu host"
                 echo "  accel: KVM (-cpu host)"

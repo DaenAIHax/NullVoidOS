@@ -1,0 +1,40 @@
+# List<T> — built-in mutable container (SPEC §11, v0.3).
+# Exercises: literal, indexing, push, set, list_len, empty-with-annotation,
+# List<String> as a line buffer, and a while-scan over a list.
+
+fn sum(xs: List<Int>) -> Int {
+  let mut total = 0;
+  let mut i = 0;
+  while i < list_len(xs) {
+    total = total + xs[i];
+    i = i + 1;
+  }
+  total
+}
+
+fn main(world: World) -> Int uses !tty {
+  # Int list: literal, index, mutate in place.
+  let mut nums = [10, 20, 30];
+  push(nums, 40);
+  set(nums, 0, 99);
+  print(world, str_of_int(list_len(nums)));   # 4
+  print(world, str_of_int(nums[0]));           # 99
+  print(world, str_of_int(sum(nums)));         # 99 + 20 + 30 + 40 = 189
+
+  # String list grown from empty — a line buffer.
+  let mut lines: List<String> = [];
+  push(lines, "first");
+  push(lines, "second");
+  print(world, lines[1]);                       # second
+
+  # Scan a String list with a mutable index, building output.
+  let mut out = "";
+  let mut j = 0;
+  while j < list_len(lines) {
+    out = concat(out, concat(str_of_int(j), concat(": ", concat(lines[j], "\n"))));
+    j = j + 1;
+  }
+  print(world, out);                            # 0: first \n 1: second
+
+  0
+}

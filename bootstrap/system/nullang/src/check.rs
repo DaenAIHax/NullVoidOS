@@ -422,7 +422,30 @@ impl<'a> Checker<'a> {
         for stmt in &block.stmts {
             match stmt {
                 Stmt::Let { name, mutable, ty, value, .. } => {
-                    let inferred = self.check_expr(value, &locals, uses, caller_name)?;
+                    // An empty `[]` literal cannot infer its element type from
+                    // its (absent) elements; it borrows the `: List<T>`
+                    // annotation instead. Every other initializer is checked
+                    // bottom-up as usual.
+                    let inferred = match (value, ty) {
+                        (Expr::ListLit { elems, span }, _) if elems.is_empty() => {
+                            match ty.as_ref().and_then(|t| t.resolved) {
+                                Some(lt @ Ty::List(_)) => lt,
+                                _ => {
+                                    return Err(self.diag(
+                                        DiagCode::Typ001,
+                                        format!(
+                                            "binding `{}` is an empty list `[]` and needs a `: List<T>` annotation",
+                                            name
+                                        ),
+                                        "a `: List<T>` annotation",
+                                        "[]".to_string(),
+                                        *span,
+                                    ))
+                                }
+                            }
+                        }
+                        _ => self.check_expr(value, &locals, uses, caller_name)?,
+                    };
                     if let Some(t) = ty {
                         if let Some(declared) = t.resolved {
                             if declared != inferred {
@@ -593,6 +616,15 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::Call { callee, args, span } => {
+                // List intrinsics (`push`/`set`/`list_len`) are polymorphic in
+                // the element type, so they cannot live in the monomorphic
+                // SigTable — they are checked by hand (SPEC §11). These names
+                // are reserved: a user `fn push` would be shadowed here.
+                if let Some(t) =
+                    self.check_list_intrinsic(callee, args, locals, caller_uses, caller_name, *span)?
+                {
+                    return Ok(t);
+                }
                 let sig = self.sigs.get(callee).ok_or_else(|| {
                     self.diag(
                         DiagCode::Ref001,
@@ -840,7 +872,212 @@ impl<'a> Checker<'a> {
 
                 Ok(arm_ty.unwrap_or(Ty::Unit))
             }
+            Expr::ListLit { elems, span } => {
+                // `[]` is only well-typed where an annotation supplies the
+                // element type; the `let` handler catches that case before it
+                // ever reaches here, so a bare empty literal is an error.
+                if elems.is_empty() {
+                    return Err(self.diag(
+                        DiagCode::Typ001,
+                        "empty list literal `[]` needs a `: List<T>` annotation to fix its element type".to_string(),
+                        "a `let xs: List<T> = []` annotation",
+                        "[]".to_string(),
+                        *span,
+                    ));
+                }
+                let first = self.check_expr(&elems[0], locals, caller_uses, caller_name)?;
+                let elem = ElemTy::from_ty(first).ok_or_else(|| {
+                    self.diag(
+                        DiagCode::Typ001,
+                        format!(
+                            "list elements must be Int, Bool, or String, got {}",
+                            first.name()
+                        ),
+                        "Int, Bool, or String",
+                        first.name().to_string(),
+                        elems[0].span(),
+                    )
+                })?;
+                for e in &elems[1..] {
+                    let t = self.check_expr(e, locals, caller_uses, caller_name)?;
+                    if t != first {
+                        return Err(self.diag(
+                            DiagCode::Typ001,
+                            format!(
+                                "list elements must share one type: expected {}, got {}",
+                                first.name(),
+                                t.name()
+                            ),
+                            first.name(),
+                            t.name().to_string(),
+                            e.span(),
+                        ));
+                    }
+                }
+                Ok(Ty::List(elem))
+            }
+            Expr::Index { base, index, span } => {
+                let bt = self.check_expr(base, locals, caller_uses, caller_name)?;
+                let elem = match bt {
+                    Ty::List(e) => e,
+                    other => {
+                        return Err(self.diag(
+                            DiagCode::Typ001,
+                            format!("cannot index {}; only a List can be indexed", other.name()),
+                            "a List value",
+                            other.name().to_string(),
+                            *span,
+                        ))
+                    }
+                };
+                let it = self.check_expr(index, locals, caller_uses, caller_name)?;
+                if it != Ty::Int {
+                    return Err(self.diag(
+                        DiagCode::Typ001,
+                        format!("list index must be Int, got {}", it.name()),
+                        "Int",
+                        it.name().to_string(),
+                        index.span(),
+                    ));
+                }
+                Ok(elem.as_ty())
+            }
         }
+    }
+
+    /// Check a list intrinsic call (`push`/`set`/`list_len`). Returns
+    /// `Ok(Some(ty))` if `callee` names an intrinsic, `Ok(None)` otherwise so
+    /// the normal call path runs. `push`/`set` mutate in place, so their list
+    /// argument must be a `let mut` binding (SPEC §11 — the surface mutability
+    /// rule even though the C handle has reference semantics).
+    fn check_list_intrinsic(
+        &self,
+        callee: &str,
+        args: &[Expr],
+        locals: &HashMap<String, (Ty, bool)>,
+        caller_uses: &HashSet<String>,
+        caller_name: &str,
+        span: Span,
+    ) -> Result<Option<Ty>, Diag> {
+        match callee {
+            "list_len" => {
+                if args.len() != 1 {
+                    return Err(self.arity_diag(callee, 1, args.len(), span));
+                }
+                let bt = self.check_expr(&args[0], locals, caller_uses, caller_name)?;
+                match bt {
+                    Ty::List(_) => Ok(Some(Ty::Int)),
+                    other => Err(self.diag(
+                        DiagCode::Typ001,
+                        format!("`list_len` expects a List, got {}", other.name()),
+                        "a List value",
+                        other.name().to_string(),
+                        args[0].span(),
+                    )),
+                }
+            }
+            "push" | "set" => {
+                let want = if callee == "push" { 2 } else { 3 };
+                if args.len() != want {
+                    return Err(self.arity_diag(callee, want, args.len(), span));
+                }
+                // The target must be a named, mutable list binding.
+                let elem = self.mutable_list_arg(callee, &args[0], locals)?;
+                let val_idx = want - 1;
+                if callee == "set" {
+                    let it = self.check_expr(&args[1], locals, caller_uses, caller_name)?;
+                    if it != Ty::Int {
+                        return Err(self.diag(
+                            DiagCode::Typ001,
+                            format!("`set` index must be Int, got {}", it.name()),
+                            "Int",
+                            it.name().to_string(),
+                            args[1].span(),
+                        ));
+                    }
+                }
+                let vt = self.check_expr(&args[val_idx], locals, caller_uses, caller_name)?;
+                if vt != elem.as_ty() {
+                    return Err(self.diag(
+                        DiagCode::Typ001,
+                        format!(
+                            "`{}` value has type {} but the list holds {}",
+                            callee,
+                            vt.name(),
+                            elem.name()
+                        ),
+                        elem.name(),
+                        vt.name().to_string(),
+                        args[val_idx].span(),
+                    ));
+                }
+                Ok(Some(Ty::Unit))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn arity_diag(&self, callee: &str, want: usize, got: usize, span: Span) -> Diag {
+        self.diag(
+            DiagCode::Typ002,
+            format!("`{}` expects {} argument(s), got {}", callee, want, got),
+            &format!("{} argument(s)", want),
+            format!("{} argument(s)", got),
+            span,
+        )
+    }
+
+    /// Resolve the element type of a `push`/`set` target, requiring it to be a
+    /// `let mut` list binding by name.
+    fn mutable_list_arg(
+        &self,
+        callee: &str,
+        arg: &Expr,
+        locals: &HashMap<String, (Ty, bool)>,
+    ) -> Result<ElemTy, Diag> {
+        let (name, span) = match arg {
+            Expr::Ident { name, span } => (name, *span),
+            other => {
+                return Err(self.diag(
+                    DiagCode::Typ001,
+                    format!("`{}` needs a named mutable list as its first argument", callee),
+                    "a `let mut` list binding",
+                    "an expression".to_string(),
+                    other.span(),
+                ))
+            }
+        };
+        let (ty, mutable) = locals.get(name).copied().ok_or_else(|| {
+            self.diag(
+                DiagCode::Ref001,
+                format!("unknown variable `{}`", name),
+                "a variable in scope",
+                name.clone(),
+                span,
+            )
+        })?;
+        let elem = match ty {
+            Ty::List(e) => e,
+            other => {
+                return Err(self.diag(
+                    DiagCode::Typ001,
+                    format!("`{}` expects a List, but `{}` is {}", callee, name, other.name()),
+                    "a List value",
+                    other.name().to_string(),
+                    span,
+                ))
+            }
+        };
+        if !mutable {
+            return Err(self.diag(
+                DiagCode::Typ001,
+                format!("`{}` mutates `{}`; declare it `let mut {}`", callee, name, name),
+                "a `let mut` binding",
+                format!("immutable `{}`", name),
+                span,
+            ));
+        }
+        Ok(elem)
     }
 
     /// Type rule for a binary operator given its operand types.

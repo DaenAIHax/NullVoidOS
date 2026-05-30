@@ -133,7 +133,20 @@ type Point = { x: Int, y: Int };
 # (v0.2); payload types are Int/Bool/String (enum/World/Unit deferred, §11):
 enum Restart = .always | .on_failure | .never;
 enum Status  = .code(Int) | .message(String) | .none;
+
+# List — built-in growable container (v0.3). Element type is scalar
+# (Int/Bool/String); nested lists / lists of enums are deferred (§11).
+List<Int>
+List<String>
 ```
+
+A `List<T>` has **reference semantics**: a value is a handle to a heap buffer,
+so `push`/`set` mutate it in place (and therefore require a `let mut` binding,
+§4.4). Construct one with a literal `[a, b, c]`; an empty `[]` takes its element
+type from an annotation (`let mut xs: List<String> = []`). Read an element with
+`xs[i]`; write with `set` (§4.7) — there is no `xs[i] = v` lvalue (one way per
+concept, §10). Indices are total: a read past the end returns the element
+default, a write is a no-op (like `substr`, §4.7).
 
 A payload variant is **constructed** with its argument (`.code(42)`,
 `.message("oops")`); a bare variant takes none (`.none`). A mismatch — a
@@ -240,7 +253,20 @@ read_file(world: World, path: String) -> String   uses !fs.read   # "" on error 
 write_file(world: World, path: String, content: String) -> ()   uses !fs.write   # (Tier 0)
 argc() -> Int                                                     # pure; arg count incl. argv(0)
 argv(i: Int) -> String                                            # pure; "" out of range
+
+# List<T> ops (v0.3). Polymorphic in the element type T (Int/Bool/String),
+# so they are compiler intrinsics, not ordinary SigTable builtins. `push`/`set`
+# mutate and require a `let mut` list; all are pure (no World, no effect).
+list_len(xs: List<T>) -> Int                                      # element count
+push(xs: List<T>, v: T) -> ()                                     # append; xs must be `let mut`
+set(xs: List<T>, i: Int, v: T) -> ()                             # in-place write; no-op out of range
+# read:  xs[i]   (postfix, §4.2)   literal: [a, b, c]
 ```
+
+**List intrinsics** (`list_len`/`push`/`set`) and the literal/index syntax are
+the v0.3 collection surface. They are *polymorphic* — the only polymorphism in
+the language — handled as a built-in special case, **not** user generics (§11).
+The names `push`/`set`/`list_len` are reserved.
 
 `print`/`read_file`/`write_file` are the effectful builtins; the rest are pure
 and need no `uses`. There is **no string interpolation and no `+` overload for
@@ -442,7 +468,14 @@ Each is deferred, not rejected; each ships *only when the OS needs it*:
 - ~~**`mut` / mutable state**~~ — LANDED (`let mut` + `while`, §4.4/§4.5).
 - **Ownership / borrow checker** — when arena allocation stops being enough.
 - **Float** — when a workload needs numeric computation (none in v0.1).
-- **Generics / parametric types** — when stdlib containers demand it.
+- ~~**`List<T>`**~~ — **landed in v0.3** (§4.2, §4.7): a built-in **monomorphic**
+  container over scalar elements (Int/Bool/String). Reference semantics (a heap
+  handle), so `push`/`set` mutate in place and require a `let mut` target;
+  literal `[a, b, c]`, read `xs[i]`, total bounds (out-of-range read → default,
+  write → no-op). Nested lists and lists of enums are deferred.
+- **Generics / parametric types** — still deferred. `List<T>` is a *built-in
+  special case* (the compiler knows it), **not** user-defined generics
+  (`fn f<T>`); those wait until the stdlib actually demands them.
 - **Traits / interfaces** — when polymorphism over types is unavoidable.
 - ~~**Enum payloads** (`.some(Int)`)~~ — **landed in v0.2** (§4.2, §4.5): a
   variant carries at most one Int/Bool/String payload; enum/Unit/World

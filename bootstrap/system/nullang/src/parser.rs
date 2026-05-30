@@ -217,6 +217,24 @@ impl<'a> Parser<'a> {
             });
         }
         let (name, _) = self.expect_ident("for a type")?;
+        // `List<T>` — a built-in monomorphic container (SPEC §11, v0.3). The
+        // element type is parsed between `<` and `>`; only scalar elements
+        // (Int/Bool/String) are allowed, so `List<Int>` resolves here without
+        // the enum table. Nested lists / lists of enums are deferred.
+        if name == "List" && *self.peek() == TokenKind::Lt {
+            self.advance(); // `<`
+            let elem = self.parse_type()?;
+            self.expect(&TokenKind::Gt, "to close the `List<...>` element type")?;
+            let resolved = match elem.resolved.and_then(ElemTy::from_ty) {
+                Some(et) => Some(Ty::List(et)),
+                None => None, // unresolved → checker reports the bad element type
+            };
+            return Ok(TypeRef {
+                resolved,
+                name: format!("List<{}>", elem.name),
+                span,
+            });
+        }
         let resolved = match name.as_str() {
             "Int" => Some(Ty::Int),
             "Bool" => Some(Ty::Bool),
@@ -459,7 +477,25 @@ impl<'a> Parser<'a> {
                 span,
             });
         }
-        self.parse_primary()
+        self.parse_postfix()
+    }
+
+    /// A primary followed by zero or more `[index]` reads (SPEC §11 lists):
+    /// `xs[0]`, `grid[i][j]` once nesting lands. Tighter than unary `-`.
+    fn parse_postfix(&mut self) -> Result<Expr, Diag> {
+        let mut expr = self.parse_primary()?;
+        while *self.peek() == TokenKind::LBracket {
+            let span = expr.span();
+            self.advance(); // `[`
+            let index = self.parse_expr()?;
+            self.expect(&TokenKind::RBracket, "to close an index `[...]`")?;
+            expr = Expr::Index {
+                base: Box::new(expr),
+                index: Box::new(index),
+                span,
+            };
+        }
+        Ok(expr)
     }
 
     fn parse_primary(&mut self) -> Result<Expr, Diag> {
@@ -485,6 +521,25 @@ impl<'a> Parser<'a> {
             }
             TokenKind::If => self.parse_if(),
             TokenKind::Match => self.parse_match(),
+            TokenKind::LBracket => {
+                // List literal `[a, b, c]` (SPEC §11). A trailing comma is not
+                // accepted (one-way regularity, §10). `[]` is empty; its element
+                // type comes from a surrounding `: List<T>` annotation.
+                self.advance();
+                let mut elems = Vec::new();
+                if *self.peek() != TokenKind::RBracket {
+                    loop {
+                        elems.push(self.parse_expr()?);
+                        if *self.peek() == TokenKind::Comma {
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                self.expect(&TokenKind::RBracket, "to close a list literal")?;
+                Ok(Expr::ListLit { elems, span })
+            }
             TokenKind::Dot => {
                 self.advance();
                 let (name, _) = self.expect_ident("for an enum symbol")?;

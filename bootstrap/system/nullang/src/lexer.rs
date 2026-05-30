@@ -30,6 +30,8 @@ pub enum TokenKind {
     RParen,   // )
     LBrace,   // {
     RBrace,   // }
+    LBracket, // [
+    RBracket, // ]
     Comma,    // ,
     Semi,     // ;
     Colon,    // :
@@ -80,6 +82,8 @@ impl fmt::Display for TokenKind {
             RParen => write!(f, ")"),
             LBrace => write!(f, "{{"),
             RBrace => write!(f, "}}"),
+            LBracket => write!(f, "["),
+            RBracket => write!(f, "]"),
             Comma => write!(f, ","),
             Semi => write!(f, ";"),
             Colon => write!(f, ":"),
@@ -266,6 +270,8 @@ impl<'a> Lexer<'a> {
                 ')' => TokenKind::RParen,
                 '{' => TokenKind::LBrace,
                 '}' => TokenKind::RBrace,
+                '[' => TokenKind::LBracket,
+                ']' => TokenKind::RBracket,
                 ',' => TokenKind::Comma,
                 ';' => TokenKind::Semi,
                 ':' => TokenKind::Colon,

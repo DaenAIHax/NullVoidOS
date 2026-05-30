@@ -8,6 +8,71 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang: `List<T>` — collezione built-in mutabile (Direzione B 2/2, 2026-05-30)
+
+Aggiunto `List<T>` al compilatore Nullang (`bootstrap/system/nullang/`): il
+muro #2 della mappa dei gap e l'ultimo pezzo pesante lato host prima di poter
+puntare al self-host. Tocca tutte e cinque le fasi
+(lexer/AST/parser/checker/codegen). Decisioni di design (concordate con
+l'utente):
+
+- **Container built-in monomorfico**, non generics utente: il compilatore
+  conosce `List<T>` come caso speciale; nessun `fn f<T>`. Element type scalare
+  (`Int`/`Bool`/`String`); liste annidate e liste di enum deferite. `Ty` resta
+  `Copy` (nuovo `ElemTy` piccolo e `Copy`) → le fasi esistenti non richiedono
+  rework.
+- **Semantica a riferimento**: una lista è un handle a un header su heap
+  (`struct { long len, cap; long* data; }* nl_list`), perciò `push`/`set`
+  mutano in place. Per onorare la mutabilità di superficie, il checker
+  **richiede che `push`/`set` operino su un binding `let mut`**.
+- **API**: literal `[a, b, c]`, lettura `xs[i]`, scrittura `set(xs, i, v)`,
+  aggiunta `push(xs, v)`, lunghezza `list_len(xs)`. Niente `xs[i] = v` lvalue
+  (§10). Slot uniforme a 64 bit (VM LP64), `String` boxata via `intptr_t`.
+  Indici totali: read fuori range → default, write → no-op (come `substr`).
+  `[]` vuota prende il tipo da `: List<T>`.
+- `push`/`set`/`list_len` sono intrinseci polimorfici (l'unica polimorfia del
+  linguaggio) — nomi riservati.
+
+Suite **47/47** (9 nuovi test: literal/index, runtime calls, boxing `String`,
+e i casi negativi push-non-mut / tipo-elemento / `[]`-senza-annotazione /
+index-non-lista / index-non-Int). Esempio `examples/lists.null` (Int list +
+buffer di righe `List<String>` + scan con indice mutabile) compila a ELF ed
+esegue verde via `null run`. SPEC §4.2/§4.7/§11 aggiornato. `Cargo.lock`
+invariato (nessuna nuova dipendenza → `cargoHash` di `nullang.nix` resta
+valido).
+
+### Threat-model — agent-primary ≠ agent-trusted: il confine è l'hypervisor (2026-05-30)
+
+Discussione con l'utente che chiude un buco concettuale: *se l'agente non è
+fidato, come lo sandboxiamo?* Conclusioni messe nero su bianco in `DESIGN.md`
+(nuova sezione "Trust model & sandboxing"). Punti chiave:
+
+- **La capability nel linguaggio è audit, non sicurezza.** `requires cap[...]`
+  vincola solo il codice che *passa* da Nullang; un agente malevolo o *sviato*
+  (confused deputy via prompt injection — quindi "untrusted" è il **default**,
+  non un caso raro) ha la shell e bypassa il boundary. È l'analogo Nix di
+  scrivere la sandbox *dentro* l'espressione.
+- **Due soggetti distinti.** Le *app generate* sono già sandboxate dal kernel
+  (Traccia A: netns/Landlock/seccomp, ALIVE). L'*agente stesso* no: in un OS
+  agent-primary tiene per costruzione le capability di attivazione. "agent-
+  primary" e "untrusted agent" al 100% sono in tensione genuina.
+- **L'unico confine reale è kernel/hypervisor.** Modello scelto per l'alpha:
+  *perimeter-as-jail* (la VM è la prigione, l'agente è dio dentro, TCB = QEMU/
+  KVM). Regge solo a 3 condizioni: (1) il cervello è la rete → non "niente
+  internet" ma *egress unico sorvegliato* verso il modello (o modello locale);
+  (2) perimetro **pulito** — niente mount RW di segreti host; (3) provenienza
+  sugli output, perché escono e li fidi dopo.
+
+**Sharp edge corrente documentato** (non ancora chiuso, accettato per alpha
+mono-utente): il `boot-vm` viola (1) — NAT user-mode dà egress generale — e (2)
+— `~/.claude` montato **RW** via 9P `claudefs`, canale di scrittura verso
+l'host (un agente dentro può iniettare MCP/hook che poi girano *sull'host*).
+Annotato con nota `THREAT-MODEL:` in `flake.nix` accanto al lancio qemu;
+corretto anche il commento stale che chiamava il mount "read-only". Nessuna
+modifica funzionale: il mount resta RW perché l'agente ci scrive davvero
+(`.claude.json`, backup). Fix futuro: share RO delle sole credenziali +
+scratch scrivibile separato, e proxy di egress al posto del NAT.
+
 ### Nullang — `let mut` + `while`: stato mutabile e iterazione (Direzione B, 1/2) (2026-05-29)
 
 La chirurgia parser/typer che l'agente NON può fare (fuori dal confine builtin),

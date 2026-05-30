@@ -23,6 +23,36 @@ const PRELUDE: &str = "\
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
+
+/* List<T> runtime (SPEC §11). A list value is a HANDLE — a pointer to a heap
+   header — so push/set mutate through it without changing the handle, giving
+   reference semantics. Elements are stored in a uniform 64-bit slot: Int/Bool
+   directly, String as its pointer via intptr_t (the VM is LP64). Reads past
+   the end return 0 and writes are no-ops, so indexing is total (like substr).
+   Allocations are not freed (short-lived programs, §11 arena deferral). */
+typedef struct { long len; long cap; long* data; } nl_list_s;
+typedef nl_list_s* nl_list;
+static nl_list nl_list_new(void) {
+  nl_list l = malloc(sizeof(nl_list_s));
+  l->len = 0; l->cap = 0; l->data = 0;
+  return l;
+}
+static void nl_list_push(nl_list l, long v) {
+  if (l->len == l->cap) {
+    long nc = l->cap ? l->cap * 2 : 4;
+    l->data = realloc(l->data, (size_t)nc * sizeof(long));
+    l->cap = nc;
+  }
+  l->data[l->len++] = v;
+}
+static long nl_list_get(nl_list l, long i) {
+  return (i >= 0 && i < l->len) ? l->data[i] : 0;
+}
+static void nl_list_set(nl_list l, long i, long v) {
+  if (i >= 0 && i < l->len) l->data[i] = v;
+}
+static long nl_list_len(nl_list l) { return l->len; }
 
 static void nullang_print(const char* s) { fputs(s, stdout); fputs(\"\\n\", stdout); }
 
@@ -311,8 +341,15 @@ impl<'a> Codegen<'a> {
         fresh: &mut usize,
     ) {
         match stmt {
-            Stmt::Let { name, value, .. } => {
-                let ty = self.ty_of(value, locals);
+            Stmt::Let { name, ty: ann, value, .. } => {
+                // Prefer the annotation when present: an empty `[]` cannot be
+                // typed from its value, and List<T> annotations are resolved by
+                // the parser. For everything else the annotation equals the
+                // inferred type, so this is harmless.
+                let ty = ann
+                    .as_ref()
+                    .and_then(|t| t.resolved)
+                    .unwrap_or_else(|| self.ty_of(value, locals));
                 let v = self.lower(value, locals, out, fresh);
                 if !v.is_empty() {
                     out.push_str(&format!("  {} {} = {};\n", self.c_type_of(ty), mangle(name), v));
@@ -394,6 +431,29 @@ impl<'a> Codegen<'a> {
                 }
             }
             Expr::Call { callee, args, .. } => {
+                // List intrinsics lower to the `nl_list_*` runtime. `push`/`set`
+                // box their value into the uniform slot by the list's element
+                // type; they return void and are used in statement position.
+                match callee.as_str() {
+                    "list_len" => {
+                        let b = self.lower(&args[0], locals, out, fresh);
+                        return format!("nl_list_len({})", b);
+                    }
+                    "push" => {
+                        let elem = self.list_elem_of(&args[0], locals);
+                        let b = self.lower(&args[0], locals, out, fresh);
+                        let v = self.lower(&args[1], locals, out, fresh);
+                        return format!("nl_list_push({}, {})", b, box_slot(&v, elem));
+                    }
+                    "set" => {
+                        let elem = self.list_elem_of(&args[0], locals);
+                        let b = self.lower(&args[0], locals, out, fresh);
+                        let i = self.lower(&args[1], locals, out, fresh);
+                        let v = self.lower(&args[2], locals, out, fresh);
+                        return format!("nl_list_set({}, {}, {})", b, i, box_slot(&v, elem));
+                    }
+                    _ => {}
+                }
                 let sig = self.sigs.get(callee);
                 let c_name = sig.map(|s| s.c_name.clone()).unwrap_or_else(|| mangle(callee));
                 let mut emitted = Vec::new();
@@ -481,6 +541,34 @@ impl<'a> Codegen<'a> {
                 out.push_str("  default: break;\n  }\n");
                 tmp.unwrap_or_default()
             }
+            Expr::ListLit { elems, .. } => {
+                // Build a fresh handle and push each element (boxed by its own
+                // type). An empty `[]` just yields a new empty list.
+                let tmp = self.fresh_var(fresh);
+                out.push_str(&format!("  nl_list {} = nl_list_new();\n", tmp));
+                for e in elems {
+                    let ety = self.ty_of(e, locals);
+                    let v = self.lower(e, locals, out, fresh);
+                    let elem = ElemTy::from_ty(ety).unwrap_or(ElemTy::Int);
+                    out.push_str(&format!("  nl_list_push({}, {});\n", tmp, box_slot(&v, elem)));
+                }
+                tmp
+            }
+            Expr::Index { base, index, .. } => {
+                let elem = self.list_elem_of(base, locals);
+                let b = self.lower(base, locals, out, fresh);
+                let i = self.lower(index, locals, out, fresh);
+                unbox_slot(&format!("nl_list_get({}, {})", b, i), elem)
+            }
+        }
+    }
+
+    /// The element type of a list-typed expression (best effort; the checker
+    /// proved it is a List). Defaults to Int so codegen never panics.
+    fn list_elem_of(&self, e: &Expr, locals: &HashMap<String, Ty>) -> ElemTy {
+        match self.ty_of(e, locals) {
+            Ty::List(elem) => elem,
+            _ => ElemTy::Int,
         }
     }
 
@@ -510,7 +598,24 @@ impl<'a> Codegen<'a> {
                     Ty::Bool
                 }
             }
-            Expr::Call { callee, .. } => self.sigs.get(callee).map(|s| s.ret).unwrap_or(Ty::Unit),
+            Expr::Call { callee, .. } => {
+                // `list_len` is a polymorphic intrinsic, not in the SigTable.
+                if callee == "list_len" {
+                    Ty::Int
+                } else {
+                    self.sigs.get(callee).map(|s| s.ret).unwrap_or(Ty::Unit)
+                }
+            }
+            Expr::ListLit { elems, .. } => match elems.first() {
+                Some(e) => ElemTy::from_ty(self.ty_of(e, locals))
+                    .map(Ty::List)
+                    .unwrap_or(Ty::List(ElemTy::Int)),
+                None => Ty::List(ElemTy::Int), // empty; real type comes from annotation
+            },
+            Expr::Index { base, .. } => match self.ty_of(base, locals) {
+                Ty::List(elem) => elem.as_ty(),
+                _ => Ty::Int,
+            },
             Expr::If { then_blk, .. } => match &then_blk.tail {
                 Some(t) => self.ty_of(t, locals),
                 None => Ty::Unit,
@@ -548,6 +653,24 @@ pub fn mangle(name: &str) -> String {
         "main".to_string()
     } else {
         format!("nlu_{}", name)
+    }
+}
+
+/// Box a lowered value into a list's uniform 64-bit slot. A String is stored
+/// as its pointer (via `intptr_t`, safe on LP64); Int/Bool fit a `long`.
+fn box_slot(v: &str, elem: ElemTy) -> String {
+    match elem {
+        ElemTy::String => format!("(long)(intptr_t)({})", v),
+        _ => format!("(long)({})", v),
+    }
+}
+
+/// Unbox a slot read back into the element's C type — the inverse of `box_slot`.
+fn unbox_slot(v: &str, elem: ElemTy) -> String {
+    match elem {
+        ElemTy::String => format!("(const char*)(intptr_t)({})", v),
+        ElemTy::Bool => format!("(int)({})", v),
+        ElemTy::Int => format!("(long)({})", v),
     }
 }
 

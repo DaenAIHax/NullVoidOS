@@ -12,6 +12,43 @@ pub struct Span {
     pub offset: usize,
 }
 
+/// The element type a `List` may carry (SPEC §11 collections, v0.3). Kept a
+/// small `Copy` enum on purpose: it lets `Ty` stay `Copy` (no heap `Box` in
+/// the type representation), so the existing checker/codegen that copy `Ty`
+/// freely need no rework. Nested lists and lists of enums are deferred — the
+/// element set is exactly the scalar payloads that already lower cleanly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum ElemTy {
+    Int,
+    Bool,
+    String,
+}
+
+impl ElemTy {
+    /// The scalar `Ty` an element decays to when read out of a list.
+    pub fn as_ty(self) -> Ty {
+        match self {
+            ElemTy::Int => Ty::Int,
+            ElemTy::Bool => Ty::Bool,
+            ElemTy::String => Ty::String,
+        }
+    }
+
+    /// The element `Ty` written between `List<` and `>`.
+    pub fn from_ty(t: Ty) -> Option<ElemTy> {
+        match t {
+            Ty::Int => Some(ElemTy::Int),
+            Ty::Bool => Some(ElemTy::Bool),
+            Ty::String => Some(ElemTy::String),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        self.as_ty().name()
+    }
+}
+
 /// The semantic types Nullang v0.1 understands. `World` is the capability
 /// token (SPEC §5); it is erased at codegen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -24,6 +61,10 @@ pub enum Ty {
     /// A user-declared enum, identified by its index in the enum table.
     /// Lowers to `long` in C (SPEC §7); identity matters only to the checker.
     Enum(u32),
+    /// A growable, mutable list of `ElemTy` (SPEC §11). Lowers to the `nl_list`
+    /// handle in C — a heap header with reference semantics, so `push`/`set`
+    /// mutate in place.
+    List(ElemTy),
 }
 
 impl Ty {
@@ -36,6 +77,7 @@ impl Ty {
             Ty::Unit => "void",
             Ty::World => "void", // erased; should not appear
             Ty::Enum(_) => "long",
+            Ty::List(_) => "nl_list",
         }
     }
 
@@ -47,6 +89,7 @@ impl Ty {
             Ty::Unit => "Unit",
             Ty::World => "World",
             Ty::Enum(_) => "enum",
+            Ty::List(_) => "List",
         }
     }
 }
@@ -270,6 +313,12 @@ pub enum Expr {
         arms: Vec<MatchArm>,
         span: Span,
     },
+    /// `[a, b, c]` — a list literal (SPEC §11). All elements share one
+    /// `ElemTy`; an empty `[]` takes its type from a surrounding annotation.
+    ListLit { elems: Vec<Expr>, span: Span },
+    /// `base[index]` — read the element at `index` (a postfix on a `List`).
+    /// Out-of-range reads return the element default (total, like `substr`).
+    Index { base: Box<Expr>, index: Box<Expr>, span: Span },
 }
 
 impl Expr {
@@ -284,7 +333,9 @@ impl Expr {
             | Expr::Binary { span, .. }
             | Expr::If { span, .. }
             | Expr::Symbol { span, .. }
-            | Expr::Match { span, .. } => *span,
+            | Expr::Match { span, .. }
+            | Expr::ListLit { span, .. }
+            | Expr::Index { span, .. } => *span,
         }
     }
 }

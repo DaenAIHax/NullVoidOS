@@ -210,9 +210,11 @@ fn payload_enum_lowers_to_tagged_union() {
 
 #[test]
 fn payload_free_enum_stays_bare_long() {
-    // The existing flag-style enum must not gain a typedef or .tag dispatch.
+    // The existing flag-style enum must not gain a tagged-union struct or .tag
+    // dispatch. (Assert on the enum's own `nlenum<id>` typedef, not the generic
+    // `typedef struct` — the List runtime in the PRELUDE also defines structs.)
     let c = compile_to_c(STATUS, "status.null").expect("should compile");
-    assert!(!c.contains("typedef struct"));
+    assert!(!c.contains("nlenum"));
     assert!(!c.contains(".tag"));
     assert!(c.contains("code(2)"));
 }
@@ -562,4 +564,76 @@ fn main(world: World) -> Int uses !tty {
     // main stays the C entry point, unmangled.
     assert!(c.contains("int main(int argc, char** argv)"));
     assert!(!c.contains("nlu_main"));
+}
+
+// ---- List<T> (SPEC §11, v0.3) --------------------------------------------
+
+#[test]
+fn list_literal_and_index_compile() {
+    let src = "fn main(world: World) -> Int uses !tty {\n  let xs = [10, 20, 30];\n  print(world, str_of_int(xs[1]));\n  0\n}\n";
+    let c = compile_to_c(src, "lists.null").expect("list literal + index compiles");
+    assert!(c.contains("nl_list_new"));
+    assert!(c.contains("nl_list_push"));
+    assert!(c.contains("nl_list_get"));
+}
+
+#[test]
+fn list_len_push_set_lower_to_runtime() {
+    let src = "fn main(world: World) -> Int uses !tty {\n  let mut xs = [1, 2];\n  push(xs, 3);\n  set(xs, 0, 9);\n  print(world, str_of_int(list_len(xs)));\n  0\n}\n";
+    let c = compile_to_c(src, "lists.null").expect("push/set/list_len compile");
+    assert!(c.contains("nl_list_push"));
+    assert!(c.contains("nl_list_set"));
+    assert!(c.contains("nl_list_len"));
+}
+
+#[test]
+fn string_list_boxes_via_intptr() {
+    let src = "fn main(world: World) -> Int uses !tty {\n  let mut xs: List<String> = [];\n  push(xs, \"a\");\n  print(world, xs[0]);\n  0\n}\n";
+    let c = compile_to_c(src, "lists.null").expect("String list compiles");
+    // String elements round-trip through the uniform slot via intptr_t.
+    assert!(c.contains("(long)(intptr_t)"));
+    assert!(c.contains("(const char*)(intptr_t)"));
+}
+
+#[test]
+fn push_requires_mut() {
+    // push mutates in place, so its target must be a `let mut` list.
+    let src = "fn main(world: World) -> Int uses !tty {\n  let xs = [1, 2];\n  push(xs, 3);\n  0\n}\n";
+    let err = compile_to_c(src, "lists.null").expect_err("push needs let mut");
+    assert_eq!(format!("{:?}", err.code), "Typ001");
+}
+
+#[test]
+fn push_value_type_must_match_element() {
+    let src = "fn main(world: World) -> Int uses !tty {\n  let mut xs = [1, 2];\n  push(xs, \"x\");\n  0\n}\n";
+    let err = compile_to_c(src, "lists.null").expect_err("element type mismatch");
+    assert_eq!(format!("{:?}", err.code), "Typ001");
+}
+
+#[test]
+fn empty_list_needs_annotation() {
+    let src = "fn main(world: World) -> Int uses !tty {\n  let mut xs = [];\n  0\n}\n";
+    let err = compile_to_c(src, "lists.null").expect_err("empty list needs annotation");
+    assert_eq!(format!("{:?}", err.code), "Typ001");
+}
+
+#[test]
+fn heterogeneous_list_is_rejected() {
+    let src = "fn main(world: World) -> Int uses !tty {\n  let xs = [1, \"two\"];\n  0\n}\n";
+    let err = compile_to_c(src, "lists.null").expect_err("mixed element types");
+    assert_eq!(format!("{:?}", err.code), "Typ001");
+}
+
+#[test]
+fn indexing_a_non_list_is_rejected() {
+    let src = "fn main(world: World) -> Int uses !tty {\n  let n = 5;\n  let bad = n[0];\n  0\n}\n";
+    let err = compile_to_c(src, "lists.null").expect_err("cannot index a non-list");
+    assert_eq!(format!("{:?}", err.code), "Typ001");
+}
+
+#[test]
+fn list_index_must_be_int() {
+    let src = "fn main(world: World) -> Int uses !tty {\n  let xs = [1, 2];\n  let bad = xs[\"k\"];\n  0\n}\n";
+    let err = compile_to_c(src, "lists.null").expect_err("index must be Int");
+    assert_eq!(format!("{:?}", err.code), "Typ001");
 }

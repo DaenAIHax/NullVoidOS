@@ -315,6 +315,84 @@ module wraps the relevant syscalls behind capability types:
 `cap[net]` gates `socket()`, `cap[fs:/path]` gates `open()` on a
 specific path, and so on.
 
+## Trust model & sandboxing (agent-primary ≠ agent-trusted)
+
+The design assumes a *trusted* agent. That assumption does not survive
+contact with reality, and "trusted" is not even a stable state: the
+moment the agent processes untrusted input (a web page, a file with
+injected instructions), it becomes a confused deputy — honest but
+steered. So "untrusted agent" is the **default**, not a rare adversarial
+case. This section states where the real boundary is.
+
+**The language capability discipline is audit, not security.** Wrapper
+signatures like `fn aes_encrypt(...) requires cap[crypto]` and the
+compiler rejecting un-capability'd calls only bind code that *goes
+through* the language. A malicious or steered agent is not obligated to
+use Zero/Nullang — it has a shell, can write raw C, can call `socket()`/
+`open()`/`ptrace()` directly. Capability-in-the-type is the Nix analogue
+of writing the sandbox *inside* the Nix expression: it constrains nobody
+who declines to write that expression. It buys ergonomics and a
+provenance trail. It is not a containment boundary.
+
+**Two distinct subjects, two different stories:**
+
+1. **Generated apps** — *sandboxed today.* Capabilities declared in
+   `.null` are enforced at runtime by the kernel (Traccia A, alive in
+   VM): `!net` via network namespaces, `!fs` via Landlock, `!proc.spawn`
+   + `!rand` via seccomp. Here the model holds — the app cannot escape
+   what the kernel grants it.
+2. **The agent itself** — *not sandboxed.* In an agent-primary OS the
+   agent *is* the system author: by construction it holds the activation
+   capabilities (`nv-rebuild switch`). You cannot have, at 100%, both
+   "agent-primary" and "untrusted agent" — that is a genuine tension, not
+   a bug to fix. You choose a point on the spectrum.
+
+**The only real boundary is the kernel / hypervisor.** Two ways to
+position the agent against it:
+
+- *In-guest confinement* — run the agent under the same seccomp/Landlock/
+  netns it imposes on apps, strip `!activate.system`, and split off a
+  small **trusted activation gate** (`nv-rebuild`, the 7 activation
+  primitives) as the TCB. The agent *proposes* (`.null` manifests,
+  `.nvpkg` builds); the gate *disposes* (optionally human-gated). Agent
+  runs unprivileged. Cost: the fully-autonomous agent-primary dream
+  breaks into "agent designs via a mediated proposal channel."
+- *Perimeter-as-jail* — the cleaner model for a research alpha: don't
+  confine the agent inside; treat the **VM/hypervisor as the prison**.
+  Agent is god inside; blast radius is the box. TCB shrinks to QEMU/KVM
+  (small, audited VM-escape surface). This is *less* work than in-guest
+  seccomp — but only holds under three conditions, two of which our
+  current `boot-vm` violates:
+
+  1. **The brain is the network.** A Claude-backed agent thinks via
+     `api.anthropic.com`, which lives *outside*. "Cut the internet" does
+     not sandbox the agent — it lobotomises it. The honest forms are
+     either a **local model** (llama.cpp in substrate) for true air-gap,
+     or **controlled egress**: exactly one mediated, logged hole to the
+     model endpoint and nothing else. Not "no network" — "single
+     surveilled exit."
+  2. **The perimeter must be clean.** Air-gap is meaningless if a host
+     directory is mounted RW into the guest: that is a filesystem door
+     back home, independent of the network. *"Inside" is not inside if a
+     directory is shared RW with the outside.* No passthrough of host
+     secrets; RO and minimal where unavoidable.
+  3. **Outputs stay trusted afterward.** The perimeter protects the host
+     *during* the run, not the **artifacts** that leave it — the `.null`
+     manifests and the built image, which you later boot on real
+     hardware *outside* the sandbox. Hence **provenance** (prompt hash +
+     model version + capability grants) is non-optional even in the
+     air-gap model: it is what lets you trust what came out.
+
+**Current status & known sharp edge.** Phase 0 (a) `boot-vm` violates
+condition 1 (user-mode NAT gives the guest general network, not a single
+egress) and condition 2 (the host's `~/.claude` is mounted **RW** via
+9P `claudefs` — a god-inside agent can read host credentials *and* write
+back into the host's Claude config: inject MCP servers/hooks that then
+run on the **host**). This is accepted for a single-user research alpha
+but is the first thing to tighten before any multi-tenant or untrusted
+use: narrow the share (RO credentials + separate writable scratch) and
+replace NAT with a whitelisted egress proxy.
+
 ## Open design questions (Layer 3, to resolve in Phase 2)
 
 These are deliberately deferred until the bootstrap is alive and the
