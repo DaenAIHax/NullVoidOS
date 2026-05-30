@@ -43,6 +43,33 @@ nome-tipo duplicato, ritorno-per-handle). Esempio `examples/structs.null`
 (Point/Line, scrittura mutabile, semantica a riferimento verificata via
 alias, struct-in-struct, catena) compila a ELF ed esegue verde via
 `null run`. SPEC §4.2/§4.7/§11 aggiornato. `Cargo.lock` invariato.
+### Nullang fix: `if`/`match` in posizione di statement senza `;` (PAR010) (2026-05-30)
+
+Chiude l'unico attrito sistematico emerso dal **benchmark agentico** (Nullang
+vs Python vs C, stesso `wc`-lite, 3 agenti per arm): tutti e 3 gli agenti
+Nullang sbattevano sullo stesso identico `PAR010` ("expected `}` to close a
+block, found `if`") e lo risolvevano a mano. Causa: in `parse_block` un'`if`
+parsata come espressione, se non seguita da `=` o `;`, veniva sempre trattata
+come **valore di coda** del blocco con `break` → poi `expect(RBrace)` falliva
+sul secondo statement. Quindi due `if` consecutivi come statement erano
+illegali senza `;` esplicito.
+
+Fix (semantica identica a Rust): un'espressione block-like (`if`/`match`) in
+posizione **non-finale** (token successivo ≠ `}`) è uno statement a sé, niente
+`;`. In coda resta valore del blocco — comportamento precedente **preservato**
+(retro-compatibile: i `;` espliciti continuano a funzionare). Cambiata solo una
+branch in `parser.rs::parse_block`; `;` resta obbligatorio per chiudere `let`,
+assegnamento e call-statement.
+
+Suite `nullang` 60/60 (i 2 nuovi sopra struct+List: bare-if-statement compila,
+tail-if resta valore). Verificato fuori-suite sul tree mergeato: la forma
+"naturale" di `wc`-lite (i due `if` senza `;` che gli agenti volevano scrivere)
+compila a ELF e passa 6/6 le fixture del benchmark; `examples/structs.null` e
+gli altri esempi intatti. SPEC §4.5 aggiornata. Primo data point: una feature di
+linguaggio **misurata** invece che ipotizzata. Sviluppato in un worktree isolato
+(`nullang-par010`) per non collidere con `struct` in corso, poi cherry-pickato
+sopra `struct` (`1a4da6a`) — unico conflitto questo CHANGELOG, `parse_block`
+auto-mergiato pulito.
 
 ### Nullang: `List<T>` — collezione built-in mutabile (Direzione B 2/2, 2026-05-30)
 

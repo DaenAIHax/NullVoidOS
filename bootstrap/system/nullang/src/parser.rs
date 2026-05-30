@@ -354,6 +354,16 @@ impl<'a> Parser<'a> {
                     } else if *self.peek() == TokenKind::Semi {
                         self.advance();
                         stmts.push(Stmt::Expr(expr));
+                    } else if matches!(expr, Expr::If { .. } | Expr::Match { .. })
+                        && *self.peek() != TokenKind::RBrace
+                    {
+                        // A block-like expression (`if`/`match`) that is *not*
+                        // in tail position is a statement on its own — no `;`
+                        // required, as in Rust. (When it *is* the last thing in
+                        // the block, i.e. the next token is `}`, it falls
+                        // through to the trailing-value case below and yields
+                        // the block's value, preserving prior behaviour.)
+                        stmts.push(Stmt::Expr(expr));
                     } else {
                         // No `;` → this is the block's trailing value.
                         tail = Some(expr);

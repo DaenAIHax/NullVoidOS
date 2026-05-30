@@ -741,3 +741,35 @@ fn list_index_must_be_int() {
     let err = compile_to_c(src, "lists.null").expect_err("index must be Int");
     assert_eq!(format!("{:?}", err.code), "Typ001");
 }
+
+#[test]
+fn if_in_statement_position_needs_no_semicolon() {
+    // A bare `if` not in tail position is a statement; another statement may
+    // follow directly. This used to be PAR010 ("expected `}` ... found `if`").
+    let src = r#"
+fn main(world: World) -> Int uses !tty {
+  let mut n = 0;
+  if n == 0 { n = n + 1; } else { }
+  if n == 1 { print(world, "one"); } else { }
+  0
+}
+"#;
+    compile_to_c(src, "ifstmt.null").expect("bare if-statements should compile");
+}
+
+#[test]
+fn if_in_tail_position_is_still_the_block_value() {
+    // The same `if`, when it *is* the last thing in the block, remains the
+    // trailing value — so it must type-match the function's return type.
+    let src = r#"
+fn pick(n: Int) -> Int {
+  if n == 0 { 10 } else { 20 }
+}
+fn main(world: World) -> Int uses !tty {
+  print(world, "x");
+  pick(0)
+}
+"#;
+    let c = compile_to_c(src, "iftail.null").expect("tail if should compile");
+    assert!(c.contains("return"));
+}

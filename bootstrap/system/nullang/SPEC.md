@@ -229,7 +229,11 @@ match status {                     # payload variants bind their payload (v0.2)
 }                                  # use `_` to discard: `.message(_) => 0`
 ```
 
-`if` is an expression (both branches must yield the same type). `match`
+`if` is an expression (both branches must yield the same type). A block-like
+expression (`if`/`match`) used in **statement position** — i.e. not as the
+block's trailing value — needs no terminating `;`; the next statement may
+follow directly, as in Rust. (`;` is still required to end a `let`, an
+assignment, or a call statement.) `match`
 must be exhaustive over the enum; a non-exhaustive match is a type error
 with the missing symbols in `expected`. A payload variant's arm **must**
 bind the payload (`.code(n)` or `.code(_)`); the bound name is in scope in
