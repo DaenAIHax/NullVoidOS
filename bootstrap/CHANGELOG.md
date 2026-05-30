@@ -8,6 +8,33 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang: frammento di lexer in Nullang — prima sonda di self-host (2026-05-30)
+
+Primo passo misurabile verso il self-host (SPEC §12): `examples/selfhost-lexer.null`
+è un frammento del lexer di Nullang **scritto in Nullang**, che tokenizza un
+sottoinsieme del linguaggio (whitespace, numeri, identificatori/keyword,
+punteggiatura). Compila a ELF ed esegue verde via `null run`: su input
+`fn add(a, b) { let x = 12; }` produce 14 token classificati
+(keyword/ident/punct/number).
+
+**È un banco di prova di `List`+`struct`, non solo codice** — e ha fatto emergere
+il prossimo gap host *dall'uso, non dall'intuito*:
+
+- **Muro trovato: `List<struct>`.** La forma naturale della tabella token è
+  `List<Token>`, ma `List` ammette solo elementi scalari (Int/Bool/String). Il
+  file usa il workaround **struct-of-arrays** (tre `List<Int>` parallele:
+  `kinds`/`starts`/`lens`); `struct Token` resta usato come valore di ritorno di
+  `scan_*` ma non può ancora vivere in una lista. Il fix è **quasi gratis**: uno
+  struct è già un handle a 64 bit → entra nello slot uniforme che `List` usa per
+  boxare. Conferma sul campo che "struct a riferimento" era la scelta giusta.
+  → prossimo pezzo host.
+- Attrito minore: niente `char→Int` né ordinamento su String, quindi le classi
+  di carattere si esprimono per enumerazione (`is_digit` a 10 rami) o negazione
+  (`is_ident_char`). `||`/`&&` invece **funzionano** (una predizione opposta è
+  stata smentita dalla sonda — il metodo "misura, non indovinare" ha retto).
+
+Solo `examples/` — zero impatto sul compilatore.
+
 ### Nullang: `struct` — record nominali a riferimento (Direzione B, 2026-05-30)
 
 Aggiunto `struct` al compilatore Nullang: con `List<T>` (v0.3) completa il

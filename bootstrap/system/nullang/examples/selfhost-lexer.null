@@ -1,0 +1,134 @@
+# selfhost-lexer.null — un frammento del lexer di Nullang, scritto IN Nullang.
+#
+# Scopo: primo passo misurabile verso il self-host (SPEC §12) e primo banco di
+# prova reale di List<T> (v0.3) + struct (v0.4). Non è il lexer completo: è il
+# nucleo (whitespace, numeri, identificatori/keyword, punteggiatura) — quanto
+# basta per esercitare le strutture dati del compilatore contro un input vero.
+#
+# MURO TROVATO (il punto dell'esperimento): la forma naturale della tabella
+# token è `List<Token>` — ma `List` ammette solo elementi scalari
+# (Int/Bool/String), non struct. Quindi qui si usa il workaround
+# "struct-of-arrays": tre `List<Int>` parallele (kind, start, len). `struct
+# Token` resta load-bearing come valore di ritorno di `scan_*` (costruito,
+# letto, passato), ma NON può ancora vivere in una lista. >>> PROSSIMO GAP HOST:
+# `List<struct>` (elemento handle → entra già nello slot uniforme 64-bit). <<<
+#
+# Altro attrito emerso, minore: niente char→Int né ordinamento su String, quindi
+# le classi di caratteri si esprimono per enumerazione/negazione (is_digit a 10
+# rami; is_ident_char per negazione). `||`/`&&` FUNZIONANO (nessun blocco lì).
+
+# Token kinds (niente const nel linguaggio: interi nudi con nome via kind_name).
+fn k_number() -> Int { 0 }
+fn k_ident()  -> Int { 1 }
+fn k_keyword() -> Int { 2 }
+fn k_punct()  -> Int { 3 }
+
+fn kind_name(k: Int) -> String {
+  if k == 0 { "number" }
+  else {
+    if k == 1 { "ident" }
+    else {
+      if k == 2 { "keyword" }
+      else { "punct" }
+    }
+  }
+}
+
+# Un token: dove inizia, quanto è lungo, di che classe. Reference semantics —
+# costruito da scan_run e restituito per handle (verifica struct + ritorno).
+type Token = { kind: Int, start: Int, len: Int };
+
+fn is_ws(c: String) -> Bool {
+  c == " " || c == "\n" || c == "\t"
+}
+
+fn is_digit(c: String) -> Bool {
+  c == "0" || c == "1" || c == "2" || c == "3" || c == "4"
+  || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
+}
+
+fn is_punct(c: String) -> Bool {
+  c == "(" || c == ")" || c == "{" || c == "}"
+  || c == ";" || c == "," || c == ":" || c == "="
+}
+
+# Un char di identificatore = tutto ciò che non è spazio, punteggiatura o vuoto
+# (fine input). Evita di enumerare a-z: il linguaggio non ha range su char.
+fn is_ident_char(c: String) -> Bool {
+  c != "" && is_ws(c) == false && is_punct(c) == false
+}
+
+# Le 4 keyword che questo nucleo riconosce (campione, non l'insieme completo).
+fn is_keyword(word: String) -> Bool {
+  word == "fn" || word == "let" || word == "if" || word == "while"
+}
+
+# Scansiona una corsa di cifre a partire da `start`; ritorna il Token numero.
+fn scan_number(src: String, start: Int) -> Token {
+  let mut i = start;
+  let n = str_len(src);
+  while i < n && is_digit(char_at(src, i)) {
+    i = i + 1;
+  }
+  Token { kind: k_number(), start: start, len: i - start }
+}
+
+# Scansiona una corsa di char-identificatore; classifica ident vs keyword.
+fn scan_word(src: String, start: Int) -> Token {
+  let mut i = start;
+  let n = str_len(src);
+  while i < n && is_ident_char(char_at(src, i)) {
+    i = i + 1;
+  }
+  let word = substr(src, start, i - start);
+  let kind = if is_keyword(word) { k_keyword() } else { k_ident() };
+  Token { kind: kind, start: start, len: i - start }
+}
+
+fn main(world: World) -> Int uses !tty {
+  # Un frammento di Nullang come input. Lo lexer NON deve capirne il senso,
+  # solo spezzarlo in token — il test è che le strutture dati reggano.
+  let src = "fn add(a, b) { let x = 12; }";
+
+  # struct-of-arrays: la tabella token come tre liste parallele (workaround per
+  # l'assenza di List<Token>). Ogni indice j descrive un token.
+  let mut kinds: List<Int> = [];
+  let mut starts: List<Int> = [];
+  let mut lens: List<Int> = [];
+
+  let n = str_len(src);
+  let mut i = 0;
+  while i < n {
+    let c = char_at(src, i);
+    if is_ws(c) {
+      i = i + 1;                      # salta gli spazi
+    } else {
+      # Decide il tipo di run da scandire e ottiene un Token (uno struct).
+      let t = if is_digit(c) {
+        scan_number(src, i)
+      } else {
+        if is_ident_char(c) {
+          scan_word(src, i)
+        } else {
+          Token { kind: k_punct(), start: i, len: 1 }
+        }
+      };
+      # Disassembla il Token nelle liste parallele (perché List<Token> manca).
+      push(kinds, t.kind);
+      push(starts, t.start);
+      push(lens, t.len);
+      i = t.start + t.len;           # avanza oltre il token appena letto
+    }
+  }
+
+  # Stampa la tabella token: "<kind> '<lexeme>'" una per riga.
+  let count = list_len(kinds);
+  print(world, concat("tokens: ", str_of_int(count)));
+  let mut j = 0;
+  while j < count {
+    let lexeme = substr(src, starts[j], lens[j]);
+    print(world, concat(kind_name(kinds[j]), concat(" '", concat(lexeme, "'"))));
+    j = j + 1;
+  }
+  0
+}
