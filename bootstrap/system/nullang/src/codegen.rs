@@ -385,12 +385,13 @@ impl<'a> Codegen<'a> {
         match stmt {
             Stmt::Let { name, ty: ann, value, .. } => {
                 // Prefer the annotation when present: an empty `[]` cannot be
-                // typed from its value, and List<T> annotations are resolved by
-                // the parser. For everything else the annotation equals the
-                // inferred type, so this is harmless.
+                // typed from its value. `List<scalar>` resolves in the parser;
+                // `List<struct>` does not (no struct table there), so resolve it
+                // here against the struct table. For everything else the
+                // annotation equals the inferred type, so this is harmless.
                 let ty = ann
                     .as_ref()
-                    .and_then(|t| t.resolved)
+                    .and_then(|t| self.resolve_typeref(t))
                     .unwrap_or_else(|| self.ty_of(value, locals));
                 let v = self.lower(value, locals, out, fresh);
                 if !v.is_empty() {
@@ -639,6 +640,19 @@ impl<'a> Codegen<'a> {
         self.structs.iter().position(|s| s.name == name).map(|i| i as u32)
     }
 
+    /// Resolve a written `TypeRef` to a `Ty` against the struct table — the
+    /// codegen mirror of the checker's resolver, needed for `List<struct>`
+    /// annotations the parser leaves unresolved (it has no struct table).
+    fn resolve_typeref(&self, t: &TypeRef) -> Option<Ty> {
+        if let Some(ty) = t.resolved {
+            return Some(ty);
+        }
+        if let Some(elem) = &t.elem {
+            return self.resolve_typeref(elem).and_then(ElemTy::from_ty).map(Ty::List);
+        }
+        self.struct_id(&t.name).map(Ty::Struct)
+    }
+
     /// The element type of a list-typed expression (best effort; the checker
     /// proved it is a List). Defaults to Int so codegen never panics.
     fn list_elem_of(&self, e: &Expr, locals: &HashMap<String, Ty>) -> ElemTy {
@@ -744,11 +758,11 @@ pub fn mangle(name: &str) -> String {
     }
 }
 
-/// Box a lowered value into a list's uniform 64-bit slot. A String is stored
-/// as its pointer (via `intptr_t`, safe on LP64); Int/Bool fit a `long`.
+/// Box a lowered value into a list's uniform 64-bit slot. A String or struct is
+/// stored as its pointer (via `intptr_t`, safe on LP64); Int/Bool fit a `long`.
 fn box_slot(v: &str, elem: ElemTy) -> String {
     match elem {
-        ElemTy::String => format!("(long)(intptr_t)({})", v),
+        ElemTy::String | ElemTy::Struct(_) => format!("(long)(intptr_t)({})", v),
         _ => format!("(long)({})", v),
     }
 }
@@ -757,6 +771,7 @@ fn box_slot(v: &str, elem: ElemTy) -> String {
 fn unbox_slot(v: &str, elem: ElemTy) -> String {
     match elem {
         ElemTy::String => format!("(const char*)(intptr_t)({})", v),
+        ElemTy::Struct(id) => format!("({})(intptr_t)({})", struct_type_name(id), v),
         ElemTy::Bool => format!("(int)({})", v),
         ElemTy::Int => format!("(long)({})", v),
     }

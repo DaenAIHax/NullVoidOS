@@ -670,6 +670,56 @@ fn struct_value_returns_from_function_by_handle() {
     assert!(c.contains("nlstruct0 nlu_make("));
 }
 
+// ---- List<struct> (SPEC §11, v0.4) ---------------------------------------
+
+#[test]
+fn list_of_structs_pushes_and_reads_by_handle() {
+    // A struct fits the uniform list slot (it is a pointer): push boxes the
+    // handle via intptr_t, index unboxes it back to the struct type, and a
+    // field read goes through the handle.
+    let src = "type T = { v: Int };\nfn main(world: World) -> Int uses !tty {\n  let mut xs: List<T> = [];\n  push(xs, T { v: 7 });\n  let e = xs[0];\n  print(world, str_of_int(e.v));\n  0\n}\n";
+    let c = compile_to_c(src, "ls.null").expect("List<struct> compiles");
+    // Boxing path: handle stored via intptr_t, read back cast to the struct.
+    assert!(c.contains("(long)(intptr_t)"));
+    assert!(c.contains("(nlstruct0)(intptr_t)"));
+}
+
+#[test]
+fn empty_list_of_structs_takes_annotation() {
+    // `List<struct>` is unresolved by the parser; the checker resolves the
+    // empty-literal annotation against the struct table.
+    let src = "type P = { x: Int, y: Int };\nfn main(world: World) -> Int uses !tty {\n  let mut ps: List<P> = [];\n  push(ps, P { x: 1, y: 2 });\n  print(world, str_of_int(list_len(ps)));\n  0\n}\n";
+    let c = compile_to_c(src, "ls.null").expect("empty List<struct> annotation resolves");
+    assert!(c.contains("nl_list_new"));
+}
+
+#[test]
+fn list_of_structs_literal_compiles() {
+    let src = "type P = { x: Int };\nfn main(world: World) -> Int uses !tty {\n  let ps = [P { x: 1 }, P { x: 2 }];\n  print(world, str_of_int(ps[1].x));\n  0\n}\n";
+    let c = compile_to_c(src, "ls.null").expect("List<struct> literal compiles");
+    assert!(c.contains("nl_list_push"));
+    assert!(c.contains("(nlstruct0)(intptr_t)"));
+}
+
+#[test]
+fn list_push_struct_type_must_match_element() {
+    // Pushing the wrong struct (or a scalar) into a List<struct> is rejected.
+    let src = "type A = { v: Int };\ntype B = { w: Int };\nfn main(world: World) -> Int uses !tty {\n  let mut xs: List<A> = [];\n  push(xs, B { w: 1 });\n  0\n}\n";
+    let err = compile_to_c(src, "ls.null").expect_err("wrong struct element");
+    assert_eq!(format!("{:?}", err.code), "Typ001");
+}
+
+#[test]
+fn list_of_lists_is_still_rejected() {
+    // Nested lists remain deferred: List is not a legal list element. Use a
+    // parameter type so resolution runs in pass 1 (resolve_ty → Typ003),
+    // rather than the empty-literal path (which reports a Typ001 annotation
+    // error instead).
+    let src = "fn f(xs: List<List<Int>>) -> Int { 0 }\nfn main(world: World) -> Int uses !tty {\n  print(world, \"x\");\n  0\n}\n";
+    let err = compile_to_c(src, "ls.null").expect_err("nested lists deferred");
+    assert_eq!(format!("{:?}", err.code), "Typ003");
+}
+
 // ---- List<T> (SPEC §11, v0.3) --------------------------------------------
 
 #[test]

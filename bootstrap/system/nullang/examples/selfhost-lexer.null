@@ -5,15 +5,14 @@
 # nucleo (whitespace, numeri, identificatori/keyword, punteggiatura) — quanto
 # basta per esercitare le strutture dati del compilatore contro un input vero.
 #
-# MURO TROVATO (il punto dell'esperimento): la forma naturale della tabella
-# token è `List<Token>` — ma `List` ammette solo elementi scalari
-# (Int/Bool/String), non struct. Quindi qui si usa il workaround
-# "struct-of-arrays": tre `List<Int>` parallele (kind, start, len). `struct
-# Token` resta load-bearing come valore di ritorno di `scan_*` (costruito,
-# letto, passato), ma NON può ancora vivere in una lista. >>> PROSSIMO GAP HOST:
-# `List<struct>` (elemento handle → entra già nello slot uniforme 64-bit). <<<
+# STORIA: la prima versione di questa sonda aveva trovato il muro `List<struct>`
+# (la forma naturale della tabella token è `List<Token>`, ma `List` ammetteva
+# solo scalari) e usava il workaround "struct-of-arrays" — tre `List<Int>`
+# parallele. Quel muro ora è CADUTO (v0.4): gli struct sono elementi di lista
+# validi (un handle è un puntatore a 64 bit → entra nello slot uniforme). Questa
+# versione usa la forma naturale `List<Token>`, niente più liste parallele.
 #
-# Altro attrito emerso, minore: niente char→Int né ordinamento su String, quindi
+# Attrito ancora aperto, minore: niente char→Int né ordinamento su String, quindi
 # le classi di caratteri si esprimono per enumerazione/negazione (is_digit a 10
 # rami; is_ident_char per negazione). `||`/`&&` FUNZIONANO (nessun blocco lì).
 
@@ -90,11 +89,8 @@ fn main(world: World) -> Int uses !tty {
   # solo spezzarlo in token — il test è che le strutture dati reggano.
   let src = "fn add(a, b) { let x = 12; }";
 
-  # struct-of-arrays: la tabella token come tre liste parallele (workaround per
-  # l'assenza di List<Token>). Ogni indice j descrive un token.
-  let mut kinds: List<Int> = [];
-  let mut starts: List<Int> = [];
-  let mut lens: List<Int> = [];
+  # La tabella token come UNA lista di struct (la forma naturale, v0.4).
+  let mut toks: List<Token> = [];
 
   let n = str_len(src);
   let mut i = 0;
@@ -113,21 +109,19 @@ fn main(world: World) -> Int uses !tty {
           Token { kind: k_punct(), start: i, len: 1 }
         }
       };
-      # Disassembla il Token nelle liste parallele (perché List<Token> manca).
-      push(kinds, t.kind);
-      push(starts, t.start);
-      push(lens, t.len);
+      push(toks, t);                 # il Token (handle) entra direttamente
       i = t.start + t.len;           # avanza oltre il token appena letto
     }
   }
 
   # Stampa la tabella token: "<kind> '<lexeme>'" una per riga.
-  let count = list_len(kinds);
+  let count = list_len(toks);
   print(world, concat("tokens: ", str_of_int(count)));
   let mut j = 0;
   while j < count {
-    let lexeme = substr(src, starts[j], lens[j]);
-    print(world, concat(kind_name(kinds[j]), concat(" '", concat(lexeme, "'"))));
+    let t = toks[j];
+    let lexeme = substr(src, t.start, t.len);
+    print(world, concat(kind_name(t.kind), concat(" '", concat(lexeme, "'"))));
     j = j + 1;
   }
   0

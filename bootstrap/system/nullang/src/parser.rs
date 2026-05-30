@@ -242,25 +242,25 @@ impl<'a> Parser<'a> {
                 resolved: Some(Ty::Unit),
                 name: "()".to_string(),
                 span,
+                elem: None,
             });
         }
         let (name, _) = self.expect_ident("for a type")?;
-        // `List<T>` — a built-in monomorphic container (SPEC §11, v0.3). The
-        // element type is parsed between `<` and `>`; only scalar elements
-        // (Int/Bool/String) are allowed, so `List<Int>` resolves here without
-        // the enum table. Nested lists / lists of enums are deferred.
+        // `List<T>` — a built-in monomorphic container (SPEC §11, v0.3/v0.4).
+        // Element types are scalar (Int/Bool/String) or a struct (v0.4). A
+        // scalar resolves here; a struct name does not (the parser has no
+        // struct table), so its element `TypeRef` is stashed in `elem` for the
+        // checker to finish. Nested lists / lists of enums are deferred.
         if name == "List" && *self.peek() == TokenKind::Lt {
             self.advance(); // `<`
             let elem = self.parse_type()?;
             self.expect(&TokenKind::Gt, "to close the `List<...>` element type")?;
-            let resolved = match elem.resolved.and_then(ElemTy::from_ty) {
-                Some(et) => Some(Ty::List(et)),
-                None => None, // unresolved → checker reports the bad element type
-            };
+            let resolved = elem.resolved.and_then(ElemTy::from_ty).map(Ty::List);
             return Ok(TypeRef {
                 resolved,
                 name: format!("List<{}>", elem.name),
                 span,
+                elem: Some(Box::new(elem)),
             });
         }
         let resolved = match name.as_str() {
@@ -275,6 +275,7 @@ impl<'a> Parser<'a> {
             resolved,
             name,
             span,
+            elem: None,
         })
     }
 

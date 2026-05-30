@@ -1,0 +1,38 @@
+# list-of-structs.null — List<struct> (SPEC §11, v0.4).
+#
+# Il gap che la sonda selfhost-lexer.null aveva trovato: la tabella token
+# naturale e List<Token>, ma List ammetteva solo scalari. Ora gli struct sono
+# elementi validi (un handle e un puntatore a 64 bit → entra nello slot
+# uniforme che List usa per boxare). Niente piu workaround struct-of-arrays.
+
+type Token = { kind: Int, start: Int, len: Int };
+
+fn k_name(k: Int) -> String {
+  if k == 0 { "number" } else { if k == 1 { "ident" } else { "punct" } }
+}
+
+fn main(world: World) -> Int uses !tty {
+  # La tabella token come UNA lista di struct (la forma naturale).
+  let mut toks: List<Token> = [];
+  push(toks, Token { kind: 1, start: 0, len: 3 });   # ident
+  push(toks, Token { kind: 0, start: 4, len: 2 });   # number
+  push(toks, Token { kind: 2, start: 6, len: 1 });   # punct
+
+  # Reference semantics anche dentro la lista: l'elemento e un handle, quindi
+  # scrivere un campo passa attraverso il puntatore e muta il record IN lista.
+  # (La radice della scrittura deve essere `let mut`, come per ogni struct.)
+  let mut first = toks[0];
+  first.len = 9;                  # muta l'elemento 0 attraverso l'handle
+
+  let count = list_len(toks);
+  print(world, concat("tokens: ", str_of_int(count)));   # 3
+  let mut i = 0;
+  while i < count {
+    let t = toks[i];
+    print(world, concat(k_name(t.kind),
+      concat(" start=", concat(str_of_int(t.start),
+        concat(" len=", str_of_int(t.len))))));
+    i = i + 1;
+  }
+  0
+}

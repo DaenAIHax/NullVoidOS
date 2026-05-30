@@ -8,6 +8,35 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang: `List<struct>` — la lista accetta elementi struct (2026-05-30)
+
+Chiuso il gap che la sonda `selfhost-lexer.null` aveva fatto emergere dall'uso:
+la tabella token naturale è `List<Token>`, ma `List` ammetteva solo scalari.
+Ora **gli struct sono elementi di lista validi** (`List<Point>`). Quasi gratis
+come previsto: uno struct è già un handle a 64 bit, quindi entra nello stesso
+slot uniforme che `List` usa per boxare un puntatore String — nessun nuovo
+meccanismo runtime, solo l'estensione del boxing.
+
+- `ElemTy` guadagna la variante `Struct(u32)`; `box_slot`/`unbox_slot` trattano
+  l'handle come il puntatore String (`(long)(intptr_t)` in avanti,
+  `(nlstruct<id>)(intptr_t)` al ritorno). `Ty` resta `Copy`.
+- `TypeRef` guadagna il campo `elem`: il parser non può risolvere l'elemento di
+  `List<Point>` (non ha la tabella struct), quindi stasha il `TypeRef`
+  dell'elemento e il **checker** lo risolve (nuovo `resolve_typeref`, speculare
+  in checker e codegen per l'annotazione di `[]` vuota).
+- **Semantica a riferimento attraverso la lista**: `let e = xs[i]; e.f = v;`
+  muta il record dentro la lista (l'elemento è un handle). Verificato.
+- Liste annidate (`List<List<T>>`) e liste di enum **restano deferite**
+  (`Typ003` per l'elemento illegale).
+
+Suite **65/65** (5 nuovi: push+read per handle, `[]`-con-annotazione, literal di
+struct, elemento di tipo errato, lista-di-liste rifiutata). Nuovo esempio
+`examples/list-of-structs.null` (ELF verde, mutazione via handle in lista).
+`examples/selfhost-lexer.null` **riscritto alla forma naturale `List<Token>`**
+(via il workaround struct-of-arrays): stesso output (14 token), codice più
+liscio — la prova sul campo che il muro è caduto. SPEC §4.2/§11 aggiornato.
+`Cargo.lock` invariato.
+
 ### Nullang: frammento di lexer in Nullang — prima sonda di self-host (2026-05-30)
 
 Primo passo misurabile verso il self-host (SPEC §12): `examples/selfhost-lexer.null`

@@ -389,6 +389,30 @@ fn resolve_ty(
     if let Some(ty) = t.resolved {
         return Ok(ty);
     }
+    // `List<struct>`: the parser couldn't resolve the element (no struct table),
+    // so it stashed the element `TypeRef` in `elem`. Resolve it now; only a
+    // scalar or a struct is a legal element (List/enum elements are deferred).
+    if let Some(elem) = &t.elem {
+        let elem_ty = resolve_ty(elem, enum_by_name, struct_by_name, src, fname)?;
+        match ElemTy::from_ty(elem_ty) {
+            Some(et) => return Ok(Ty::List(et)),
+            None => {
+                let (line, col) = line_col(src, elem.span.offset);
+                return Err(Diag::error(
+                    DiagCode::Typ003,
+                    format!(
+                        "`{}` is not a valid list element type; elements are Int, Bool, String, or a struct",
+                        elem.name
+                    ),
+                    "Int, Bool, String, or a struct",
+                    elem.name.clone(),
+                    fname,
+                    line,
+                    col,
+                ));
+            }
+        }
+    }
     if let Some(id) = enum_by_name.get(&t.name) {
         return Ok(Ty::Enum(*id));
     }
@@ -489,6 +513,30 @@ impl<'a> Checker<'a> {
         Diag::error(code, msg, expected, actual, self.fname, line, col)
     }
 
+    /// Resolve a written `TypeRef` against the checker's enum/struct tables.
+    /// Used where a type annotation must be turned into a `Ty` after pass 1
+    /// (e.g. an empty `let xs: List<Point> = []`): a `List<struct>` is left
+    /// unresolved by the parser and carries its element in `elem`. Returns
+    /// `None` for an unknown or illegal type rather than diagnosing — callers
+    /// already report the precise error in context.
+    fn resolve_typeref(&self, t: &TypeRef) -> Option<Ty> {
+        if let Some(ty) = t.resolved {
+            return Some(ty);
+        }
+        if let Some(elem) = &t.elem {
+            // `List<T>` with an unresolved element (a struct): resolve T, then
+            // require it to be a legal list element.
+            return self.resolve_typeref(elem).and_then(ElemTy::from_ty).map(Ty::List);
+        }
+        if let Some(i) = self.structs.iter().position(|s| s.name == t.name) {
+            return Some(Ty::Struct(i as u32));
+        }
+        if let Some(i) = self.enums.iter().position(|e| e.name == t.name) {
+            return Some(Ty::Enum(i as u32));
+        }
+        None
+    }
+
     fn check_func(&self, f: &Func) -> Result<(), Diag> {
         let sig = self.sigs.get(&f.name).expect("signature collected in pass 1");
         // Each local maps to (type, mutable). Params are immutable bindings.
@@ -537,7 +585,7 @@ impl<'a> Checker<'a> {
                     // bottom-up as usual.
                     let inferred = match (value, ty) {
                         (Expr::ListLit { elems, span }, _) if elems.is_empty() => {
-                            match ty.as_ref().and_then(|t| t.resolved) {
+                            match ty.as_ref().and_then(|t| self.resolve_typeref(t)) {
                                 Some(lt @ Ty::List(_)) => lt,
                                 _ => {
                                     return Err(self.diag(
@@ -556,7 +604,7 @@ impl<'a> Checker<'a> {
                         _ => self.check_expr(value, &locals, uses, caller_name)?,
                     };
                     if let Some(t) = ty {
-                        if let Some(declared) = t.resolved {
+                        if let Some(declared) = self.resolve_typeref(t) {
                             if declared != inferred {
                                 return Err(self.diag(
                                     DiagCode::Typ001,

@@ -12,34 +12,41 @@ pub struct Span {
     pub offset: usize,
 }
 
-/// The element type a `List` may carry (SPEC §11 collections, v0.3). Kept a
-/// small `Copy` enum on purpose: it lets `Ty` stay `Copy` (no heap `Box` in
+/// The element type a `List` may carry (SPEC §11 collections, v0.3/v0.4). Kept
+/// a small `Copy` enum on purpose: it lets `Ty` stay `Copy` (no heap `Box` in
 /// the type representation), so the existing checker/codegen that copy `Ty`
-/// freely need no rework. Nested lists and lists of enums are deferred — the
-/// element set is exactly the scalar payloads that already lower cleanly.
+/// freely need no rework. Elements are the scalars (Int/Bool/String) plus a
+/// struct **handle** (v0.4) — a struct is a pointer, which fits the same
+/// uniform 64-bit slot a String pointer does, so `List<struct>` is nearly free.
+/// Nested lists and lists of enums remain deferred.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum ElemTy {
     Int,
     Bool,
     String,
+    /// A struct element, stored as its `nlstruct<id>` handle (SPEC §11, v0.4).
+    Struct(u32),
 }
 
 impl ElemTy {
-    /// The scalar `Ty` an element decays to when read out of a list.
+    /// The `Ty` an element decays to when read out of a list.
     pub fn as_ty(self) -> Ty {
         match self {
             ElemTy::Int => Ty::Int,
             ElemTy::Bool => Ty::Bool,
             ElemTy::String => Ty::String,
+            ElemTy::Struct(id) => Ty::Struct(id),
         }
     }
 
-    /// The element `Ty` written between `List<` and `>`.
+    /// The element `Ty` written between `List<` and `>`. Scalars and structs
+    /// are allowed; everything else (List, enum, World, Unit) is not.
     pub fn from_ty(t: Ty) -> Option<ElemTy> {
         match t {
             Ty::Int => Some(ElemTy::Int),
             Ty::Bool => Some(ElemTy::Bool),
             Ty::String => Some(ElemTy::String),
+            Ty::Struct(id) => Some(ElemTy::Struct(id)),
             _ => None,
         }
     }
@@ -136,11 +143,18 @@ pub struct MatchArm {
 
 /// A type as written in source: a resolved `Ty` when recognised, plus the
 /// raw name and span so the checker can report unknown types precisely.
+///
+/// `elem` carries the element type of a `List<T>` when `T` is not resolvable by
+/// the parser alone (a struct name needs the checker's struct table). For a
+/// scalar `List<Int>` the parser already fills `resolved`; for `List<Point>` it
+/// leaves `resolved` empty and stashes the element `TypeRef` here so the checker
+/// can finish resolution. `None` for every non-List type.
 #[derive(Debug, Clone, Serialize)]
 pub struct TypeRef {
     pub resolved: Option<Ty>,
     pub name: String,
     pub span: Span,
+    pub elem: Option<Box<TypeRef>>,
 }
 
 /// A capability value, sharing `.null`'s vocabulary (SPEC §5.5):

@@ -137,14 +137,21 @@ enum Restart = .always | .on_failure | .never;
 enum Status  = .code(Int) | .message(String) | .none;
 
 # List — built-in growable container (v0.3). Element type is scalar
-# (Int/Bool/String); nested lists / lists of enums are deferred (§11).
+# (Int/Bool/String) or a struct (v0.4); nested lists / lists of enums are
+# deferred (§11).
 List<Int>
 List<String>
+List<Point>
 ```
 
 A `List<T>` has **reference semantics**: a value is a handle to a heap buffer,
 so `push`/`set` mutate it in place (and therefore require a `let mut` binding,
-§4.4). Construct one with a literal `[a, b, c]`; an empty `[]` takes its element
+§4.4). The element type `T` is a scalar (`Int`/`Bool`/`String`) or a **struct**
+(v0.4): a struct is itself a heap handle (a pointer), so it fits the same uniform
+64-bit slot a `String` pointer does — `List<Point>` is nearly free, and a field
+written through an element (`xs[i]` then `e.field = v`) mutates the record in the
+list. Nested lists (`List<List<T>>`) and lists of enums stay deferred (§11).
+Construct one with a literal `[a, b, c]`; an empty `[]` takes its element
 type from an annotation (`let mut xs: List<String> = []`). Read an element with
 `xs[i]`; write with `set` (§4.7) — there is no `xs[i] = v` lvalue (one way per
 concept, §10). Indices are total: a read past the end returns the element
@@ -487,9 +494,11 @@ Each is deferred, not rejected; each ships *only when the OS needs it*:
 - **Ownership / borrow checker** — when arena allocation stops being enough.
 - **Float** — when a workload needs numeric computation (none in v0.1).
 - ~~**`List<T>`**~~ — **landed in v0.3** (§4.2, §4.7): a built-in **monomorphic**
-  container over scalar elements (Int/Bool/String). Reference semantics (a heap
-  handle), so `push`/`set` mutate in place and require a `let mut` target;
-  literal `[a, b, c]`, read `xs[i]`, total bounds (out-of-range read → default,
+  container over scalar elements (Int/Bool/String) — **and structs since v0.4**
+  (`List<Point>`, an element is the struct's 64-bit handle, so it reuses the
+  same slot at no extra cost). Reference semantics (a heap handle), so
+  `push`/`set` mutate in place and require a `let mut` target; literal
+  `[a, b, c]`, read `xs[i]`, total bounds (out-of-range read → default,
   write → no-op). Nested lists and lists of enums are deferred.
 - **Generics / parametric types** — still deferred. `List<T>` is a *built-in
   special case* (the compiler knows it), **not** user-defined generics
