@@ -638,3 +638,117 @@ generate apps that render to it, design UI/layout, but cannot
 meaningfully rewrite the compositor itself.
 
 Decision deferred until Phase 0-1 base is demonstrably booting.
+
+## Layer 4 vision — voice-orchestrated agentic interface (fast/slow)
+
+> **Status: vision, not a task.** This is a Layer 4 / Phase 4+ direction,
+> written down to preserve a coherent design — *ahead* of where the build
+> is (Phase 0/1 bootstrap). It is not built and is not next. Build only
+> once the bootstrap demonstrably breathes. Recorded per the
+> visions-are-written-not-necessarily-built frame; Cullis stays the
+> primary commercial bet. Provoked by the Reachy Mini robot question
+> (2026-05-30): once the brain is local (substrate `llama.cpp`), the
+> human-facing interface of an agent-primary OS need not be a desktop or
+> a TTY — it can be **voice**, with a heavy agent behind it.
+
+This reframes the "Deferred: graphical UI" question above. The interface
+of an agent-primary OS is not graphical-vs-terminal — it is **one agentic
+backend with several frontends as transports**. The same shape as Reachy's
+daemon (daemon owns brain/hardware, clients are thin transports) and as
+our own `agent_backend.send()` interface — now with the frontend abstracted
+too.
+
+```
+   FRONTEND = transports (dumb, UNTRUSTED)
+   ┌─────────┬───────────┬──────────────┐
+   │  voice  │ terminal  │    robot     │
+   │ STT/TTS │   text    │  mic + body  │
+   └────┬────┴─────┬─────┴──────┬───────┘
+        │          │ (bypasses) │   robot = voice frontend + !motor/!camera
+        ▼          │            ▼
+   ┌──────────────┐│
+   │  router LLM  ││   ← FRONT of the BACKEND (System-1)
+   │   (small)    ││
+   └──────┬───────┘│
+   ─ ─ ─ ─│─ ─ ─ ─ │ ─ escalation boundary = capability + provenance ─ ─
+          ▼        ▼
+       ┌────────────────┐
+       │ Opus (worker)  │   ← System-2
+       └────────────────┘
+     AGENTIC BACKEND (trusted — capability & provenance live here)
+```
+
+**Fast/slow split (System-1 / System-2).** Two models, two latency
+profiles that are *incompatible in one model*: conversation needs
+sub-second turn-taking; deep agentic work takes seconds-to-minutes. A
+single model doing both means the voice goes dead while the worker grinds.
+So the split is structural, not an optimization:
+
+- **Small router LLM (System-1):** always-live, low-latency, holds the
+  dialogue, does turn-taking and backchanneling, gives status ("still
+  working, found X"), and decides *when* to escalate. Local
+  (`LlamaCppBackend`/`OllamaBackend`).
+- **Opus worker (System-2):** the heavy reasoner that does the actual
+  multi-step work. `ClaudeCodeBackend`. Cloud — so the "brain is the
+  network" / controlled-egress discipline of the Trust model applies to
+  this half.
+
+This is not a new primitive: it is **two existing pluggable backends wired
+in a fast/slow topology**. NixOS analogy: the small model is the
+interactive shell (must echo *now*); Opus is `nixos-rebuild switch`
+running — you do not freeze the shell while the rebuild works.
+
+**The router is backend, not frontend.** A frontend is a dumb transport;
+the moment a component *decides* (when to escalate, what to mediate, which
+capabilities), it is backend. STT/TTS/keyboard/mic are untrusted
+frontends; the small router LLM is the *front of the trusted backend*.
+Putting the router in the frontend would push decision-making *outside*
+the trust boundary — the error to avoid.
+
+Three consequences fall out of the diagram:
+
+1. **Terminal mode is a transport that reaches deeper** — it bypasses the
+   router and talks to Opus directly. Not just convenience: it is the
+   high-trust escape hatch / "root shell" to the voice frontend's "GUI".
+   When you must authorize something the router should not mediate (a
+   dangerous capability, `!activate.system`), drop to terminal.
+2. **The robot is not a third system** — it is the voice frontend *plus a
+   capability set that happens to be physical* (`!motor`, `!camera`). One
+   line more than voice. Which loops back to the capability story: a robot
+   behavior downloaded from an untrusted registry, voice-driven, confined
+   by declared capabilities at the kernel (Traccia A).
+3. **The escalation boundary is the supervision boundary.** When the
+   router hands to Opus, that is the moment to record provenance (voice
+   request → escalated to Opus → these capabilities → this result), check
+   capability grants, and optionally **voice-confirm** with the human
+   ("Opus wants to modify the system, needs `!activate.system` — proceed?").
+   Voice is not just UX — it is the human-in-the-loop authorization channel
+   the Trust model's trusted activation gate already wants. This is where
+   it stops being a voice assistant and becomes an OS feature.
+
+**The open research question (the crown jewel).** The protocol between
+small router and big worker — *what* gets passed, how state is shared, how
+interruption mid-task works — is the actual contribution; everything else
+(STT, TTS, transports) is plumbing that already exists. Two early
+constraints: the router must **route, not rewrite** (forward the raw
+transcript and decide *when* to escalate, never re-summarize the task in
+its own words — a small model is a lossy router); and the duplex case is
+the hard part (while Opus works, the human keeps talking — status, mid-task
+corrections injected into the running worker, chit-chat — a live duplex
+between two models and the human). Deferred to design-in-system, not now.
+
+**Substrate compatibility (why this does not blow up Layer 0-1).** The
+speech-to-speech stack runs as a *system service*, and its pieces fit the
+musl-minimal substrate ethos already chosen: `llama.cpp` is already in the
+planned substrate; `whisper.cpp` (STT) is the same author, same build
+style; **Piper** (TTS) is small C++; **Silero VAD** is light enough to sit
+on the frontend. No new irreducible dependency. Air-gap bonus: with the
+small model local, the voice frontend needs no external network — only the
+Opus-escalation path crosses the controlled-egress hole.
+
+**What the OS adds (vs a plain voice-agent app on Linux).** The keep-honest
+question: this could be built on stock Linux today. The OS justification is
+*only* the three consequences above — capability + provenance + voice-
+mediated supervision on the escalation boundary, plus the "agent-primary,
+no desktop" coherence. If those do not matter, it is an app, not a kernel
+feature. That line is the design's north star here.

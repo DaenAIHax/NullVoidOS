@@ -8,6 +8,44 @@ applicable.
 
 ## [Unreleased]
 
+### DESIGN: interfaccia agentica a voce (fast/slow) — visione, non task corrente (2026-05-30)
+
+Nuova sezione `DESIGN.md` "Layer 4 vision — voice-orchestrated agentic
+interface (fast/slow)", dopo "Deferred: graphical UI". Provocata dalla
+domanda sul robot Reachy Mini (cervello da spostare in locale): una volta
+che il cervello è locale (`llama.cpp` già nel substrate), l'interfaccia
+human-facing di un OS agent-primario non deve essere né desktop né TTY — può
+essere **voce**. Riformula la questione GUI come "un backend agentico, più
+frontend come trasporti" (stessa forma del daemon Reachy e del nostro
+`agent_backend.send()`). Fissa:
+
+- **Split fast/slow (System-1/System-2):** router LLM piccolo locale sempre
+  vivo (tiene il dialogo, decide *quando* scalare) ⇄ Opus worker cloud che
+  ragiona. Lo split è strutturale, non un'ottimizzazione: i due profili di
+  latenza sono incompatibili in un solo modello. Non un primitivo nuovo —
+  due backend pluggable già previsti cablati in topologia fast/slow.
+- **Il router è backend, non frontend:** nel momento in cui *decide* è
+  backend; metterlo nel frontend spingerebbe la decisione fuori dal confine
+  di fiducia. STT/TTS/mic = trasporti dumb non fidati.
+- **Tre conseguenze:** terminale = trasporto che entra più in profondità
+  (escape hatch ad alta fiducia, bypassa il router); robot = frontend-voce +
+  capability fisiche (`!motor`/`!camera`), non un terzo sistema; il confine
+  di escalation = confine di supervisione (provenance + grant capability +
+  conferma a voce). È lì che smette di essere un assistente vocale e diventa
+  feature di OS.
+- **Crown jewel rimandato:** il protocollo router↔Opus (cosa si passano,
+  stato condiviso, interruzione mid-task) è il contributo vero; vincoli
+  precoci: route-not-rewrite e il duplex vivo. Design-in-system, non ora.
+- **Compatibilità substrate:** `whisper.cpp` (stesso autore di `llama.cpp`),
+  Piper (TTS C++ piccolo), Silero VAD — nessuna dipendenza irriducibile
+  nuova. **North star onesta:** cosa aggiunge l'OS vs un'app vocale su Linux
+  = solo capability+provenance+supervisione-a-voce sul boundary + coerenza
+  "agent-primary senza desktop".
+
+Solo documentazione, zero codice. Layer 4 / Phase 4+, *davanti* al bootstrap
+di Phase 0/1 — si costruisce quando il bootstrap respira. Cullis resta la
+scommessa commerciale. Scelta utente: "Visione scritta (hobby)".
+
 ### Nullang self-host: il lexer mangia la propria coda (2026-05-30)
 
 `examples/selfhost-lexer.null` da nucleo-su-input-giocattolo a lexer che legge
