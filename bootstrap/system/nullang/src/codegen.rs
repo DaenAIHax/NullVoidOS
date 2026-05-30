@@ -203,6 +203,36 @@ static nl_list nullang_split(const char* s, const char* sep) {
   return l;
 }
 
+/* join(parts, sep) -> String. Dual of split: concatenates the String elements
+   of `parts`, inserting `sep` between consecutive ones. Total (empty list -> \"\";
+   single element -> that element; empty sep -> straight concat). Authored by the
+   in-VM agent under BUILTINS_CONTRACT; folded host-side (the VM can't push). */
+static const char* nullang_join(nl_list l, const char* sep) {
+  long n = nl_list_len(l);
+  if (n == 0) return \"\";
+  long m = (long)strlen(sep);
+  long total = 0;
+  for (long i = 0; i < n; i++) {
+    const char* s = (const char*)(intptr_t)nl_list_get(l, i);
+    total += (long)strlen(s);
+  }
+  if (n > 1) total += m * (n - 1);
+  char* r = malloc((size_t)total + 1);
+  long off = 0;
+  for (long i = 0; i < n; i++) {
+    if (i > 0 && m > 0) {
+      memcpy(r + off, sep, (size_t)m);
+      off += m;
+    }
+    const char* s = (const char*)(intptr_t)nl_list_get(l, i);
+    long slen = (long)strlen(s);
+    memcpy(r + off, s, (size_t)slen);
+    off += slen;
+  }
+  r[off] = '\\0';
+  return r;
+}
+
 /* Tier 0 file I/O. World is erased at codegen, so it is not a C parameter;
    the capability lives in the fn's `uses` clause (checked) and the grant in
    system.null (enforced by Landlock at run time). Errors are swallowed into

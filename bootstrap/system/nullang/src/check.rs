@@ -204,6 +204,22 @@ fn builtins() -> SigTable {
             c_name: "nullang_split".to_string(),
         },
     );
+    // `join(parts, sep) -> String`: dual of `split`. Concatenates every element
+    // of `parts` (a `List<String>`), inserting `sep` between consecutive
+    // elements. Total: empty list -> ""; single-element list -> that element
+    // (sep is never inserted); empty sep -> straight concatenation. Pairs with
+    // `split` so `join(split(s, sep), sep) == s` whenever `sep` is non-empty.
+    // AUTHORED BY THE IN-VM AGENT under BUILTINS_CONTRACT.md (Sig only); folded
+    // host-side (Via B) — the agent cannot push.
+    t.insert(
+        "join".to_string(),
+        Sig {
+            params: vec![Ty::List(ElemTy::String), Ty::String],
+            ret: Ty::String,
+            effects: vec![],
+            c_name: "nullang_join".to_string(),
+        },
+    );
     // Tier 0 — file I/O. Effectful (World-gated, like `print`). The LANGUAGE
     // effect is path-less (`fs.read`/`fs.write`): the path is a runtime
     // String, and the system-level grant in `system.null` scopes it — which
