@@ -276,6 +276,22 @@ fn builtins() -> SigTable {
             c_name: "nullang_now".to_string(),
         },
     );
+    // Reads one environment variable. Effectful, World-gated; the new `!env`
+    // capability (SPEC §5). Path-less in the language like `!fs.read` — the var
+    // name is a runtime String, the system grant in `system.null` scopes *which*
+    // names are readable. Returns "" when unset (Tier 0 convention, like
+    // `read_file`). Unlike `!time`, `!env` *is* runtime-enforceable later by
+    // scrubbing/filtering `environ` at `nv-rebuild run` (Traccia A territory);
+    // static-only for now. Reads ambient state, so not for equality probes.
+    t.insert(
+        "getenv".to_string(),
+        Sig {
+            params: vec![Ty::World, Ty::String],
+            ret: Ty::String,
+            effects: vec!["env".to_string()],
+            c_name: "nullang_getenv".to_string(),
+        },
+    );
     // Process arguments (Wave 2 — gate for `cat <file>`/`grep`/`sed`-likes).
     // Pure: argv is startup data the runtime provides, like a constant — no
     // World, no effect (and so no `!proc.argv` to add to `null`'s vocabulary).

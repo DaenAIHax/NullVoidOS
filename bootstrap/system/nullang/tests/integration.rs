@@ -103,6 +103,39 @@ fn main(world: World) -> Int {
 }
 
 #[test]
+fn getenv_is_env_effectful_and_returns_string() {
+    // `getenv` introduces the `!env` capability (SPEC §5). Effectful, World-
+    // erased; returns a String, so a `let` binding from it must type as String
+    // and flow into string ops (here: `==` lowers to strcmp, not integer ==).
+    let src = r#"
+fn main(world: World) -> Int uses !env {
+  let home = getenv(world, "HOME");
+  if home == "" { 1 } else { 0 }
+}
+"#;
+    let c = compile_to_c(src, "env.null").expect("getenv should compile with !env");
+    assert!(c.contains("static const char* nullang_getenv(const char* name)"));
+    // World erased: only `name` reaches the C call.
+    assert!(c.contains("nullang_getenv(\"HOME\")"));
+    // String-typed result: equality lowers to strcmp, proving the return type.
+    assert!(c.contains("strcmp"));
+}
+
+#[test]
+fn getenv_without_env_capability_is_rejected() {
+    let src = r#"
+fn main(world: World) -> Int {
+  let home = getenv(world, "HOME");
+  if home == "" { 1 } else { 0 }
+}
+"#;
+    let err = compile_to_c(src, "env-bad.null").expect_err("should fail effect check");
+    assert_eq!(format!("{:?}", err.code), "Eff001");
+    let repair = err.repair.expect("EFF001 carries a repair");
+    assert_eq!(repair.id, "add-uses-clause");
+}
+
+#[test]
 fn unknown_function_is_ref_error() {
     let src = r#"
 fn main(world: World) -> Int uses !tty {

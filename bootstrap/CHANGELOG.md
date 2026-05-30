@@ -8,6 +8,30 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang: builtin `getenv` — capability nuova `!env` (Direzione B) (2026-05-30)
+
+Secondo builtin effectful di B. `getenv(world, name) -> String` legge una
+variabile d'ambiente, `""` se non settata (convenzione Tier 0, come
+`read_file`). Introduce **`!env`**, la prima capability *nuova* aggiunta dopo il
+self-host:
+
+- Le capability in construction-mode sono **free-form** (`!ident(.ident)*`):
+  nessuna whitelist da estendere nel compilatore — basta che builtin-effect e
+  clausola `uses` condividano la stringa `"env"`. `!env` aggiunta al vocabolario
+  documentato in SPEC §5.
+- Path-less nel linguaggio come `!fs.read` — il nome-var è dato a runtime, il
+  *grant di sistema* in `system.null` sceglie quali nomi sono leggibili. `uses
+  !env` o **EFF001**.
+- A differenza di `!time`, **`!env` È enforce-abile a runtime** (scrub/filtro di
+  `environ` al `nv-rebuild run`, terreno Traccia A) — static-only per ora.
+- Primo builtin effectful di B che ritorna **String** → nel self-host serve
+  l'entry anche in `builtin_ret_tc` (oltre a `is_builtin` + preludio). Verificato
+  che il risultato tipa come String (un `==` abbassa a `strcmp`, non a `==` Int).
+
+Verificato a 4 livelli come `now`: seme Rust (settata→valore rc0, non
+settata→""rc1), reiezione EFF001, **gate fixpoint byte-identico** (99111 byte),
+`getenv` end-to-end via compilatore self-hostato. +2 regression test → 77 verdi.
+
 ### Nullang: builtin `now` — primo effetto `!time`, primo non-determinismo (2026-05-30)
 
 Apre la **Direzione B** (modello capability / builtin effectful). `now(world)

@@ -1079,6 +1079,11 @@ static void nullang_write_file(const char* path, const char* content) {
 
 static long nullang_now(void) { return (long)time((time_t*)0); }
 
+static const char* nullang_getenv(const char* name) {
+  const char* v = getenv(name);
+  return v ? v : \"\";
+}
+
 static int nl_argc = 0;
 static char** nl_argv = 0;
 static long nullang_argc(void) { return (long)nl_argc; }
@@ -1212,13 +1217,14 @@ fn is_builtin(name: String) -> Bool {
   || name == "str_len" || name == "substr" || name == "char_at"
   || name == "char_code" || name == "int_of_str" || name == "index_of"
   || name == "split" || name == "read_file" || name == "write_file"
-  || name == "argc" || name == "argv" || name == "now"
+  || name == "argc" || name == "argv" || name == "now" || name == "getenv"
 }
 
 # Tipo di ritorno di un builtin (per inferire il tipo di un `let`).
 fn builtin_ret_tc(name: String) -> Int {
   if name == "concat" || name == "str_of_int" || name == "substr"
-     || name == "char_at" || name == "read_file" || name == "argv" {
+     || name == "char_at" || name == "read_file" || name == "argv"
+     || name == "getenv" {
     tc_str()
   } else { if name == "split" { 1000 + tc_str() }
   else { tc_int() } }

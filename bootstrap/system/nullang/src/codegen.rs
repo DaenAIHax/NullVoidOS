@@ -305,6 +305,14 @@ static void nullang_write_file(const char* path, const char* content) {
    64-bit long — non-deterministic by design, never used in an equality probe. */
 static long nullang_now(void) { return (long)time((time_t*)0); }
 
+/* !env (SPEC §5). World erased: `name` is the only C parameter. Returns the
+   variable's value, or \"\" when unset (Tier 0 convention, like read_file). The
+   pointer aliases `environ` — fine for short-lived programs (§11, no free). */
+static const char* nullang_getenv(const char* name) {
+  const char* v = getenv(name);
+  return v ? v : \"\";
+}
+
 /* Process arguments (Wave 2). `main` stashes argc/argv here at entry; the
    builtins read them. Pure from Nullang's view (startup data, no World). */
 static int nl_argc = 0;

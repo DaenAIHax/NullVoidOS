@@ -282,6 +282,8 @@ read_file(world: World, path: String) -> String   uses !fs.read   # "" on error 
 write_file(world: World, path: String, content: String) -> ()   uses !fs.write   # (Tier 0)
 argc() -> Int                                                     # pure; arg count incl. argv(0)
 argv(i: Int) -> String                                            # pure; "" out of range
+now(world: World) -> Int                          uses !time      # Unix seconds; non-deterministic
+getenv(world: World, name: String) -> String      uses !env       # "" when unset (Tier 0)
 
 # List<T> ops (v0.3). Polymorphic in the element type T (Int/Bool/String),
 # so they are compiler intrinsics, not ordinary SigTable builtins. `push`/`set`
@@ -297,8 +299,8 @@ the v0.3 collection surface. They are *polymorphic* — the only polymorphism in
 the language — handled as a built-in special case, **not** user generics (§11).
 The names `push`/`set`/`list_len` are reserved.
 
-`print`/`read_file`/`write_file` are the effectful builtins; the rest are pure
-and need no `uses`. There is **no string interpolation and no `+` overload for
+`print`/`read_file`/`write_file`/`now`/`getenv` are the effectful builtins; the
+rest are pure and need no `uses`. There is **no string interpolation and no `+` overload for
 strings** (§10): build dynamic strings by composing `concat`/`str_of_int`
 explicitly. `concat` is strictly binary (§10), so nesting is the intended cost.
 
@@ -353,7 +355,8 @@ The heart of the language, and the seam between the two modes.
 
 - A capability is named with the **same vocabulary as `.null` §5.5**:
   `!net`, `!net.localhost`, `!fs.read."<path>"`, `!fs.write."<path>"`,
-  `!tty`, `!proc.spawn`, `!proc.exec`, `!time`, `!rand`, `!activate.system`.
+  `!tty`, `!proc.spawn`, `!proc.exec`, `!time`, `!env`, `!rand`,
+  `!activate.system`.
 - A function declares the capabilities it may exercise in its `uses` clause.
   This is a *static effect annotation*, checked transitively: a function may
   only `uses` what its callees `uses` (or a superset it holds via `World`).
