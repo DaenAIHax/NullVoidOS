@@ -284,6 +284,7 @@ argc() -> Int                                                     # pure; arg co
 argv(i: Int) -> String                                            # pure; "" out of range
 now(world: World) -> Int                          uses !time      # Unix seconds; non-deterministic
 getenv(world: World, name: String) -> String      uses !env       # "" when unset (Tier 0)
+http_fetch(world: World, url: String) -> String   uses !net       # HTTP/1.0 GET, http:// only; "<status>\n<body>", status 0 on error
 
 # List<T> ops (v0.3). Polymorphic in the element type T (Int/Bool/String),
 # so they are compiler intrinsics, not ordinary SigTable builtins. `push`/`set`
@@ -299,8 +300,12 @@ the v0.3 collection surface. They are *polymorphic* — the only polymorphism in
 the language — handled as a built-in special case, **not** user generics (§11).
 The names `push`/`set`/`list_len` are reserved.
 
-`print`/`read_file`/`write_file`/`now`/`getenv` are the effectful builtins; the
-rest are pure and need no `uses`. There is **no string interpolation and no `+` overload for
+`print`/`read_file`/`write_file`/`now`/`getenv`/`http_fetch` are the effectful
+builtins; the rest are pure and need no `uses`. `http_fetch` is a *minimal*
+network primitive (blocking HTTP/1.0 GET, http:// only, no TLS); the ergonomic
+`http_get(...) -> HttpResponse{status, body}` is ordinary Nullang over it
+(`examples/http-get.null`) — the effect stays a small C builtin, the shape is
+library code, so both cross the self-host gate (no enum needed). There is **no string interpolation and no `+` overload for
 strings** (§10): build dynamic strings by composing `concat`/`str_of_int`
 explicitly. `concat` is strictly binary (§10), so nesting is the intended cost.
 

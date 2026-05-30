@@ -8,6 +8,39 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang: `http_fetch` — primo effetto di RETE `!net` (Direzione B) (2026-05-30)
+
+Terzo builtin di B e il salto: il **primo effetto di rete** in construction-mode.
+`!net` ha già enforcement runtime (netns al `nv-rebuild run`, Traccia A) — qui
+arriva un effetto che lo esercita davvero.
+
+**Architettura (la scelta di design, non un fold meccanico).** L'effetto è un
+primitivo C minimale; l'ergonomia è Nullang puro:
+
+- builtin `http_fetch(world, url) -> String  uses !net` — GET HTTP/1.0 bloccante
+  su **raw socket** (`getaddrinfo`/`socket`/`connect`/`send`/`recv`), **http://
+  only, niente TLS**, zero dipendenze (preludio resta autocontenuto). Ritorna
+  una stringa **incorniciata** `"<status>\n<body>"`; status **0** su errore di
+  trasporto (0 non è mai uno status HTTP reale → sentinella pulita).
+- la superficie pubblica `http_get(world, url) -> HttpResponse{status, body}` è
+  **codice Nullang ordinario** sopra il primitivo (`examples/http-get.null`):
+  `index_of`/`substr`/`int_of_str` spacchettano la cornice in una struct utente.
+
+**Perché così.** Tenere l'effetto un builtin String + la forma una struct utente
+fa sì che **tutto attraversi il gate self-host** (struct ✓ + builtin String ✓,
+nessun enum — gli enum NON sono nel compilatore self-hostato). Un `Result`-enum
+(forma endorsed SPEC §10) avrebbe richiesto prima di portare il codegen enum nel
+self-host = progetto a sé; rimandato. Niente sistema di moduli ancora → il
+wrapper `http_get` è lo snippet canonico da copiare (come ogni cosa in Nullang
+oggi).
+
+Verificato a 5 livelli: (1) seme Rust compila con `!net`, **EFF001** senza; (2)
+**fetch reale** contro busybox httpd su 127.0.0.1 → `status: 200` + body, rc 0;
+porta chiusa → status 0, rc 1; (3) wrapper struct `http_get` end-to-end; (4)
+**gate fixpoint byte-identico** (103462 byte, escaping `\r\n` del preludio
+self-host corretto); (5) `http-get.null` compilato dal **compilatore
+self-hostato** → fetch reale `status: 200`. +3 regression test → 80 verdi.
+
 ### Nullang: builtin `getenv` — capability nuova `!env` (Direzione B) (2026-05-30)
 
 Secondo builtin effectful di B. `getenv(world, name) -> String` legge una

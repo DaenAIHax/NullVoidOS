@@ -136,6 +136,61 @@ fn main(world: World) -> Int {
 }
 
 #[test]
+fn http_fetch_is_net_effectful_and_world_erased() {
+    // `http_fetch` is the first network effect (`!net`). A minimal String-
+    // returning primitive (framed "<status>\n<body>"); the struct shape is
+    // library code, so this stays a plain effectful builtin like getenv.
+    let src = r#"
+fn main(world: World) -> Int uses !net {
+  let raw = http_fetch(world, "http://127.0.0.1/");
+  str_len(raw)
+}
+"#;
+    let c = compile_to_c(src, "http.null").expect("http_fetch should compile with !net");
+    assert!(c.contains("static const char* nullang_http_fetch(const char* url)"));
+    // World erased: only the url reaches the C call.
+    assert!(c.contains("nullang_http_fetch(\"http://127.0.0.1/\")"));
+}
+
+#[test]
+fn http_fetch_without_net_capability_is_rejected() {
+    let src = r#"
+fn main(world: World) -> Int uses !tty {
+  let raw = http_fetch(world, "http://127.0.0.1/");
+  str_len(raw)
+}
+"#;
+    let err = compile_to_c(src, "http-bad.null").expect_err("should fail effect check");
+    assert_eq!(format!("{:?}", err.code), "Eff001");
+    let repair = err.repair.expect("EFF001 carries a repair");
+    assert_eq!(repair.id, "add-uses-clause");
+}
+
+#[test]
+fn http_get_struct_wrapper_compiles_through_self_host_surface() {
+    // The public `http_get(...) -> HttpResponse{status, body}` is ordinary
+    // Nullang over the primitive: a user struct + existing string builtins.
+    // This is exactly the surface examples/http-get.null ships, and it uses no
+    // enums — so it crosses the self-hosted compiler (struct + String builtins).
+    let src = r#"
+type HttpResponse = { status: Int, body: String };
+fn http_get(world: World, url: String) -> HttpResponse uses !net {
+  let raw = http_fetch(world, url);
+  let nl = index_of(raw, "\n");
+  HttpResponse { status: int_of_str(substr(raw, 0, nl)), body: substr(raw, nl + 1, str_len(raw)) }
+}
+fn main(world: World) -> Int uses !net {
+  let r = http_get(world, "http://127.0.0.1/");
+  r.status
+}
+"#;
+    let c = compile_to_c(src, "http-get.null").expect("struct wrapper should compile");
+    // The struct lowers to a handle; field reads reach the framed parse result.
+    assert!(c.contains("nullang_http_fetch"));
+    assert!(c.contains("nullang_int_of_str"));
+}
+
+#[test]
 fn unknown_function_is_ref_error() {
     let src = r#"
 fn main(world: World) -> Int uses !tty {

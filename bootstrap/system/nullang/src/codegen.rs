@@ -37,6 +37,9 @@ const PRELUDE: &str = "\
 #include <string.h>
 #include <stdint.h>
 #include <time.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netdb.h>
 
 /* List<T> runtime (SPEC §11). A list value is a HANDLE — a pointer to a heap
    header — so push/set mutate through it without changing the handle, giving
@@ -311,6 +314,67 @@ static long nullang_now(void) { return (long)time((time_t*)0); }
 static const char* nullang_getenv(const char* name) {
   const char* v = getenv(name);
   return v ? v : \"\";
+}
+
+/* !net (SPEC §5). Minimal blocking HTTP/1.0 GET over a raw socket — http:// only,
+   no TLS. Returns a framed string \"<status>\\n<body>\"; status 0 on any transport
+   error (0 is never a real HTTP status → clean sentinel). World erased: `url` is
+   the only C parameter. No frees (short-lived programs, §11). */
+static const char* nullang_http_fetch(const char* url) {
+  const char* p = url;
+  if (strncmp(p, \"http://\", 7) == 0) p += 7;
+  char host[256]; char port[16]; int i = 0;
+  while (*p && *p != ':' && *p != '/' && i < 255) host[i++] = *p++;
+  host[i] = 0;
+  strcpy(port, \"80\");
+  if (*p == ':') { p++; int j = 0; while (*p && *p != '/' && j < 15) port[j++] = *p++; port[j] = 0; }
+  const char* path = (*p == '/') ? p : \"/\";
+
+  struct addrinfo hints; memset(&hints, 0, sizeof(hints));
+  hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
+  struct addrinfo* res = 0;
+  if (getaddrinfo(host, port, &hints, &res) != 0 || !res) return \"0\\n\";
+  int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+  if (fd < 0) { freeaddrinfo(res); return \"0\\n\"; }
+  if (connect(fd, res->ai_addr, res->ai_addrlen) != 0) { close(fd); freeaddrinfo(res); return \"0\\n\"; }
+  freeaddrinfo(res);
+
+  char req[1100];
+  int rn = snprintf(req, sizeof(req),
+    \"GET %s HTTP/1.0\\r\\nHost: %s\\r\\nConnection: close\\r\\n\\r\\n\", path, host);
+  if (rn < 0 || (size_t)rn >= sizeof(req)) { close(fd); return \"0\\n\"; }
+  for (int off = 0; off < rn; ) {
+    long w = write(fd, req + off, (size_t)(rn - off));
+    if (w <= 0) { close(fd); return \"0\\n\"; }
+    off += (int)w;
+  }
+
+  size_t cap = 8192, len = 0;
+  char* buf = (char*)malloc(cap);
+  if (!buf) { close(fd); return \"0\\n\"; }
+  for (;;) {
+    if (len + 4097 > cap) { cap *= 2; char* nb = (char*)realloc(buf, cap); if (!nb) break; buf = nb; }
+    long r = read(fd, buf + len, 4096);
+    if (r < 0) { close(fd); return \"0\\n\"; }
+    if (r == 0) break;
+    len += (size_t)r;
+  }
+  close(fd);
+  buf[len] = 0;
+
+  int status = 0;
+  char* sp = strchr(buf, ' ');
+  if (sp) status = atoi(sp + 1);
+  const char* body = \"\";
+  char* hdr_end = strstr(buf, \"\\r\\n\\r\\n\");
+  if (hdr_end) body = hdr_end + 4;
+
+  size_t blen = strlen(body);
+  char* out = (char*)malloc(32 + blen);
+  if (!out) return \"0\\n\";
+  int hn = sprintf(out, \"%d\\n\", status);
+  memcpy(out + hn, body, blen + 1);
+  return out;
 }
 
 /* Process arguments (Wave 2). `main` stashes argc/argv here at entry; the

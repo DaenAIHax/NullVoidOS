@@ -292,6 +292,25 @@ fn builtins() -> SigTable {
             c_name: "nullang_getenv".to_string(),
         },
     );
+    // The first NETWORK effect in construction mode: `!net` (already enforced at
+    // runtime by netns at `nv-rebuild run` — Traccia A). A *minimal* effectful
+    // primitive on purpose: it does a blocking HTTP/1.0 GET over a raw socket
+    // (http:// only, no TLS) and returns a **framed** String `"<status>\n<body>"`
+    // — status 0 on any transport error (DNS/connect; 0 is never a real HTTP
+    // status, so it is a clean sentinel). The ergonomic `http_get(...) ->
+    // HttpResponse{status, body}` is *ordinary Nullang* over this primitive
+    // (see examples/http-get.null): the effect stays a tiny C builtin, the shape
+    // is library code — which keeps the whole thing crossing the self-host gate
+    // (String builtin + user struct, no enum needed).
+    t.insert(
+        "http_fetch".to_string(),
+        Sig {
+            params: vec![Ty::World, Ty::String],
+            ret: Ty::String,
+            effects: vec!["net".to_string()],
+            c_name: "nullang_http_fetch".to_string(),
+        },
+    );
     // Process arguments (Wave 2 — gate for `cat <file>`/`grep`/`sed`-likes).
     // Pure: argv is startup data the runtime provides, like a constant — no
     // World, no effect (and so no `!proc.argv` to add to `null`'s vocabulary).
