@@ -8,6 +8,27 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang self-host: codegen Wave 4 — scope di variabili (2026-05-30)
+
+Chiuso il limite di Wave 3: gli `id`-variabile ora si risolvono al loro tipo
+reale invece del default `Int`. Aggiunto un **ambiente di tipi** (`type
+Binding = { nametk, tc }`, lista piatta per funzione): `emit_fn` lo pre-carica
+coi parametri, `emit_block` lo estende a ogni `let` (sfruttato a riferimento,
+`env_push` muta in modo condiviso). `type_of_expr` ora risolve un `id` via
+`env_lookup` (confronto per LESSEMA — token diversi, stesso nome). `env`
+filato attraverso tutte le `emit_*`.
+
+Conseguenze: `let y = x` dove `x` è String emette `const char* nlu_y = nlu_x;`
+(prima sarebbe stato `long`, errore C); e `a == b` fra DUE variabili String dà
+`strcmp` (prima serviva un literal da un lato). Prova: `fn same(a: String, b:
+String) { … if a == b … }` + `let x = greet("X"); let y = x;` → codegen-Nullang
+→ gcc -Wall (zero warning) → stampa `ciao X` / `1` / `0`. W1–W3 invariati,
+self-ingest 120/120 item zero spuri, effect-check pulito.
+
+Restano le espressioni che devono emettere statement prima di sé — struct
+literal (alloca+assegna), list literal, e **if-come-espressione**: stesso
+problema (statement-hoisting), prossima onda — più field/index access.
+
 ### Nullang self-host: codegen Wave 3 — type-inference + strcmp (2026-05-30)
 
 Il codegen-in-Nullang ora tipa quel che emette, non tutto `long`. Tre pezzi:

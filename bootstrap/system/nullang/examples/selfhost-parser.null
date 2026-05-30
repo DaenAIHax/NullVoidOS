@@ -991,16 +991,44 @@ fn find_fn_ret(toks: List<Token>, src: String, ns: List<Node>, root: Int, name: 
   found
 }
 
-# Inferenza di tipo SUFFICIENTE per dichiarare un `let` e per scegliere `==` vs
-# strcmp: literal sul loro tipo, call sul ritorno del builtin/della fn utente,
-# binop → long. Limite Wave 3: un `id`-variabile ritorna tc_int (niente scope) —
-# quindi `let y = x_string` sbaglierebbe; nei confronti String c'è quasi sempre
-# un literal da un lato, ed È quello a far scattare strcmp.
-fn type_of_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, idx: Int) -> Int {
+# Ambiente di tipi (Wave 4): mappa nome→codice per i locali in scope. Una
+# variabile è identificata dal LESSEMA (token diversi, stesso nome): si confronta
+# tok_lex, non l'indice. Lista piatta per funzione (parametri + let incontrati),
+# sfruttata a riferimento — env_push muta in modo condiviso attraverso emit_*.
+type Binding = { nametk: Int, tc: Int };
+
+fn env_push(env: List<Binding>, nametk: Int, tc: Int) -> Int {
+  let mut e = env;
+  push(e, Binding { nametk: nametk, tc: tc });
+  0
+}
+
+fn env_lookup(toks: List<Token>, src: String, ns: List<Node>, env: List<Binding>, idtok: Int) -> Int {
+  let name = tok_lex(toks, src, idtok);
+  let n = list_len(env);
+  let mut i = 0;
+  let mut found = tc_int();
+  let mut going = true;
+  while going {
+    if i >= n { going = false; }
+    else {
+      let b = env[i];
+      if tok_lex(toks, src, b.nametk) == name { found = b.tc; going = false; }
+      else { i = i + 1; }
+    }
+  }
+  found
+}
+
+# Inferenza di tipo SUFFICIENTE per dichiarare un `let` e scegliere `==` vs
+# strcmp: literal sul loro tipo, `id` risolto nell'ambiente (Wave 4), call sul
+# ritorno del builtin/della fn utente, binop → long.
+fn type_of_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, idx: Int) -> Int {
   if idx < 0 { tc_int() }
   else {
     let nd = ns[idx];
     if nd.kind == nd_str() { tc_str() }
+    else { if nd.kind == nd_id() { env_lookup(toks, src, ns, env, nd.tok) }
     else { if nd.kind == nd_call() {
       let cnode = ns[nd.a];
       if cnode.kind == nd_id() {
@@ -1009,14 +1037,14 @@ fn type_of_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, idx: 
         else { find_fn_ret(toks, src, ns, root, name) }
       } else { tc_int() }
     }
-    else { tc_int() } }
+    else { tc_int() } } }
   }
 }
 
 # Espressione → C, ricorsiva. Le precedenze sono già nell'albero: ogni binop si
 # para con le parentesi, così non serve ri-ragionare sulla priorità in C. `root`
 # serve a type_of_expr per risolvere il ritorno delle fn utente.
-fn emit_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, idx: Int) -> String {
+fn emit_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, idx: Int) -> String {
   if idx < 0 { "0" }
   else {
     let nd = ns[idx];
@@ -1027,22 +1055,22 @@ fn emit_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, idx: Int
     }
     else { if nd.kind == nd_str() { tok_lex(toks, src, nd.tok) }
     else { if nd.kind == nd_unary() {
-      concat("(-", concat(emit_expr(toks, src, ns, root, nd.a), ")"))
+      concat("(-", concat(emit_expr(toks, src, ns, root, env, nd.a), ")"))
     }
     else { if nd.kind == nd_bin() {
       let op = tok_lex(toks, src, nd.tok);
-      let lt = type_of_expr(toks, src, ns, root, nd.a);
-      let rt = type_of_expr(toks, src, ns, root, nd.b);
+      let lt = type_of_expr(toks, src, ns, root, env, nd.a);
+      let rt = type_of_expr(toks, src, ns, root, env, nd.b);
       let streq = (op == "==" || op == "!=") && (lt == tc_str() || rt == tc_str());
       if streq {
         # Uguaglianza di String: strcmp, non `==` di puntatori.
         let tail = if op == "==" { ") == 0)" } else { ") != 0)" };
-        concat("(strcmp(", concat(emit_expr(toks, src, ns, root, nd.a),
-          concat(", ", concat(emit_expr(toks, src, ns, root, nd.b), tail))))
+        concat("(strcmp(", concat(emit_expr(toks, src, ns, root, env, nd.a),
+          concat(", ", concat(emit_expr(toks, src, ns, root, env, nd.b), tail))))
       } else {
-        concat("(", concat(emit_expr(toks, src, ns, root, nd.a),
+        concat("(", concat(emit_expr(toks, src, ns, root, env, nd.a),
           concat(" ", concat(op,
-          concat(" ", concat(emit_expr(toks, src, ns, root, nd.b), ")"))))))
+          concat(" ", concat(emit_expr(toks, src, ns, root, env, nd.b), ")"))))))
       }
     }
     else { if nd.kind == nd_call() {
@@ -1055,11 +1083,11 @@ fn emit_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, idx: Int
         let argh = if bi && world_gated(name) {
           if nd.b < 0 { 0 - 1 } else { let h = ns[nd.b]; h.next }
         } else { nd.b };
-        concat(cname, concat("(", concat(emit_args(toks, src, ns, root, argh), ")")))
+        concat(cname, concat("(", concat(emit_args(toks, src, ns, root, env, argh), ")")))
       } else {
         # Callee non-identificatore (raro: Nullang non ha fn di prima classe).
-        concat(emit_expr(toks, src, ns, root, nd.a),
-          concat("(", concat(emit_args(toks, src, ns, root, nd.b), ")")))
+        concat(emit_expr(toks, src, ns, root, env, nd.a),
+          concat("(", concat(emit_args(toks, src, ns, root, env, nd.b), ")")))
       }
     }
     else { concat("/*?*/0", "") } } } } } } }
@@ -1067,7 +1095,7 @@ fn emit_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, idx: Int
 }
 
 # Catena di argomenti (via `next`) → "a, b, c".
-fn emit_args(toks: List<Token>, src: String, ns: List<Node>, root: Int, head: Int) -> String {
+fn emit_args(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, head: Int) -> String {
   let mut cur = head;
   let mut out = "";
   let mut first = true;
@@ -1076,7 +1104,7 @@ fn emit_args(toks: List<Token>, src: String, ns: List<Node>, root: Int, head: In
     if cur < 0 { going = false; }
     else {
       let e = ns[cur];
-      let piece = emit_expr(toks, src, ns, root, cur);
+      let piece = emit_expr(toks, src, ns, root, env, cur);
       out = if first { piece } else { concat(out, concat(", ", piece)) };
       first = false;
       cur = e.next;
@@ -1087,37 +1115,37 @@ fn emit_args(toks: List<Token>, src: String, ns: List<Node>, root: Int, head: In
 
 # Statement → C. `tail` = questo è l'ultimo statement di un corpo che produce un
 # valore: l'espressione finale diventa `return`, come nelle fn a corpo-blocco.
-fn emit_stmt(toks: List<Token>, src: String, ns: List<Node>, root: Int, idx: Int, tail: Bool) -> String {
+fn emit_stmt(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, idx: Int, tail: Bool) -> String {
   let nd = ns[idx];
   if nd.kind == nd_let() {
     # Il tipo C della locale viene inferito dall'inizializzatore.
-    let ct = c_type(type_of_expr(toks, src, ns, root, nd.a));
+    let ct = c_type(type_of_expr(toks, src, ns, root, env, nd.a));
     concat("  ", concat(ct, concat(" ", concat(mangle(toks, src, nd.tok),
-      concat(" = ", concat(emit_expr(toks, src, ns, root, nd.a), ";"))))))
+      concat(" = ", concat(emit_expr(toks, src, ns, root, env, nd.a), ";"))))))
   }
   else { if nd.kind == nd_assign() {
-    concat("  ", concat(emit_expr(toks, src, ns, root, nd.a),
-      concat(" = ", concat(emit_expr(toks, src, ns, root, nd.b), ";"))))
+    concat("  ", concat(emit_expr(toks, src, ns, root, env, nd.a),
+      concat(" = ", concat(emit_expr(toks, src, ns, root, env, nd.b), ";"))))
   }
   else { if nd.kind == nd_return() {
-    concat("  return ", concat(emit_expr(toks, src, ns, root, nd.a), ";"))
+    concat("  return ", concat(emit_expr(toks, src, ns, root, env, nd.a), ";"))
   }
   else { if nd.kind == nd_while() {
-    concat("  while (", concat(emit_expr(toks, src, ns, root, nd.a),
-      concat(") {\n", concat(emit_block(toks, src, ns, root, nd.b, false), "  }"))))
+    concat("  while (", concat(emit_expr(toks, src, ns, root, env, nd.a),
+      concat(") {\n", concat(emit_block(toks, src, ns, root, env, nd.b, false), "  }"))))
   }
   else { if nd.kind == nd_if() {
     let elsepart = if nd.c < 0 { "" }
-      else { concat(" else {\n", concat(emit_block(toks, src, ns, root, nd.c, false), "  }")) };
-    concat("  if (", concat(emit_expr(toks, src, ns, root, nd.a),
-      concat(") {\n", concat(emit_block(toks, src, ns, root, nd.b, false),
+      else { concat(" else {\n", concat(emit_block(toks, src, ns, root, env, nd.c, false), "  }")) };
+    concat("  if (", concat(emit_expr(toks, src, ns, root, env, nd.a),
+      concat(") {\n", concat(emit_block(toks, src, ns, root, env, nd.b, false),
       concat("  }", elsepart)))))
   }
   else { if nd.kind == nd_expr() {
     if tail {
-      concat("  return ", concat(emit_expr(toks, src, ns, root, nd.a), ";"))
+      concat("  return ", concat(emit_expr(toks, src, ns, root, env, nd.a), ";"))
     } else {
-      concat("  ", concat(emit_expr(toks, src, ns, root, nd.a), ";"))
+      concat("  ", concat(emit_expr(toks, src, ns, root, env, nd.a), ";"))
     }
   }
   else { concat("  /*?stmt*/;", "") } } } } } }
@@ -1125,7 +1153,9 @@ fn emit_stmt(toks: List<Token>, src: String, ns: List<Node>, root: Int, idx: Int
 
 # Il corpo di un blocco (nd_block): la sua catena di statement → C. `tail_ret`
 # si propaga solo all'ULTIMO statement (quello che porta il valore della fn).
-fn emit_block(toks: List<Token>, src: String, ns: List<Node>, root: Int, blk: Int, tail_ret: Bool) -> String {
+# Ogni `let` registra il proprio binding nell'ambiente (condiviso) così gli
+# statement successivi ne risolvono il tipo.
+fn emit_block(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, blk: Int, tail_ret: Bool) -> String {
   let b = ns[blk];
   let mut cur = b.a;
   let mut out = "";
@@ -1135,7 +1165,10 @@ fn emit_block(toks: List<Token>, src: String, ns: List<Node>, root: Int, blk: In
     else {
       let e = ns[cur];
       let is_tail = e.next < 0 && tail_ret;
-      out = concat(out, concat(emit_stmt(toks, src, ns, root, cur, is_tail), "\n"));
+      out = concat(out, concat(emit_stmt(toks, src, ns, root, env, cur, is_tail), "\n"));
+      if e.kind == nd_let() {
+        env_push(env, e.tok, type_of_expr(toks, src, ns, root, env, e.a)); 0
+      } else { 0 };
       cur = e.next;
     }
   }
@@ -1178,12 +1211,20 @@ fn c_sig(toks: List<Token>, src: String, ns: List<Node>, fnidx: Int) -> String {
   }
 }
 
-# Definizione completa di una fn: firma + corpo. Il corpo è un nd_block; il suo
-# valore finale diventa il `return` (tail_ret = true).
+# Definizione completa di una fn: firma + corpo. L'ambiente parte dai parametri
+# (nome→codice di tipo); i let lo estendono dentro emit_block. Il corpo è un
+# nd_block; il suo valore finale diventa il `return` (tail_ret = true).
 fn emit_fn(toks: List<Token>, src: String, ns: List<Node>, root: Int, fnidx: Int) -> String {
   let nd = ns[fnidx];
+  let mut env: List<Binding> = [];
+  let mut p = nd.a;
+  let mut gp = true;
+  while gp {
+    if p < 0 { gp = false; }
+    else { let pe = ns[p]; env_push(env, pe.tok, pe.a); p = pe.next; }
+  }
   concat(c_sig(toks, src, ns, fnidx),
-    concat(" {\n", concat(emit_block(toks, src, ns, root, nd.b, true), "}\n")))
+    concat(" {\n", concat(emit_block(toks, src, ns, root, env, nd.b, true), "}\n")))
 }
 
 # Programma → C: preludio, poi le forward-declaration di ogni fn (tranne main),
@@ -1358,5 +1399,9 @@ fn main(world: World) -> Int uses !tty, !fs.read, !fs.write {
   # --- CODEGEN wave 3: type-inference. fn -> String, let-String, == → strcmp. ---
   codegen_show(world, "codegen wave 3: type-inference + strcmp", "/tmp/nlcg-w3.c",
     "fn greet(name: String) -> String { concat(\"ciao, \", name) } fn main(world: World) -> Int uses !tty { let msg = greet(\"Nullang\"); print(world, msg); print(world, concat(\"lunghezza = \", str_of_int(str_len(msg)))); let first = substr(msg, 0, 1); if first == \"c\" { print(world, \"inizia per c\"); } else { print(world, \"no\"); } 0 }");
+
+  # --- CODEGEN wave 4: scope di variabili. let y = x (String), a == b (due var String). ---
+  codegen_show(world, "codegen wave 4: scope di variabili", "/tmp/nlcg-w4.c",
+    "fn greet(name: String) -> String { concat(\"ciao \", name) } fn same(a: String, b: String) -> Int { let mut r = 0; if a == b { r = 1; } else { r = 0; } r } fn main(world: World) -> Int uses !tty { let x = greet(\"X\"); let y = x; print(world, y); print(world, str_of_int(same(\"foo\", \"foo\"))); print(world, str_of_int(same(\"foo\", \"bar\"))); 0 }");
   0
 }
