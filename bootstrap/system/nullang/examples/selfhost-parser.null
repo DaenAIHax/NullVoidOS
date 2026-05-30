@@ -614,21 +614,17 @@ fn type_code_after_colon(toks: List<Token>, src: String, c: Cur) -> Int {
   else { tc_int() }
 }
 
-# Codice del tipo di ritorno `-> T`, stesso meccanismo (token dopo `->`).
-fn return_type_code(toks: List<Token>, src: String, c: Cur) -> Int {
-  if at_op(toks, src, c, "->") { classify_type_lex(tok_lex(toks, src, c.pos + 1)) }
-  else { tc_int() }
-}
-
-# Un parametro `name: T`. Il nome è il nodo; il codice di tipo va in `a` (per il
-# codegen), il resto dell'annotazione si salta.
+# Un parametro `name: T`. Il nome è il nodo; in `a` il codice di tipo (per il
+# check rapido di World), in `b` il TOKEN del nome-tipo (per risolvere gli
+# struct nel codegen). Il resto dell'annotazione si salta.
 fn parse_param(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
   let mut ns = nodes;
   let nametk = c.pos;
   eat_ident(toks, c);
   let tc = type_code_after_colon(toks, src, c);
+  let typetok = if at_op(toks, src, c, ":") { c.pos + 1 } else { 0 - 1 };
   skip_anno(toks, src, c, ")");
-  mk(ns, nd_param(), tc, none(), none(), nametk)
+  mk(ns, nd_param(), tc, typetok, none(), nametk)
 }
 
 # La lista parametri dopo `fn name`: il `(...)` con parametri incatenati via next.
@@ -654,27 +650,31 @@ fn parse_params(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> In
 }
 
 # `fn name(params) -> T uses !cap { body }`. tok=nome, a=catena parametri,
-# b=blocco corpo, c=codice del tipo di ritorno (per le firme C). `uses` saltato.
+# b=blocco corpo, c=TOKEN del nome-tipo di ritorno (risolto dal codegen, così
+# anche i ritorni-struct mantengono l'identità). `uses` saltato.
 fn parse_fn(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
   let mut ns = nodes;
   adv(c);
   let nametk = c.pos;
   eat_ident(toks, c);
   let params = parse_params(toks, src, ns, c);
-  let rtc = return_type_code(toks, src, c);
+  let rtok = if at_op(toks, src, c, "->") { c.pos + 1 } else { 0 - 1 };
   skip_return_type(toks, src, c);
   skip_uses(toks, src, c);
   let body = parse_block(toks, src, ns, c);
-  mk(ns, nd_fn(), params, body, rtc, nametk)
+  mk(ns, nd_fn(), params, body, rtok, nametk)
 }
 
-# Un campo-tipo `name: T` — gemello di parse_param ma terminato da `}`.
+# Un campo-tipo `name: T` — gemello di parse_param ma terminato da `}`. In `a` il
+# codice di tipo, in `b` il TOKEN del nome-tipo (per il codegen degli struct).
 fn parse_type_field(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
   let mut ns = nodes;
   let nametk = c.pos;
   eat_ident(toks, c);
+  let tc = type_code_after_colon(toks, src, c);
+  let typetok = if at_op(toks, src, c, ":") { c.pos + 1 } else { 0 - 1 };
   skip_anno(toks, src, c, "}");
-  mk(ns, nd_tfield(), none(), none(), none(), nametk)
+  mk(ns, nd_tfield(), tc, typetok, none(), nametk)
 }
 
 # Il `{ ... }` di una `type`: campi `name: T` separati da virgola, incatenati.
@@ -938,12 +938,95 @@ static const char* nullang_char_at(const char* s, long i) {
 "
 }
 
-# Il tipo C di un codice-tipo. World non compare mai come parametro C (cancellato
-# a monte da emit_params), qui resta solo per totalità.
-fn c_type(tc: Int) -> String {
-  if tc == tc_str() { "const char*" }
-  else { if tc == tc_list() { "nl_list" }
-  else { "long" } }
+# Il tipo C di un codice-tipo. code >= 10 è uno struct (handle `nlstruct<id>`).
+# World non compare mai come parametro C (cancellato a monte da emit_params).
+fn c_type(code: Int) -> String {
+  if code >= 10 { concat("nlstruct", str_of_int(code - 10)) }
+  else { if code == tc_str() { "const char*" }
+  else { if code == tc_list() { "nl_list" }
+  else { "long" } } }
+}
+
+# Id di uno struct = posizione fra gli item `type` top-level (l'ordine di
+# dichiarazione). -1 se il nome non è uno struct dichiarato.
+fn struct_id(toks: List<Token>, src: String, ns: List<Node>, root: Int, name: String) -> Int {
+  let r = ns[root];
+  let mut cur = r.a;
+  let mut id = 0;
+  let mut found = 0 - 1;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      if e.kind == nd_type() {
+        if tok_lex(toks, src, e.tok) == name { found = id; going = false; }
+        else { id = id + 1; cur = e.next; }
+      } else { cur = e.next; }
+    }
+  }
+  found
+}
+
+# Codice di tipo da un TOKEN di nome-tipo: primitivo via classify_type_lex,
+# oppure 10+struct_id per uno struct noto, altrimenti tc_other.
+fn tc_of_typetok(toks: List<Token>, src: String, ns: List<Node>, root: Int, typetok: Int) -> Int {
+  if typetok < 0 { tc_int() }
+  else {
+    let lx = tok_lex(toks, src, typetok);
+    let base = classify_type_lex(lx);
+    if base == tc_other() {
+      let sid = struct_id(toks, src, ns, root, lx);
+      if sid < 0 { tc_other() } else { 10 + sid }
+    } else { base }
+  }
+}
+
+# Il nodo `type` con un dato id (per leggerne i campi).
+fn struct_node(ns: List<Node>, root: Int, sid: Int) -> Int {
+  let r = ns[root];
+  let mut cur = r.a;
+  let mut id = 0;
+  let mut found = 0 - 1;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      if e.kind == nd_type() {
+        if id == sid { found = cur; going = false; }
+        else { id = id + 1; cur = e.next; }
+      } else { cur = e.next; }
+    }
+  }
+  found
+}
+
+# Codice di tipo di un campo `fieldname` di uno struct (code >= 10). tc_int se
+# non risolto.
+fn field_type(toks: List<Token>, src: String, ns: List<Node>, root: Int, structcode: Int, fieldname: String) -> Int {
+  if structcode < 10 { tc_int() }
+  else {
+    let tn = struct_node(ns, root, structcode - 10);
+    if tn < 0 { tc_int() }
+    else {
+      let t = ns[tn];
+      let mut f = t.a;
+      let mut ft = tc_int();
+      let mut going = true;
+      while going {
+        if f < 0 { going = false; }
+        else {
+          let fe = ns[f];
+          if tok_lex(toks, src, fe.tok) == fieldname {
+            ft = tc_of_typetok(toks, src, ns, root, fe.b);
+            going = false;
+          } else { f = fe.next; }
+        }
+      }
+      ft
+    }
+  }
 }
 
 # `nlu_` + lessema: il nome C di una fn/locale/parametro utente.
@@ -983,7 +1066,7 @@ fn find_fn_ret(toks: List<Token>, src: String, ns: List<Node>, root: Int, name: 
     else {
       let e = ns[cur];
       if e.kind == nd_fn() && tok_lex(toks, src, e.tok) == name {
-        found = e.c;
+        found = tc_of_typetok(toks, src, ns, root, e.c);
         going = false;
       } else { cur = e.next; }
     }
@@ -1078,6 +1161,14 @@ fn type_of_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: 
     if nd.kind == nd_str() { tc_str() }
     else { if nd.kind == nd_id() { env_lookup(toks, src, ns, env, nd.tok) }
     else { if nd.kind == nd_if() { block_tail_type(toks, src, ns, root, env, nd.b) }
+    else { if nd.kind == nd_struct() {
+      let sid = struct_id(toks, src, ns, root, tok_lex(toks, src, nd.tok));
+      if sid < 0 { tc_other() } else { 10 + sid }
+    }
+    else { if nd.kind == nd_field() {
+      let bt = type_of_expr(toks, src, ns, root, env, nd.a);
+      field_type(toks, src, ns, root, bt, tok_lex(toks, src, nd.tok))
+    }
     else { if nd.kind == nd_call() {
       let cnode = ns[nd.a];
       if cnode.kind == nd_id() {
@@ -1086,12 +1177,32 @@ fn type_of_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: 
         else { find_fn_ret(toks, src, ns, root, name) }
       } else { tc_int() }
     }
-    else { tc_int() } } } }
+    else { tc_int() } } } } } }
   }
 }
 
+# Le assegnazioni di campo di un letterale-struct: `tname->nlf_<campo> = <val>;`
+# per ogni finit della catena, con l'eventuale `pre` del valore anteposto.
+fn emit_finits(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, ctr: Ctr, tname: String, head: Int) -> String {
+  let mut cur = head;
+  let mut out = "";
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let fe = ns[cur];
+      let vc = emit_expr(toks, src, ns, root, env, ctr, fe.a);
+      out = concat(out, concat(vc.pre, concat("  ", concat(tname,
+        concat("->nlf_", concat(tok_lex(toks, src, fe.tok),
+        concat(" = ", concat(vc.expr, ";\n"))))))));
+      cur = fe.next;
+    }
+  }
+  out
+}
+
 # Espressione → {pre, expr}. Le precedenze sono già nell'albero: ogni binop si
-# para con le parentesi. `ctr` per i temp dell'if-espressione.
+# para con le parentesi. `ctr` per i temp dell'if-espressione e dei letterali.
 fn emit_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, ctr: Ctr, idx: Int) -> ExprC {
   if idx < 0 { ec_pure("0") }
   else {
@@ -1155,7 +1266,24 @@ fn emit_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: Lis
       let body = concat("  if (", concat(cc.expr, concat(") {\n", concat(thenb, concat("  }", concat(elsepart, "\n"))))));
       ExprC { pre: concat(cc.pre, concat(decl, body)), expr: tname }
     }
-    else { ec_pure("/*?*/0") } } } } } } } }
+    else { if nd.kind == nd_field() {
+      # Accesso a campo (lettura): `(base)->nlf_<campo>`. Espressione pura.
+      let bc = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+      ExprC { pre: bc.pre, expr: concat("(", concat(bc.expr, concat(")->nlf_", tok_lex(toks, src, nd.tok)))) }
+    }
+    else { if nd.kind == nd_struct() {
+      # Letterale-struct: alloca un handle su heap, assegna i campi, ritorna il
+      # temp. (Reference semantics come il Rust; le malloc non si liberano, §11.)
+      let sid = struct_id(toks, src, ns, root, tok_lex(toks, src, nd.tok));
+      let cty = c_type(10 + sid);
+      let id = fresh(ctr);
+      let tname = concat("_s", str_of_int(id));
+      let decl = concat("  ", concat(cty, concat(" ", concat(tname,
+        concat(" = malloc(sizeof(struct ", concat(cty, "_s));\n"))))));
+      let fields = emit_finits(toks, src, ns, root, env, ctr, tname, nd.a);
+      ExprC { pre: concat(decl, fields), expr: tname }
+    }
+    else { ec_pure("/*?*/0") } } } } } } } } } }
   }
 }
 
@@ -1261,9 +1389,9 @@ fn emit_block(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: Li
   out
 }
 
-# I parametri C di una fn: salta World (cancellato), mangla gli altri. "void"
-# se non resta nessun parametro.
-fn emit_params(toks: List<Token>, src: String, ns: List<Node>, head: Int) -> String {
+# I parametri C di una fn: salta World (cancellato), mangla gli altri risolvendo
+# il tipo dal token (così gli struct prendono `nlstruct<id>`). "void" se vuoto.
+fn emit_params(toks: List<Token>, src: String, ns: List<Node>, root: Int, head: Int) -> String {
   let mut cur = head;
   let mut out = "";
   let mut any = false;
@@ -1272,9 +1400,10 @@ fn emit_params(toks: List<Token>, src: String, ns: List<Node>, head: Int) -> Str
     if cur < 0 { going = false; }
     else {
       let e = ns[cur];
-      if e.a == tc_world() { out = out; }
+      let rc = tc_of_typetok(toks, src, ns, root, e.b);
+      if rc == tc_world() { out = out; }
       else {
-        let piece = concat(c_type(e.a), concat(" ", mangle(toks, src, e.tok)));
+        let piece = concat(c_type(rc), concat(" ", mangle(toks, src, e.tok)));
         out = if any { concat(out, concat(", ", piece)) } else { piece };
         any = true;
       }
@@ -1285,21 +1414,21 @@ fn emit_params(toks: List<Token>, src: String, ns: List<Node>, head: Int) -> Str
 }
 
 # La firma C di una fn (senza `;` né `{`). `main` è speciale: resta `main`, tipo
-# `int`, parametri ignorati (niente ancora argc/argv). Le altre prendono il tipo
-# di ritorno dal codice salvato dal parser (campo `c`).
-fn c_sig(toks: List<Token>, src: String, ns: List<Node>, fnidx: Int) -> String {
+# `int`, parametri ignorati (niente ancora argc/argv). Le altre risolvono il tipo
+# di ritorno dal token salvato dal parser (campo `c`).
+fn c_sig(toks: List<Token>, src: String, ns: List<Node>, root: Int, fnidx: Int) -> String {
   let nd = ns[fnidx];
   let nm = tok_lex(toks, src, nd.tok);
   if nm == "main" { "int main(void)" }
   else {
-    concat(c_type(nd.c), concat(" nlu_", concat(nm,
-      concat("(", concat(emit_params(toks, src, ns, nd.a), ")")))))
+    concat(c_type(tc_of_typetok(toks, src, ns, root, nd.c)), concat(" nlu_", concat(nm,
+      concat("(", concat(emit_params(toks, src, ns, root, nd.a), ")")))))
   }
 }
 
 # Definizione completa di una fn: firma + corpo. L'ambiente parte dai parametri
-# (nome→codice di tipo); i let lo estendono dentro emit_block. Il corpo è un
-# nd_block; il suo valore finale diventa il `return` (tail_ret = true).
+# (nome→codice di tipo, risolto dal token così gli struct mantengono l'identità);
+# i let lo estendono dentro emit_block. Il valore finale del corpo è il `return`.
 fn emit_fn(toks: List<Token>, src: String, ns: List<Node>, root: Int, fnidx: Int) -> String {
   let nd = ns[fnidx];
   let mut env: List<Binding> = [];
@@ -1307,18 +1436,70 @@ fn emit_fn(toks: List<Token>, src: String, ns: List<Node>, root: Int, fnidx: Int
   let mut gp = true;
   while gp {
     if p < 0 { gp = false; }
-    else { let pe = ns[p]; env_push(env, pe.tok, pe.a); p = pe.next; }
+    else { let pe = ns[p]; env_push(env, pe.tok, tc_of_typetok(toks, src, ns, root, pe.b)); p = pe.next; }
   }
   let ctr = Ctr { n: 0 };
-  concat(c_sig(toks, src, ns, fnidx),
+  concat(c_sig(toks, src, ns, root, fnidx),
     concat(" {\n", concat(emit_block(toks, src, ns, root, env, ctr, nd.b, tm_return(), ""), "}\n")))
 }
 
-# Programma → C: preludio, poi le forward-declaration di ogni fn (tranne main),
-# poi i corpi. Due passate sulla catena di item top-level del blocco-programma.
+# Emette i typedef degli struct: prima i forward dei handle (`typedef struct
+# nlstruct<id>_s* nlstruct<id>;` — così i campi possono riferirsi ad altri
+# handle, anche self), poi i corpi `struct nlstruct<id>_s { <tipo> nlf_<campo>; }`.
+fn emit_structs(toks: List<Token>, src: String, ns: List<Node>, root: Int) -> String {
+  let r = ns[root];
+  let mut out = "";
+  let mut cur = r.a;
+  let mut id = 0;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      if e.kind == nd_type() {
+        let nm = concat("nlstruct", str_of_int(id));
+        out = concat(out, concat("typedef struct ", concat(nm, concat("_s* ", concat(nm, ";\n")))));
+        id = id + 1; 0
+      } else { 0 };
+      cur = e.next;
+    }
+  }
+  let mut cur2 = r.a;
+  let mut id2 = 0;
+  let mut g2 = true;
+  while g2 {
+    if cur2 < 0 { g2 = false; }
+    else {
+      let e = ns[cur2];
+      if e.kind == nd_type() {
+        let nm = concat("nlstruct", str_of_int(id2));
+        out = concat(out, concat("struct ", concat(nm, "_s {\n")));
+        let mut f = e.a;
+        let mut gf = true;
+        while gf {
+          if f < 0 { gf = false; }
+          else {
+            let fe = ns[f];
+            let fty = c_type(tc_of_typetok(toks, src, ns, root, fe.b));
+            out = concat(out, concat("  ", concat(fty, concat(" nlf_",
+              concat(tok_lex(toks, src, fe.tok), ";\n")))));
+            f = fe.next;
+          }
+        }
+        out = concat(out, "};\n");
+        id2 = id2 + 1; 0
+      } else { 0 };
+      cur2 = e.next;
+    }
+  }
+  concat(out, "\n")
+}
+
+# Programma → C: preludio, typedef struct, forward-decl di ogni fn (tranne main),
+# poi i corpi. Passate sulla catena di item top-level del blocco-programma.
 fn gen(toks: List<Token>, src: String, ns: List<Node>, root: Int) -> String {
   let r = ns[root];
-  let mut out = c_prelude();
+  let mut out = concat(c_prelude(), emit_structs(toks, src, ns, root));
   let mut cur = r.a;
   let mut going = true;
   while going {
@@ -1326,7 +1507,7 @@ fn gen(toks: List<Token>, src: String, ns: List<Node>, root: Int) -> String {
     else {
       let e = ns[cur];
       out = if e.kind == nd_fn() && tok_lex(toks, src, e.tok) != "main" {
-        concat(out, concat(c_sig(toks, src, ns, cur), ";\n"))
+        concat(out, concat(c_sig(toks, src, ns, root, cur), ";\n"))
       } else { out };
       cur = e.next;
     }
@@ -1494,5 +1675,9 @@ fn main(world: World) -> Int uses !tty, !fs.read, !fs.write {
   # --- CODEGEN wave 5: if-ESPRESSIONE (hoisting). let = if, corpo-if con else-if, if in argomento. ---
   codegen_show(world, "codegen wave 5: if-espressione (hoisting)", "/tmp/nlcg-w5.c",
     "fn classify(n: Int) -> String { if n < 0 { \"neg\" } else { if n == 0 { \"zero\" } else { \"pos\" } } } fn main(world: World) -> Int uses !tty { let label = if 5 < 10 { \"minore\" } else { \"no\" }; print(world, label); print(world, classify(0 - 3)); print(world, classify(0)); print(world, classify(7)); print(world, concat(\"scelta: \", if 1 == 1 { \"uno\" } else { \"altro\" })); 0 }");
+
+  # --- CODEGEN wave 6a: STRUCT. type-decl → typedef, letterale-struct, accesso a campo. ---
+  codegen_show(world, "codegen wave 6a: struct", "/tmp/nlcg-w6.c",
+    "type Point = { x: Int, y: Int }; fn mkpoint(a: Int, b: Int) -> Point { Point { x: a, y: b } } fn main(world: World) -> Int uses !tty { let p = mkpoint(3, 4); print(world, concat(\"x = \", str_of_int(p.x))); print(world, concat(\"y = \", str_of_int(p.y))); print(world, concat(\"somma = \", str_of_int(p.x + p.y))); 0 }");
   0
 }

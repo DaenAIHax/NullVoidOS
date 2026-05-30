@@ -8,6 +8,33 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang self-host: codegen Wave 6a — struct (2026-05-30)
+
+Aggregati, prima metà: gli struct. Le strutture hanno bisogno che il tipo porti
+l'IDENTITÀ (quale struct), non solo un codice — il vecchio schema a `Int`
+collassava ogni struct su `tc_other`. Esteso: **codice ≥ 10 = struct id** (la
+posizione fra gli item `type` top-level). Il parser ora salva il TOKEN del
+nome-tipo su parametri (`nd_param.b`), campi-tipo (`nd_tfield.b`) e ritorno di
+fn (`nd_fn.c`); il codegen lo risolve con `tc_of_typetok` → primitivo o
+`10+struct_id`.
+
+Codegen: `emit_structs` emette i typedef (forward dei handle `typedef struct
+nlstruct<id>_s* nlstruct<id>;`, poi i corpi coi campi `nlf_<nome>`); letterale-
+struct (`emit_expr` su `nd_struct`) si abbassa via hoisting a `malloc` + assegni
+di campo, ritorna il temp `_sN`; accesso a campo (`nd_field`) → `(base)->nlf_x`
+(puro). `type_of_expr` risolve struct-literal e field-access (via `field_type`);
+`c_type` mappa i codici struct su `nlstruct<id>`; `c_sig`/`emit_params`/`emit_fn`/
+`find_fn_ret` risolvono i tipi struct dai token.
+
+Prova: `type Point = { x: Int, y: Int }; fn mkpoint(a, b) -> Point { Point { x:
+a, y: b } }` + `let p = mkpoint(3, 4); …p.x…p.y…` → codegen-Nullang emette
+`struct nlstruct0_s { long nlf_x; long nlf_y; }`, `nlstruct0 nlu_mkpoint(…)`,
+`(nlu_p)->nlf_x` → gcc → stampa `x = 3` / `y = 4` / `somma = 7`. W1–W5
+invariati, self-ingest 135/135 item zero spuri, effect-check pulito.
+
+Resta Wave 6b: liste (list literal, `push`/`list_len`/`set`/index, box/unbox
+slot 64-bit). Poi il fixpoint stage0→stage2.
+
 ### Nullang self-host: codegen Wave 5 — statement-hoisting + if-espressione (2026-05-30)
 
 Il muro grosso. Il C non ha blocchi-valore, ma in Nullang `if` è
