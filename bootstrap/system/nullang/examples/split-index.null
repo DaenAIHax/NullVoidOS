@@ -1,0 +1,32 @@
+# split-index.null — i due builtin P1 (index_of + split), autorati dall'agente
+# in-VM (generation-7) e mergeati host. split è il PRIMO builtin che produce una
+# List<T>: chiude il cerchio iniziato con List<T> (v0.3) — ora il linguaggio sa
+# anche *creare* collezioni, non solo riceverle dall'utente.
+#
+#   index_of(s, sub) -> Int          # primo offset di sub in s, -1 se assente
+#   split(s, sep)     -> List<String> # divide su sep
+
+fn main(world: World) -> Int uses !tty {
+  # index_of: la primitiva di ricerca che il config-parser rifaceva a mano.
+  print(world, str_of_int(index_of("host=localhost", "=")));  # 4
+  print(world, str_of_int(index_of("nokey", "=")));           # -1
+  print(world, str_of_int(index_of("abc", "")));              # 0 (sub vuoto)
+
+  # split: una riga di config "k=v" in chiave e valore, senza scan a mano.
+  let kv = split("port=8080", "=");
+  print(world, concat("key=", kv[0]));                        # key=port
+  print(world, concat("val=", kv[1]));                        # val=8080
+  print(world, str_of_int(int_of_str(kv[1]) + 1));            # 8081 (catena P0+P1)
+
+  # CSV con campo vuoto in mezzo: i separatori consecutivi danno segmenti vuoti.
+  let cols = split("a,,c", ",");
+  print(world, str_of_int(list_len(cols)));                   # 3
+  print(world, concat("mid='", concat(cols[1], "'")));        # mid='' (vuoto)
+
+  # sep vuoto → la lista intatta [s] (niente trappola degli infiniti vuoti).
+  let whole = split("xyz", "");
+  print(world, str_of_int(list_len(whole)));                  # 1
+  print(world, whole[0]);                                     # xyz
+
+  0
+}

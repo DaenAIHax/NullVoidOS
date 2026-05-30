@@ -174,6 +174,36 @@ fn builtins() -> SigTable {
             c_name: "nullang_int_of_str".to_string(),
         },
     );
+    // P1 stdlib — search + split (both probes reached for these). Authored by
+    // the in-VM agent (BUILTINS_CONTRACT, generation-7); merged host verbatim.
+    // `index_of(s, sub) -> Int`: byte index of the first occurrence of `sub`
+    // in `s`, or -1 if absent. Empty `sub` returns 0 (matches at the start,
+    // the standard convention — the dual of how splitting on "" behaves).
+    // Total: no panics. The "find" half of search/replace; pairs with `substr`.
+    t.insert(
+        "index_of".to_string(),
+        Sig {
+            params: vec![Ty::String, Ty::String],
+            ret: Ty::Int,
+            effects: vec![],
+            c_name: "nullang_index_of".to_string(),
+        },
+    );
+    // `split(s, sep) -> List<String>`: splits `s` on every occurrence of `sep`.
+    // First builtin to PRODUCE a List<T> — uses the existing nl_list runtime
+    // (push String pointers via intptr_t, same boxing as user code). Edge cases:
+    // empty `sep` yields `[s]` (one-element list — splitting on nothing leaves
+    // the input intact, sidesteps the "infinite empties" trap); consecutive
+    // separators yield empty segments (so `split("a,,b", ",")` is [a, "", b]).
+    t.insert(
+        "split".to_string(),
+        Sig {
+            params: vec![Ty::String, Ty::String],
+            ret: Ty::List(ElemTy::String),
+            effects: vec![],
+            c_name: "nullang_split".to_string(),
+        },
+    );
     // Tier 0 — file I/O. Effectful (World-gated, like `print`). The LANGUAGE
     // effect is path-less (`fs.read`/`fs.write`): the path is a runtime
     // String, and the system-level grant in `system.null` scopes it — which

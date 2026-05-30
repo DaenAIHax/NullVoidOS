@@ -599,6 +599,53 @@ fn main(world: World) -> Int uses !tty {
     assert!(c.contains("nullang_char_code("));
 }
 
+// ---- P1 stdlib: index_of + split (authored by the in-VM agent) -----------
+
+#[test]
+fn index_of_builtin_compiles_and_is_pure() {
+    let src = r#"
+fn main(world: World) -> Int uses !tty {
+  print(world, str_of_int(index_of("a=b", "=")));
+  0
+}
+"#;
+    let c = compile_to_c(src, "io.null").expect("index_of should compile");
+    assert!(c.contains("nullang_index_of(\"a=b\", \"=\")"));
+}
+
+#[test]
+fn split_returns_a_list_of_string() {
+    // split is the first builtin that PRODUCES a List<T>: its result indexes
+    // and feeds list_len like any other List<String>.
+    let src = r#"
+fn main(world: World) -> Int uses !tty {
+  let parts = split("a,b,c", ",");
+  print(world, str_of_int(list_len(parts)));
+  print(world, parts[1]);
+  0
+}
+"#;
+    let c = compile_to_c(src, "sp.null").expect("split should compile");
+    assert!(c.contains("nullang_split(\"a,b,c\", \",\")"));
+    // Result is a list handle: indexing unboxes a String back out.
+    assert!(c.contains("nl_list_get"));
+    assert!(c.contains("(const char*)(intptr_t)"));
+}
+
+#[test]
+fn split_result_type_is_list_string_not_string() {
+    // The checker must see split's return as List<String>, so a String-typed
+    // use of the bare result is a type error (proves the return type is wired).
+    let src = r#"
+fn main(world: World) -> Int uses !tty {
+  let bad: String = split("x", ",");
+  0
+}
+"#;
+    let err = compile_to_c(src, "sp2.null").expect_err("split returns a List, not a String");
+    assert_eq!(format!("{:?}", err.code), "Typ001");
+}
+
 #[test]
 fn user_identifiers_clashing_with_c_keywords_are_mangled() {
     // `double` is a C keyword; a Nullang fn/param/let named so must not reach

@@ -275,6 +275,8 @@ substr(s: String, start: Int, len: Int) -> String                 # pure; indice
 char_at(s: String, i: Int) -> String                              # pure; 1-char, O(i), "" out of range
 char_code(s: String, i: Int) -> Int                               # pure; byte at i, -1 out of range (P0)
 int_of_str(s: String) -> Int                                      # pure; decimal parse, total, 0 on junk (P0)
+index_of(s: String, sub: String) -> Int                           # pure; first offset of sub, -1 absent, 0 if sub="" (P1)
+split(s: String, sep: String) -> List<String>                     # pure; split on sep; sep="" -> [s] (P1)
 
 read_file(world: World, path: String) -> String   uses !fs.read   # "" on error (Tier 0)
 write_file(world: World, path: String, content: String) -> ()   uses !fs.write   # (Tier 0)
@@ -324,8 +326,16 @@ first non-digit; `""`/junk → `0`) — the headline deterministic gap, confirme
 3/3, every config-parser otherwise re-implementing the same ~22-LOC parse. Both
 total (no panic, no error type); a `Result`-returning `int_of_str` that
 distinguishes `"0"` from a parse error is the §10 follow-up, as for `read_file`.
-Still deferred in this cluster: `split`/`index_of` (P1 — both probes reached for
-them), `str_of_bool` and `else if` ergonomics (P2).
+**P1 stdlib — search + split** (also from the two probes; authored by the in-VM
+agent, generation-7). `index_of(s, sub)` is the byte offset of the first
+occurrence of `sub` in `s`, `-1` if absent, `0` for empty `sub` (match-at-start)
+— the "find" half of search/replace. `split(s, sep)` is the **first builtin that
+*produces* a `List<String>`**: it builds the list via the same `nl_list` runtime
+user code uses, closing the loop opened by `List<T>` (the language can now create
+collections, not just receive them). Empty `sep` returns `[s]` (splitting on
+nothing leaves the input intact, and sidesteps the infinite-empties degenerate
+case); consecutive separators yield empty segments (`split("a,,b", ",")` is
+`["a", "", "b"]`). Still deferred: `str_of_bool` and `else if` ergonomics (P2).
 
 **String equality.** `==` and `!=` work on `String` (lowered to `strcmp`), in
 addition to `Int`/`Bool` — needed to recognise commands and keystrokes. No

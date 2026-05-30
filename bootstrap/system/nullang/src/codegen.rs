@@ -144,6 +144,65 @@ static long nullang_int_of_str(const char* s) {
   return sign * n;
 }
 
+/* P1 stdlib — search + split. Authored by the in-VM agent (BUILTINS_CONTRACT,
+   generation-7); merged host verbatim. */
+
+/* index_of(s, sub): byte offset of the first occurrence of sub in s, or -1 if
+   absent. Empty sub returns 0 (match-at-start convention). Naive O(n*m) scan —
+   adequate for config parsing and CLI inputs; strstr() would be a
+   micro-optimisation that hides the loop's totality. */
+static long nullang_index_of(const char* s, const char* sub) {
+  long m = (long)strlen(sub);
+  if (m == 0) return 0;
+  long n = (long)strlen(s);
+  for (long i = 0; i + m <= n; i++) {
+    if (memcmp(s + i, sub, (size_t)m) == 0) return i;
+  }
+  return -1;
+}
+
+/* split(s, sep) -> List<String>. First builtin that PRODUCES a List<T>: it
+   constructs an nl_list of String pointers (boxed via intptr_t into the
+   uniform long slot, same as user-side List<String> literals). Empty sep
+   returns [s] — splitting on nothing means \"don't split\", which also
+   sidesteps the infinite-empties degenerate case. Consecutive separators
+   yield empty segments, so split(\"a,,b\", \",\") is [\"a\", \"\", \"b\"]. Each
+   segment is freshly malloc'd (NUL-terminated copy), like substr — allocations
+   are not freed (short-lived programs, §11 arena deferral). */
+static nl_list nullang_split(const char* s, const char* sep) {
+  nl_list l = nl_list_new();
+  long m = (long)strlen(sep);
+  long n = (long)strlen(s);
+  if (m == 0) {
+    char* whole = malloc((size_t)n + 1);
+    memcpy(whole, s, (size_t)n);
+    whole[n] = '\\0';
+    nl_list_push(l, (long)(intptr_t)whole);
+    return l;
+  }
+  long start = 0;
+  long i = 0;
+  while (i + m <= n) {
+    if (memcmp(s + i, sep, (size_t)m) == 0) {
+      long seglen = i - start;
+      char* seg = malloc((size_t)seglen + 1);
+      memcpy(seg, s + start, (size_t)seglen);
+      seg[seglen] = '\\0';
+      nl_list_push(l, (long)(intptr_t)seg);
+      i += m;
+      start = i;
+    } else {
+      i++;
+    }
+  }
+  long seglen = n - start;
+  char* seg = malloc((size_t)seglen + 1);
+  memcpy(seg, s + start, (size_t)seglen);
+  seg[seglen] = '\\0';
+  nl_list_push(l, (long)(intptr_t)seg);
+  return l;
+}
+
 /* Tier 0 file I/O. World is erased at codegen, so it is not a C parameter;
    the capability lives in the fn's `uses` clause (checked) and the grant in
    system.null (enforced by Landlock at run time). Errors are swallowed into

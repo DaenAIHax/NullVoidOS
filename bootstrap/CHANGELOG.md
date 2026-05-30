@@ -8,6 +8,33 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang: P1 stdlib — `index_of` + `split` (autorati dall'agente in-VM) (2026-05-30)
+
+Secondo grappolo stdlib, **autorato dall'agente DENTRO la VM** col rito
+generation-managed (generation-7, `nv-toolchain-0.1.2`) e mergeato host verbatim
+— come `char_at`, ma stavolta due builtin in un colpo. Scelta dell'utente:
+questi NON fatti host, lasciati all'agente (il dominio del loop di
+auto-miglioramento, `BUILTINS_CONTRACT.md`).
+
+- `index_of(s, sub) -> Int` — byte offset della prima occorrenza di `sub`, `-1`
+  se assente, `0` per `sub` vuoto (match-at-start). La "find" di search/replace,
+  che il config-parser rifaceva a mano. Scan O(n·m), totale.
+- `split(s, sep) -> List<String>` — **primo builtin che PRODUCE una `List<T>`**:
+  costruisce la lista col runtime `nl_list` esistente (push di puntatori String
+  via `intptr_t`, stesso boxing del codice utente). Chiude il cerchio aperto da
+  `List<T>` — il linguaggio ora sa *creare* collezioni, non solo riceverle.
+  `sep` vuoto → `[s]` (niente trappola degli infiniti vuoti); separatori
+  consecutivi → segmenti vuoti (`split("a,,b", ",")` = `["a","","b"]`). Segmenti
+  freschi via `malloc`, come `substr`.
+
+Abilitazione host: l'agente è partito dall'immagine ricostruita all'HEAD
+`4fc225f` (List+struct+P0 già baked). Integrazione host: solo le 2 regioni del
+contratto (`check.rs::builtins()` + impl C nel PRELUDE), corretti 3 typo nei
+*commenti* del diff (codice invariato). Suite **72/72** (3 nuovi). Esempio
+`examples/split-index.null` ELF verde (config `k=v` parsato con split+int_of_str,
+CSV con campo vuoto, sep vuoto → `[s]`). SPEC §4.7 aggiornato. `Cargo.lock`
+invariato. Resta P2: `str_of_bool`/`else if` (ergonomia).
+
 ### Nullang: P0 stdlib — `char_code` + `int_of_str` (confine String↔Int) (2026-05-30)
 
 Due builtin puri e totali che chiudono il gap stdlib **confermato 3/3 da due
