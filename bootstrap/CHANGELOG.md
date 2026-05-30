@@ -8,6 +8,33 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang self-host: codegen Wave 6b — liste (2026-05-30)
+
+Aggregati, seconda metà: le liste. **Bug del parser corretto**: `parse_primary`
+non gestiva `[...]` come letterale (cadeva nell'else, un token = un nd_num) —
+il sorgente del compilatore stesso desincronizzava dentro le funzioni, mascherato
+perché le metriche contano solo gli item top-level. Aggiunto `nd_list` +
+`parse_list_lit`.
+
+Lo schema dei tipi ora porta anche l'element-type: **codice ≥ 1000 = List<T>**
+(T = code-1000). `tc_of_typetok` riconosce `List < T >` (T due token più avanti);
+`parse_stmt` salva il token dell'annotazione del `let` (`nd_let.b`) così una
+`List<T>` vuota tiene comunque T. Box/unbox dello slot 64-bit (`box_slot`/
+`unbox_slot`): puntatori (String/struct/lista) via `(long)(intptr_t)`, scalari
+diretti. Codegen: `nd_list` → `nl_list_new` + push boxati (hoisting); `nd_index`
+→ `nl_list_get` + unbox; intrinseci `push`/`list_len`/`set` → `nl_list_*` con box
+del valore. Aggiunto il runtime `nl_list_*` al preludio.
+
+Prova: `let mut xs: List<Int> = []; push(xs,10)…; xs[1]; while i<list_len(xs){…}`
++ `let bs: List<Box> = [Box{v:7}, Box{v:9}]; bs[0].v` → codegen-Nullang →
+gcc -Wall → stampa `len = 3` / `xs[1] = 20` / `sum = 60` / `bs[0].v = 7`. W1–W6a
+invariati, self-ingest **140/140 item zero spuri** (ora i `[...]` parsano davvero),
+effect-check pulito.
+
+Il codegen copre ora il sottoinsieme di Nullang usato dal compilatore stesso
+(Int/String/Bool, builtin, type-inference, scope, if-espressione, struct, liste).
+Prossimo: tentare il **fixpoint** — il codegen-Nullang che compila il compilatore.
+
 ### Nullang self-host: codegen Wave 6a — struct (2026-05-30)
 
 Aggregati, prima metà: gli struct. Le strutture hanno bisogno che il tipo porti

@@ -161,6 +161,7 @@ fn nd_fn()     -> Int { 18 }
 fn nd_type()   -> Int { 19 }
 fn nd_param()  -> Int { 20 }
 fn nd_tfield() -> Int { 21 }
+fn nd_list()   -> Int { 22 }
 
 # Sentinella "nessun figlio" — niente handle null, quindi un indice impossibile.
 fn none() -> Int { 0 - 1 }
@@ -318,9 +319,38 @@ fn parse_primary(toks: List<Token>, src: String, nodes: List<Node>, c: Cur, nost
       let e = parse_expr(toks, src, ns, c, 0, false);
       eat_punct(toks, src, c, ")");
       e
+    }
+    else { if at_punct(toks, src, c, "[") {
+      adv(c);
+      parse_list_lit(toks, src, ns, c)
     } else {
       adv(c); mk(ns, nd_num(), none(), none(), none(), tk)
-    } } } } }
+    } } } } } }
+  }
+}
+
+# Letterale-lista `[a, b, c]` (il `[` è già consumato). a = testa della catena di
+# elementi (incatenati via next), none() se vuota.
+fn parse_list_lit(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  if at_punct(toks, src, c, "]") { adv(c); mk(ns, nd_list(), none(), none(), none(), 0 - 1) }
+  else {
+    let head = parse_expr(toks, src, ns, c, 0, false);
+    let mut tail = head;
+    let mut going = true;
+    while going {
+      if at_punct(toks, src, c, ",") {
+        adv(c);
+        if at_punct(toks, src, c, "]") { going = false; }
+        else {
+          let nx = parse_expr(toks, src, ns, c, 0, false);
+          set_next(ns, tail, nx);
+          tail = nx;
+        }
+      } else { going = false; }
+    }
+    eat_punct(toks, src, c, "]");
+    mk(ns, nd_list(), head, none(), none(), 0 - 1)
   }
 }
 
@@ -486,11 +516,14 @@ fn parse_stmt(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int 
     let ismut = if word_is(toks, src, c, "mut") { adv(c); 1 } else { 0 };
     let nametk = c.pos;
     eat_ident(toks, c);
+    # Token del tipo annotato (per il codegen: l'element-type di List<T> su un
+    # literal vuoto). -1 se il `let` non ha annotazione (tipo inferito).
+    let annotok = if at_op(toks, src, c, ":") { c.pos + 1 } else { 0 - 1 };
     skip_type_anno(toks, src, c);
     eat_op(toks, src, c, "=");
     let val = parse_expr(toks, src, ns, c, 0, false);
     eat_punct(toks, src, c, ";");
-    mk(ns, nd_let(), val, none(), ismut, nametk)
+    mk(ns, nd_let(), val, annotok, ismut, nametk)
   }
   else { if word_is(toks, src, c, "if") {
     parse_if(toks, src, ns, c)
@@ -892,6 +925,29 @@ fn c_prelude() -> String {
 #include <string.h>
 #include <stdint.h>
 
+typedef struct { long len; long cap; long* data; } nl_list_s;
+typedef nl_list_s* nl_list;
+static nl_list nl_list_new(void) {
+  nl_list l = malloc(sizeof(nl_list_s));
+  l->len = 0; l->cap = 0; l->data = 0;
+  return l;
+}
+static void nl_list_push(nl_list l, long v) {
+  if (l->len == l->cap) {
+    long nc = l->cap ? l->cap * 2 : 4;
+    l->data = realloc(l->data, (size_t)nc * sizeof(long));
+    l->cap = nc;
+  }
+  l->data[l->len++] = v;
+}
+static long nl_list_get(nl_list l, long i) {
+  return (i >= 0 && i < l->len) ? l->data[i] : 0;
+}
+static void nl_list_set(nl_list l, long i, long v) {
+  if (i >= 0 && i < l->len) l->data[i] = v;
+}
+static long nl_list_len(nl_list l) { return l->len; }
+
 static void nullang_print(const char* s) { fputs(s, stdout); fputs(\"\\n\", stdout); }
 
 static const char* nullang_concat(const char* a, const char* b) {
@@ -938,13 +994,28 @@ static const char* nullang_char_at(const char* s, long i) {
 "
 }
 
-# Il tipo C di un codice-tipo. code >= 10 è uno struct (handle `nlstruct<id>`).
-# World non compare mai come parametro C (cancellato a monte da emit_params).
+# Il tipo C di un codice-tipo. Schema: code >= 1000 = List<T> (T = code-1000);
+# 10 <= code < 1000 = struct id (handle `nlstruct<id>`); altrimenti primitivo.
 fn c_type(code: Int) -> String {
-  if code >= 10 { concat("nlstruct", str_of_int(code - 10)) }
+  if code >= 1000 { "nl_list" }
+  else { if code >= 10 { concat("nlstruct", str_of_int(code - 10)) }
   else { if code == tc_str() { "const char*" }
   else { if code == tc_list() { "nl_list" }
-  else { "long" } } }
+  else { "long" } } } }
+}
+
+# Box di un valore in uno slot-lista (64-bit): puntatori (String/struct/lista)
+# passano per `(long)(intptr_t)`, gli scalari (Int/Bool) diretti.
+fn box_slot(code: Int, e: String) -> String {
+  if code == tc_str() || code == tc_list() || code >= 10 { concat("(long)(intptr_t)", e) }
+  else { e }
+}
+
+# Unbox da uno slot-lista: ricasta al tipo C dell'elemento.
+fn unbox_slot(code: Int, s: String) -> String {
+  if code == tc_str() { concat("(const char*)(intptr_t)", s) }
+  else { if code == tc_list() || code >= 10 { concat("(", concat(c_type(code), concat(")(intptr_t)", s))) }
+  else { s } }
 }
 
 # Id di uno struct = posizione fra gli item `type` top-level (l'ordine di
@@ -974,11 +1045,16 @@ fn tc_of_typetok(toks: List<Token>, src: String, ns: List<Node>, root: Int, type
   if typetok < 0 { tc_int() }
   else {
     let lx = tok_lex(toks, src, typetok);
-    let base = classify_type_lex(lx);
-    if base == tc_other() {
-      let sid = struct_id(toks, src, ns, root, lx);
-      if sid < 0 { tc_other() } else { 10 + sid }
-    } else { base }
+    if lx == "List" {
+      # `List < T >` — l'element-type è due token più avanti. Codice 1000 + T.
+      1000 + tc_of_typetok(toks, src, ns, root, typetok + 2)
+    } else {
+      let base = classify_type_lex(lx);
+      if base == tc_other() {
+        let sid = struct_id(toks, src, ns, root, lx);
+        if sid < 0 { tc_other() } else { 10 + sid }
+      } else { base }
+    }
   }
 }
 
@@ -1169,6 +1245,16 @@ fn type_of_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: 
       let bt = type_of_expr(toks, src, ns, root, env, nd.a);
       field_type(toks, src, ns, root, bt, tok_lex(toks, src, nd.tok))
     }
+    else { if nd.kind == nd_list() {
+      # Tipo della lista = 1000 + tipo del primo elemento (tc_int se vuota).
+      if nd.a < 0 { 1000 + tc_int() }
+      else { 1000 + type_of_expr(toks, src, ns, root, env, nd.a) }
+    }
+    else { if nd.kind == nd_index() {
+      # Indicizzare una List<T> dà T.
+      let bt = type_of_expr(toks, src, ns, root, env, nd.a);
+      if bt >= 1000 { bt - 1000 } else { tc_int() }
+    }
     else { if nd.kind == nd_call() {
       let cnode = ns[nd.a];
       if cnode.kind == nd_id() {
@@ -1177,7 +1263,7 @@ fn type_of_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: 
         else { find_fn_ret(toks, src, ns, root, name) }
       } else { tc_int() }
     }
-    else { tc_int() } } } } } }
+    else { tc_int() } } } } } } } }
   }
 }
 
@@ -1237,14 +1323,39 @@ fn emit_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: Lis
       let cnode = ns[nd.a];
       if cnode.kind == nd_id() {
         let name = tok_lex(toks, src, cnode.tok);
-        let bi = is_builtin(name);
-        let cname = if bi { concat("nullang_", name) } else { concat("nlu_", name) };
-        # Droppa il primo argomento (World) per i builtin World-gated.
-        let argh = if bi && world_gated(name) {
-          if nd.b < 0 { 0 - 1 } else { let h = ns[nd.b]; h.next }
-        } else { nd.b };
-        let ac = emit_args(toks, src, ns, root, env, ctr, argh);
-        ExprC { pre: ac.pre, expr: concat(cname, concat("(", concat(ac.expr, ")"))) }
+        # Intrinseci di lista: mappano sul runtime nl_list_* con box del valore.
+        if name == "list_len" {
+          let c0 = emit_expr(toks, src, ns, root, env, ctr, nd.b);
+          ExprC { pre: c0.pre, expr: concat("nl_list_len(", concat(c0.expr, ")")) }
+        }
+        else { if name == "push" {
+          let a0 = nd.b; let n0 = ns[a0]; let a1 = n0.next;
+          let c0 = emit_expr(toks, src, ns, root, env, ctr, a0);
+          let c1 = emit_expr(toks, src, ns, root, env, ctr, a1);
+          let vcode = type_of_expr(toks, src, ns, root, env, a1);
+          ExprC { pre: concat(c0.pre, c1.pre),
+            expr: concat("nl_list_push(", concat(c0.expr, concat(", ", concat(box_slot(vcode, c1.expr), ")")))) }
+        }
+        else { if name == "set" {
+          let a0 = nd.b; let n0 = ns[a0]; let a1 = n0.next; let n1 = ns[a1]; let a2 = n1.next;
+          let c0 = emit_expr(toks, src, ns, root, env, ctr, a0);
+          let c1 = emit_expr(toks, src, ns, root, env, ctr, a1);
+          let c2 = emit_expr(toks, src, ns, root, env, ctr, a2);
+          let vcode = type_of_expr(toks, src, ns, root, env, a2);
+          ExprC { pre: concat(c0.pre, concat(c1.pre, c2.pre)),
+            expr: concat("nl_list_set(", concat(c0.expr, concat(", ", concat(c1.expr,
+              concat(", ", concat(box_slot(vcode, c2.expr), ")")))))) }
+        }
+        else {
+          let bi = is_builtin(name);
+          let cname = if bi { concat("nullang_", name) } else { concat("nlu_", name) };
+          # Droppa il primo argomento (World) per i builtin World-gated.
+          let argh = if bi && world_gated(name) {
+            if nd.b < 0 { 0 - 1 } else { let h = ns[nd.b]; h.next }
+          } else { nd.b };
+          let ac = emit_args(toks, src, ns, root, env, ctr, argh);
+          ExprC { pre: ac.pre, expr: concat(cname, concat("(", concat(ac.expr, ")"))) }
+        } } }
       } else {
         # Callee non-identificatore (raro: Nullang non ha fn di prima classe).
         let cc = emit_expr(toks, src, ns, root, env, ctr, nd.a);
@@ -1283,8 +1394,45 @@ fn emit_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: Lis
       let fields = emit_finits(toks, src, ns, root, env, ctr, tname, nd.a);
       ExprC { pre: concat(decl, fields), expr: tname }
     }
-    else { ec_pure("/*?*/0") } } } } } } } } } }
+    else { if nd.kind == nd_list() {
+      # Letterale-lista: alloca, push di ogni elemento (boxato), ritorna il temp.
+      let id = fresh(ctr);
+      let lname = concat("_l", str_of_int(id));
+      let decl = concat("  nl_list ", concat(lname, " = nl_list_new();\n"));
+      let pushes = emit_list_elems(toks, src, ns, root, env, ctr, lname, nd.a);
+      ExprC { pre: concat(decl, pushes), expr: lname }
+    }
+    else { if nd.kind == nd_index() {
+      # Indicizzazione (lettura): nl_list_get + unbox al tipo dell'elemento.
+      let bc = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+      let ic = emit_expr(toks, src, ns, root, env, ctr, nd.b);
+      let bt = type_of_expr(toks, src, ns, root, env, nd.a);
+      let elem = if bt >= 1000 { bt - 1000 } else { tc_int() };
+      let raw = concat("nl_list_get(", concat(bc.expr, concat(", ", concat(ic.expr, ")"))));
+      ExprC { pre: concat(bc.pre, ic.pre), expr: unbox_slot(elem, raw) }
+    }
+    else { ec_pure("/*?*/0") } } } } } } } } } } } }
   }
+}
+
+# Push di ogni elemento di un letterale-lista nel temp `lname`, boxando ciascuno
+# secondo il proprio tipo. I `pre` dei valori (es. struct annidati) sono anteposti.
+fn emit_list_elems(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, ctr: Ctr, lname: String, head: Int) -> String {
+  let mut cur = head;
+  let mut out = "";
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      let vc = emit_expr(toks, src, ns, root, env, ctr, cur);
+      let code = type_of_expr(toks, src, ns, root, env, cur);
+      out = concat(out, concat(vc.pre, concat("  nl_list_push(", concat(lname,
+        concat(", ", concat(box_slot(code, vc.expr), ");\n"))))));
+      cur = e.next;
+    }
+  }
+  out
 }
 
 # Catena di argomenti (via `next`) → {pre = unione dei pre, expr = "a, b, c"}.
@@ -1329,7 +1477,11 @@ fn emit_else(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: Lis
 fn emit_stmt(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, ctr: Ctr, idx: Int, tailmode: Int, tname: String) -> String {
   let nd = ns[idx];
   if nd.kind == nd_let() {
-    let ct = c_type(type_of_expr(toks, src, ns, root, env, nd.a));
+    # Tipo dichiarato: dall'annotazione se c'è (così List<T> vuota tiene T),
+    # altrimenti inferito dall'inizializzatore.
+    let declcode = if nd.b >= 0 { tc_of_typetok(toks, src, ns, root, nd.b) }
+      else { type_of_expr(toks, src, ns, root, env, nd.a) };
+    let ct = c_type(declcode);
     let ec = emit_expr(toks, src, ns, root, env, ctr, nd.a);
     concat(ec.pre, concat("  ", concat(ct, concat(" ", concat(mangle(toks, src, nd.tok),
       concat(" = ", concat(ec.expr, ";")))))))
@@ -1381,7 +1533,9 @@ fn emit_block(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: Li
       let tm = if e.next < 0 { tailmode } else { tm_none() };
       out = concat(out, concat(emit_stmt(toks, src, ns, root, env, ctr, cur, tm, tname), "\n"));
       if e.kind == nd_let() {
-        env_push(env, e.tok, type_of_expr(toks, src, ns, root, env, e.a)); 0
+        let lc = if e.b >= 0 { tc_of_typetok(toks, src, ns, root, e.b) }
+          else { type_of_expr(toks, src, ns, root, env, e.a) };
+        env_push(env, e.tok, lc); 0
       } else { 0 };
       cur = e.next;
     }
@@ -1679,5 +1833,9 @@ fn main(world: World) -> Int uses !tty, !fs.read, !fs.write {
   # --- CODEGEN wave 6a: STRUCT. type-decl → typedef, letterale-struct, accesso a campo. ---
   codegen_show(world, "codegen wave 6a: struct", "/tmp/nlcg-w6.c",
     "type Point = { x: Int, y: Int }; fn mkpoint(a: Int, b: Int) -> Point { Point { x: a, y: b } } fn main(world: World) -> Int uses !tty { let p = mkpoint(3, 4); print(world, concat(\"x = \", str_of_int(p.x))); print(world, concat(\"y = \", str_of_int(p.y))); print(world, concat(\"somma = \", str_of_int(p.x + p.y))); 0 }");
+
+  # --- CODEGEN wave 6b: LISTE. literal, push/list_len, index, while-sum, lista di struct. ---
+  codegen_show(world, "codegen wave 6b: liste", "/tmp/nlcg-w7.c",
+    "type Box = { v: Int }; fn main(world: World) -> Int uses !tty { let mut xs: List<Int> = []; push(xs, 10); push(xs, 20); push(xs, 30); print(world, concat(\"len = \", str_of_int(list_len(xs)))); print(world, concat(\"xs[1] = \", str_of_int(xs[1]))); let mut sum = 0; let mut i = 0; while i < list_len(xs) { sum = sum + xs[i]; i = i + 1; } print(world, concat(\"sum = \", str_of_int(sum))); let bs: List<Box> = [Box { v: 7 }, Box { v: 9 }]; print(world, concat(\"bs[0].v = \", str_of_int(bs[0].v))); 0 }");
   0
 }
