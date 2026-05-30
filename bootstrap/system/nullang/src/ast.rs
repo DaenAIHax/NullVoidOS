@@ -65,6 +65,12 @@ pub enum Ty {
     /// handle in C — a heap header with reference semantics, so `push`/`set`
     /// mutate in place.
     List(ElemTy),
+    /// A user-declared struct, identified by its index in the struct table
+    /// (SPEC §11, v0.4). **Reference semantics**: a value is a heap handle
+    /// (`nlstruct<id>` — a pointer in C), so field writes mutate through it and
+    /// a struct fits the uniform 64-bit list slot. The per-id C name is filled
+    /// in by codegen's `c_type_of`; the static `c_type()` returns a placeholder.
+    Struct(u32),
 }
 
 impl Ty {
@@ -78,6 +84,7 @@ impl Ty {
             Ty::World => "void", // erased; should not appear
             Ty::Enum(_) => "long",
             Ty::List(_) => "nl_list",
+            Ty::Struct(_) => "void*", // placeholder; codegen overrides per id
         }
     }
 
@@ -90,6 +97,7 @@ impl Ty {
             Ty::World => "World",
             Ty::Enum(_) => "enum",
             Ty::List(_) => "List",
+            Ty::Struct(_) => "struct",
         }
     }
 }
@@ -173,11 +181,30 @@ pub struct Func {
     pub span: Span,
 }
 
+/// One field of a struct: `x: Int` (SPEC §11, v0.4). The field type is
+/// resolved to a `Ty` by the checker (restricted to Int/Bool/String/struct).
+#[derive(Debug, Clone, Serialize)]
+pub struct FieldDef {
+    pub name: String,
+    pub ty: TypeRef,
+    pub span: Span,
+}
+
+/// A user-declared nominal record (SPEC §11, v0.4):
+/// `type Point = { x: Int, y: Int };`. Reference semantics (see `Ty::Struct`).
+#[derive(Debug, Clone, Serialize)]
+pub struct StructDef {
+    pub name: String,
+    pub fields: Vec<FieldDef>,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "item")]
 pub enum Item {
     Func(Func),
     Enum(EnumDef),
+    Struct(StructDef),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -208,6 +235,15 @@ pub enum Stmt {
     /// `name = expr;` — reassign a `let mut` binding in scope.
     Assign {
         name: String,
+        value: Expr,
+        span: Span,
+    },
+    /// `base.field = expr;` — write a struct field through its handle (SPEC
+    /// §11, v0.4). `target` is a field-access chain (`p.x`, `p.a.b`); the root
+    /// binding must be `let mut`. Index lvalues (`xs[i] = v`) are deliberately
+    /// not a form — list writes go through `set` (§10, one way per concept).
+    FieldAssign {
+        target: Box<Expr>,
         value: Expr,
         span: Span,
     },
@@ -319,6 +355,19 @@ pub enum Expr {
     /// `base[index]` — read the element at `index` (a postfix on a `List`).
     /// Out-of-range reads return the element default (total, like `substr`).
     Index { base: Box<Expr>, index: Box<Expr>, span: Span },
+    /// `Name { field: expr, ... }` — construct a struct (SPEC §11, v0.4). All
+    /// fields are required, each exactly once; order is free (named).
+    StructLit { name: String, fields: Vec<FieldInit>, span: Span },
+    /// `base.field` — read a struct field (a postfix on a `Struct`).
+    Field { base: Box<Expr>, field: String, span: Span },
+}
+
+/// One field initializer in a struct literal: `x: 1` (SPEC §11, v0.4).
+#[derive(Debug, Clone, Serialize)]
+pub struct FieldInit {
+    pub name: String,
+    pub value: Expr,
+    pub span: Span,
 }
 
 impl Expr {
@@ -335,7 +384,9 @@ impl Expr {
             | Expr::Symbol { span, .. }
             | Expr::Match { span, .. }
             | Expr::ListLit { span, .. }
-            | Expr::Index { span, .. } => *span,
+            | Expr::Index { span, .. }
+            | Expr::StructLit { span, .. }
+            | Expr::Field { span, .. } => *span,
         }
     }
 }

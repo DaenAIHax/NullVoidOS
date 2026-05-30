@@ -8,6 +8,42 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang: `struct` — record nominali a riferimento (Direzione B, 2026-05-30)
+
+Aggiunto `struct` al compilatore Nullang: con `List<T>` (v0.3) completa il
+nucleo di data-modelling necessario a esprimere le tabelle del compilatore
+stesso — **la precondizione per il self-host** (SPEC §12). Tocca tutte e
+cinque le fasi. Decisioni di design (concordate con l'utente):
+
+- **Semantica a riferimento**, come List: uno struct è un handle a un header
+  su heap (`nlstruct<id>`, un puntatore in C), quindi le scritture di campo
+  propagano attraverso gli alias e uno struct entra GIÀ nello slot uniforme
+  64-bit di List (List<struct> diventa quasi gratis in futuro).
+- **Dichiarazione** `type Name = { field: Type, ... };` (nuova keyword
+  `type`); **costruzione a campi nominati** `Point { x: 1, y: 2 }` (tutti i
+  campi obbligatori, una volta ciascuno, ordine libero); **lettura** `p.x`;
+  **scrittura** lvalue `p.x = v`, con catene `p.a.b = v`. La scrittura
+  richiede che la radice della catena sia `let mut` (stessa disciplina di
+  superficie di `push`/`set` su List). Niente field-update expression, niente
+  costruzione posizionale, niente `xs[i] = v` (§10, una via per concetto).
+- **Campi v0.4**: `Int`/`Bool`/`String` o un altro struct (handle, con
+  self-/mutua-referenza grazie alla forward-declaration dei typedef in C);
+  campi enum-typed e List-typed deferiti (`Sch010`).
+- Disambiguazione parser: `Name { ... }` è uno struct literal solo se `Name`
+  è PascalCase (convenzione §4.1) — non collide con `if cond { ... }` /
+  `while cond { ... }` le cui condizioni sono identificatori snake_case.
+  Field access `.field` è postfisso (dopo un'espressione), distinto dal
+  simbolo enum `.red` (a inizio primary). Nomi campo manglati `nlf_` per
+  schivare le keyword C.
+
+Suite **58/58** (11 nuovi test: costruzione/lettura, write-richiede-mut,
+write-con-mut, campo mancante / sconosciuto / tipo errato, lettura su
+non-struct, struct annidato + catena `p.a.b = v`, campo-List-deferito,
+nome-tipo duplicato, ritorno-per-handle). Esempio `examples/structs.null`
+(Point/Line, scrittura mutabile, semantica a riferimento verificata via
+alias, struct-in-struct, catena) compila a ELF ed esegue verde via
+`null run`. SPEC §4.2/§4.7/§11 aggiornato. `Cargo.lock` invariato.
+
 ### Nullang: `List<T>` — collezione built-in mutabile (Direzione B 2/2, 2026-05-30)
 
 Aggiunto `List<T>` al compilatore Nullang (`bootstrap/system/nullang/`): il

@@ -45,13 +45,34 @@ pub struct EnumInfo {
     pub tagged: bool,
 }
 
+/// A resolved struct: its fields in declaration order with resolved types
+/// (SPEC §11, v0.4). Reference semantics — lowers to a heap-allocated
+/// `nlstruct<id>` handle in C (codegen).
+#[derive(Debug, Clone)]
+pub struct StructInfo {
+    pub name: String,
+    pub fields: Vec<(String, Ty)>,
+}
+
+impl StructInfo {
+    fn field(&self, name: &str) -> Option<(usize, Ty)> {
+        self.fields
+            .iter()
+            .enumerate()
+            .find(|(_, (n, _))| n == name)
+            .map(|(i, (_, t))| (i, *t))
+    }
+}
+
 /// Output of checking: signatures, the enum-symbol → (enum id, variant
-/// index) map, and the resolved enum table. Codegen lowers a payload-free
-/// symbol to its index; a payload-carrying enum lowers to a tagged union.
+/// index) map, and the resolved enum + struct tables. Codegen lowers a
+/// payload-free symbol to its index; a payload-carrying enum lowers to a
+/// tagged union; a struct lowers to a heap handle.
 pub struct Checked {
     pub sigs: SigTable,
     pub symbols: HashMap<String, (u32, usize)>,
     pub enums: Vec<EnumInfo>,
+    pub structs: Vec<StructInfo>,
 }
 
 /// Seed the builtins available without declaration (SPEC §5, §13).
@@ -235,15 +256,64 @@ pub fn check_file(file: &File, src: &str, fname: &str) -> Result<Checked, Diag> 
         }
     }
 
+    // Pass 0b: register all struct names first (so fields may reference any
+    // struct — forward and self-reference through the handle), then resolve
+    // each struct's fields. Struct and enum names share one type namespace.
+    let mut struct_by_name: HashMap<String, u32> = HashMap::new();
+    for item in &file.items {
+        if let Item::Struct(s) = item {
+            let (line, col) = line_col(src, s.span.offset);
+            if struct_by_name.contains_key(&s.name) || enum_by_name.contains_key(&s.name) {
+                return Err(Diag::error(
+                    DiagCode::Sch010,
+                    format!("type `{}` declared more than once", s.name),
+                    "a unique type name",
+                    s.name.clone(),
+                    fname,
+                    line,
+                    col,
+                ));
+            }
+            struct_by_name.insert(s.name.clone(), struct_by_name.len() as u32);
+        }
+    }
+    let mut structs: Vec<StructInfo> = Vec::new();
+    for item in &file.items {
+        if let Item::Struct(s) = item {
+            let mut fields = Vec::new();
+            let mut seen: HashSet<String> = HashSet::new();
+            for f in &s.fields {
+                if !seen.insert(f.name.clone()) {
+                    let (line, col) = line_col(src, f.span.offset);
+                    return Err(Diag::error(
+                        DiagCode::Sch010,
+                        format!("field `{}` declared twice in struct `{}`", f.name, s.name),
+                        "a unique field name",
+                        f.name.clone(),
+                        fname,
+                        line,
+                        col,
+                    ));
+                }
+                let ty = resolve_field_ty(&f.ty, &enum_by_name, &struct_by_name, src, fname)?;
+                fields.push((f.name.clone(), ty));
+            }
+            structs.push(StructInfo {
+                name: s.name.clone(),
+                fields,
+            });
+        }
+    }
+
     // Pass 1: collect user function signatures.
     let mut sigs = builtins();
     for item in &file.items {
         if let Item::Func(f) = item {
             let mut params = Vec::new();
             for p in &f.params {
-                params.push(resolve_ty(&p.ty, &enum_by_name, src, fname)?);
+                params.push(resolve_ty(&p.ty, &enum_by_name, &struct_by_name, src, fname)?);
             }
-            let ret = resolve_ty(&f.ret, &enum_by_name, src, fname)?;
+            let ret = resolve_ty(&f.ret, &enum_by_name, &struct_by_name, src, fname)?;
             let effects = f.uses.iter().map(|c| c.key()).collect();
             sigs.insert(
                 f.name.clone(),
@@ -268,6 +338,7 @@ pub fn check_file(file: &File, src: &str, fname: &str) -> Result<Checked, Diag> 
         sigs: &sigs,
         enums: &enums,
         symbols: &symbols,
+        structs: &structs,
     };
     for item in &file.items {
         if let Item::Func(f) = item {
@@ -280,6 +351,7 @@ pub fn check_file(file: &File, src: &str, fname: &str) -> Result<Checked, Diag> 
         sigs,
         symbols,
         enums,
+        structs,
     })
 }
 
@@ -310,6 +382,7 @@ fn resolve_payload_ty(t: &TypeRef, src: &str, fname: &str) -> Result<Ty, Diag> {
 fn resolve_ty(
     t: &TypeRef,
     enum_by_name: &HashMap<String, u32>,
+    struct_by_name: &HashMap<String, u32>,
     src: &str,
     fname: &str,
 ) -> Result<Ty, Diag> {
@@ -319,16 +392,51 @@ fn resolve_ty(
     if let Some(id) = enum_by_name.get(&t.name) {
         return Ok(Ty::Enum(*id));
     }
+    if let Some(id) = struct_by_name.get(&t.name) {
+        return Ok(Ty::Struct(*id));
+    }
     let (line, col) = line_col(src, t.span.offset);
     Err(Diag::error(
         DiagCode::Typ003,
         format!("unknown type `{}`", t.name),
-        "Int, Bool, String, Unit, World, or a declared enum",
+        "Int, Bool, String, Unit, World, or a declared enum/struct",
         t.name.clone(),
         fname,
         line,
         col,
     ))
+}
+
+/// Resolve a struct field type, restricting it to the v0.4 set: Int, Bool,
+/// String, or another struct (by handle). Enum-typed and List-typed fields are
+/// deferred — they lower cleanly (both fit the slot) but are held back to keep
+/// the first struct cut bounded; `World`/`Unit` are never storable.
+fn resolve_field_ty(
+    t: &TypeRef,
+    enum_by_name: &HashMap<String, u32>,
+    struct_by_name: &HashMap<String, u32>,
+    src: &str,
+    fname: &str,
+) -> Result<Ty, Diag> {
+    let ty = resolve_ty(t, enum_by_name, struct_by_name, src, fname)?;
+    match ty {
+        Ty::Int | Ty::Bool | Ty::String | Ty::Struct(_) => Ok(ty),
+        _ => {
+            let (line, col) = line_col(src, t.span.offset);
+            Err(Diag::error(
+                DiagCode::Sch010,
+                format!(
+                    "struct field type `{}` is not allowed; v0.4 fields are Int, Bool, String, or another struct",
+                    t.name
+                ),
+                "Int, Bool, String, or a struct",
+                t.name.clone(),
+                fname,
+                line,
+                col,
+            ))
+        }
+    }
 }
 
 fn check_main(file: &File, src: &str, fname: &str) -> Result<(), Diag> {
@@ -372,6 +480,7 @@ struct Checker<'a> {
     sigs: &'a SigTable,
     enums: &'a [EnumInfo],
     symbols: &'a HashMap<String, (u32, usize)>,
+    structs: &'a [StructInfo],
 }
 
 impl<'a> Checker<'a> {
@@ -496,6 +605,28 @@ impl<'a> Checker<'a> {
                                 ty.name()
                             ),
                             ty.name(),
+                            got.name().to_string(),
+                            value.span(),
+                        ));
+                    }
+                }
+                Stmt::FieldAssign { target, value, span } => {
+                    // The lvalue is a field chain (`p.x`, `p.a.b`). Its root
+                    // must be a `let mut` struct binding; the field type fixes
+                    // the value type. Reference semantics mean the write goes
+                    // through the heap handle (codegen lowers `... ->field = v`).
+                    let field_ty =
+                        self.check_field_lvalue(target, &locals, uses, caller_name, *span)?;
+                    let got = self.check_expr(value, &locals, uses, caller_name)?;
+                    if got != field_ty {
+                        return Err(self.diag(
+                            DiagCode::Typ001,
+                            format!(
+                                "cannot assign {} to a field of type {}",
+                                got.name(),
+                                field_ty.name()
+                            ),
+                            field_ty.name(),
                             got.name().to_string(),
                             value.span(),
                         ));
@@ -942,6 +1073,202 @@ impl<'a> Checker<'a> {
                 }
                 Ok(elem.as_ty())
             }
+            Expr::StructLit { name, fields, span } => {
+                let id = self.struct_by_name(name).ok_or_else(|| {
+                    self.diag(
+                        DiagCode::Ref001,
+                        format!("unknown struct `{}`", name),
+                        "a declared struct type",
+                        name.clone(),
+                        *span,
+                    )
+                })?;
+                let sinfo = &self.structs[id as usize];
+                // Every field exactly once, no unknowns, types match.
+                let mut seen: HashSet<String> = HashSet::new();
+                for fi in fields {
+                    let (_, expected) = sinfo.field(&fi.name).ok_or_else(|| {
+                        self.diag(
+                            DiagCode::Ref001,
+                            format!("struct `{}` has no field `{}`", name, fi.name),
+                            "a declared field",
+                            fi.name.clone(),
+                            fi.span,
+                        )
+                    })?;
+                    if !seen.insert(fi.name.clone()) {
+                        return Err(self.diag(
+                            DiagCode::Typ001,
+                            format!("field `{}` set twice in `{}` literal", fi.name, name),
+                            "each field at most once",
+                            fi.name.clone(),
+                            fi.span,
+                        ));
+                    }
+                    let got = self.check_expr(&fi.value, locals, caller_uses, caller_name)?;
+                    if got != expected {
+                        return Err(self.diag(
+                            DiagCode::Typ001,
+                            format!(
+                                "field `{}` expects {}, got {}",
+                                fi.name,
+                                expected.name(),
+                                got.name()
+                            ),
+                            expected.name(),
+                            got.name().to_string(),
+                            fi.value.span(),
+                        ));
+                    }
+                }
+                let missing: Vec<String> = sinfo
+                    .fields
+                    .iter()
+                    .map(|(n, _)| n.clone())
+                    .filter(|n| !seen.contains(n))
+                    .collect();
+                if !missing.is_empty() {
+                    return Err(self.diag(
+                        DiagCode::Typ001,
+                        format!(
+                            "`{}` literal is missing field(s): {}",
+                            name,
+                            missing.join(", ")
+                        ),
+                        &format!("all fields of `{}`", name),
+                        format!("missing {}", missing.len()),
+                        *span,
+                    ));
+                }
+                Ok(Ty::Struct(id))
+            }
+            Expr::Field { base, field, span } => {
+                let bt = self.check_expr(base, locals, caller_uses, caller_name)?;
+                let id = match bt {
+                    Ty::Struct(id) => id,
+                    other => {
+                        return Err(self.diag(
+                            DiagCode::Typ001,
+                            format!("cannot read field `.{}` of {}; only a struct has fields", field, other.name()),
+                            "a struct value",
+                            other.name().to_string(),
+                            *span,
+                        ))
+                    }
+                };
+                let sinfo = &self.structs[id as usize];
+                let (_, fty) = sinfo.field(field).ok_or_else(|| {
+                    self.diag(
+                        DiagCode::Ref001,
+                        format!("struct `{}` has no field `{}`", sinfo.name, field),
+                        "a declared field",
+                        field.clone(),
+                        *span,
+                    )
+                })?;
+                Ok(fty)
+            }
+        }
+    }
+
+    fn struct_by_name(&self, name: &str) -> Option<u32> {
+        // Small linear scan: struct tables are tiny. The id is the table index.
+        self.structs.iter().position(|s| s.name == name).map(|i| i as u32)
+    }
+
+    /// Validate a field-assignment lvalue (`p.x`, `p.a.b`): the chain must be a
+    /// `.field` path rooted at a `let mut` struct binding. Returns the type of
+    /// the final field (what the assigned value must match).
+    fn check_field_lvalue(
+        &self,
+        target: &Expr,
+        locals: &HashMap<String, (Ty, bool)>,
+        caller_uses: &HashSet<String>,
+        caller_name: &str,
+        span: Span,
+    ) -> Result<Ty, Diag> {
+        // The outermost node must be a field access.
+        let (base, field) = match target {
+            Expr::Field { base, field, .. } => (base, field),
+            _ => {
+                return Err(self.diag(
+                    DiagCode::Typ001,
+                    "assignment target must be a struct field".to_string(),
+                    "a `p.field` lvalue",
+                    "an expression".to_string(),
+                    span,
+                ))
+            }
+        };
+        // The root of the chain must be a mutable binding; intermediate hops
+        // are field reads (reference semantics — the handle is reachable).
+        self.require_mut_root(target, locals, span)?;
+        // Type the base (a struct) then resolve the written field.
+        let bt = self.check_expr(base, locals, caller_uses, caller_name)?;
+        let id = match bt {
+            Ty::Struct(id) => id,
+            other => {
+                return Err(self.diag(
+                    DiagCode::Typ001,
+                    format!("cannot write field `.{}` of {}; only a struct has fields", field, other.name()),
+                    "a struct value",
+                    other.name().to_string(),
+                    span,
+                ))
+            }
+        };
+        let sinfo = &self.structs[id as usize];
+        let (_, fty) = sinfo.field(field).ok_or_else(|| {
+            self.diag(
+                DiagCode::Ref001,
+                format!("struct `{}` has no field `{}`", sinfo.name, field),
+                "a declared field",
+                field.clone(),
+                span,
+            )
+        })?;
+        Ok(fty)
+    }
+
+    /// Walk a field-access chain down to its root identifier and require that
+    /// binding to be `let mut` (the surface mutability discipline, mirroring
+    /// `push`/`set` on lists).
+    fn require_mut_root(
+        &self,
+        e: &Expr,
+        locals: &HashMap<String, (Ty, bool)>,
+        span: Span,
+    ) -> Result<(), Diag> {
+        match e {
+            Expr::Field { base, .. } => self.require_mut_root(base, locals, span),
+            Expr::Ident { name, .. } => {
+                let (_, mutable) = locals.get(name).copied().ok_or_else(|| {
+                    self.diag(
+                        DiagCode::Ref001,
+                        format!("assignment to unknown variable `{}`", name),
+                        "a variable in scope",
+                        name.clone(),
+                        span,
+                    )
+                })?;
+                if !mutable {
+                    return Err(self.diag(
+                        DiagCode::Typ001,
+                        format!("`{}` is not mutable; declare it `let mut {}`", name, name),
+                        "a `let mut` binding",
+                        format!("immutable `{}`", name),
+                        span,
+                    ));
+                }
+                Ok(())
+            }
+            _ => Err(self.diag(
+                DiagCode::Typ001,
+                "field assignment must be rooted at a variable".to_string(),
+                "a `let mut` variable at the root",
+                "an expression".to_string(),
+                span,
+            )),
         }
     }
 

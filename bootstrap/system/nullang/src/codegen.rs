@@ -11,11 +11,23 @@
 use std::collections::HashMap;
 
 use crate::ast::*;
-use crate::check::{Checked, EnumInfo, SigTable};
+use crate::check::{Checked, EnumInfo, SigTable, StructInfo};
 
 /// The C struct name for a tagged (payload-carrying) enum.
 fn enum_struct_name(id: u32) -> String {
     format!("nlenum{}", id)
+}
+
+/// The C handle typedef name for a user struct (a pointer; SPEC §11, v0.4).
+fn struct_type_name(id: u32) -> String {
+    format!("nlstruct{}", id)
+}
+
+/// Mangle a struct field name for C, dodging C keywords (`int`, `default`, …)
+/// the same way `mangle` does for value identifiers. Distinct prefix so it
+/// never collides with `nlu_`/`nl_*`/`nlenum*`/`nlstruct*`.
+fn mangle_field(name: &str) -> String {
+    format!("nlf_{}", name)
 }
 
 const PRELUDE: &str = "\
@@ -148,6 +160,7 @@ pub fn emit(file: &File, checked: &Checked) -> String {
         sigs: &checked.sigs,
         symbols: &checked.symbols,
         enums: &checked.enums,
+        structs: &checked.structs,
     };
 
     // Tagged enums lower to a `{ tag, union }` struct (SPEC §7); emit their
@@ -157,6 +170,20 @@ pub fn emit(file: &File, checked: &Checked) -> String {
         if e.tagged {
             cg.emit_enum_typedef(&mut out, id as u32, e);
         }
+    }
+
+    // Structs lower to heap handles (SPEC §11, v0.4). Forward-declare every
+    // handle typedef first so field types may reference any struct (including
+    // self- and mutual references through the pointer), then emit the bodies.
+    for (id, _) in checked.structs.iter().enumerate() {
+        let n = struct_type_name(id as u32);
+        out.push_str(&format!("typedef struct {}_s* {};\n", n, n));
+    }
+    for (id, s) in checked.structs.iter().enumerate() {
+        cg.emit_struct_typedef(&mut out, id as u32, s);
+    }
+    if !checked.structs.is_empty() {
+        out.push('\n');
     }
 
     for item in &file.items {
@@ -180,6 +207,7 @@ struct Codegen<'a> {
     sigs: &'a SigTable,
     symbols: &'a HashMap<String, (u32, usize)>,
     enums: &'a [EnumInfo],
+    structs: &'a [StructInfo],
 }
 
 impl<'a> Codegen<'a> {
@@ -191,13 +219,27 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    /// The C type for a Nullang type: a struct name for tagged enums, the
-    /// scalar lowering otherwise (SPEC §7).
+    /// The C type for a Nullang type: a tagged-enum struct, a struct handle, or
+    /// the scalar lowering otherwise (SPEC §7, §11).
     fn c_type_of(&self, ty: Ty) -> String {
+        if let Ty::Struct(id) = ty {
+            return struct_type_name(id);
+        }
         match self.tagged_id(ty) {
             Some(id) => enum_struct_name(id),
             None => ty.c_type().to_string(),
         }
+    }
+
+    /// Emit a struct's C body: `struct nlstruct<id>_s { <fty> nlf_<name>; … };`.
+    /// The handle typedef is forward-declared by `emit`, so field types may be
+    /// other struct handles (pointers), including self-reference.
+    fn emit_struct_typedef(&self, out: &mut String, id: u32, s: &StructInfo) {
+        out.push_str(&format!("struct {}_s {{\n", struct_type_name(id)));
+        for (name, fty) in &s.fields {
+            out.push_str(&format!("  {} {};\n", self.c_type_of(*fty), mangle_field(name)));
+        }
+        out.push_str("};\n");
     }
 
     /// A zero-initialiser for a fresh temporary of this type. Tagged enums
@@ -374,6 +416,14 @@ impl<'a> Codegen<'a> {
                 if !v.is_empty() {
                     out.push_str(&format!("  {} = {};\n", mangle(name), v));
                 }
+            }
+            Stmt::FieldAssign { target, value, .. } => {
+                // `target` is a field chain; lowering it yields the C lvalue
+                // (`(p)->nlf_x`). Reference semantics make the write visible
+                // through every alias of the handle.
+                let lhs = self.lower(target, locals, out, fresh);
+                let v = self.lower(value, locals, out, fresh);
+                out.push_str(&format!("  {} = {};\n", lhs, v));
             }
             Stmt::While { cond, body, .. } => {
                 // `for(;;)` with the condition re-lowered inside the loop: the
@@ -560,7 +610,33 @@ impl<'a> Codegen<'a> {
                 let i = self.lower(index, locals, out, fresh);
                 unbox_slot(&format!("nl_list_get({}, {})", b, i), elem)
             }
+            Expr::StructLit { name, fields, .. } => {
+                // Allocate the handle, then assign each field. Field values are
+                // lowered in declaration order of the literal (effects, if any,
+                // already ran by the time the handle is returned).
+                let id = self.struct_id(name).unwrap_or(0);
+                let tname = struct_type_name(id);
+                let tmp = self.fresh_var(fresh);
+                out.push_str(&format!(
+                    "  {} {} = malloc(sizeof(*{}));\n",
+                    tname, tmp, tmp
+                ));
+                for fi in fields {
+                    let v = self.lower(&fi.value, locals, out, fresh);
+                    out.push_str(&format!("  {}->{} = {};\n", tmp, mangle_field(&fi.name), v));
+                }
+                tmp
+            }
+            Expr::Field { base, field, .. } => {
+                let b = self.lower(base, locals, out, fresh);
+                format!("({})->{}", b, mangle_field(field))
+            }
         }
+    }
+
+    /// The struct table id for a struct name (linear scan; tables are tiny).
+    fn struct_id(&self, name: &str) -> Option<u32> {
+        self.structs.iter().position(|s| s.name == name).map(|i| i as u32)
     }
 
     /// The element type of a list-typed expression (best effort; the checker
@@ -614,6 +690,18 @@ impl<'a> Codegen<'a> {
             },
             Expr::Index { base, .. } => match self.ty_of(base, locals) {
                 Ty::List(elem) => elem.as_ty(),
+                _ => Ty::Int,
+            },
+            Expr::StructLit { name, .. } => {
+                self.struct_id(name).map(Ty::Struct).unwrap_or(Ty::Int)
+            }
+            Expr::Field { base, field, .. } => match self.ty_of(base, locals) {
+                Ty::Struct(id) => self
+                    .structs
+                    .get(id as usize)
+                    .and_then(|s| s.fields.iter().find(|(n, _)| n == field))
+                    .map(|(_, t)| *t)
+                    .unwrap_or(Ty::Int),
                 _ => Ty::Int,
             },
             Expr::If { then_blk, .. } => match &then_blk.tail {

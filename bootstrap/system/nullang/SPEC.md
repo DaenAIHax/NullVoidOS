@@ -126,8 +126,10 @@ String   # UTF-8, owned
 Bytes    # raw byte buffer
 Unit     # the empty result, written ()
 
-# Struct — nominal record:
+# Struct — nominal record (v0.4). Reference semantics; fields are scalar
+# (Int/Bool/String) or another struct (enum/List fields deferred, §11):
 type Point = { x: Int, y: Int };
+type Line  = { from: Point, to: Point, label: String };
 
 # Enum — closed symbol set. A variant may carry a single typed payload
 # (v0.2); payload types are Int/Bool/String (enum/World/Unit deferred, §11):
@@ -147,6 +149,18 @@ type from an annotation (`let mut xs: List<String> = []`). Read an element with
 `xs[i]`; write with `set` (§4.7) — there is no `xs[i] = v` lvalue (one way per
 concept, §10). Indices are total: a read past the end returns the element
 default, a write is a no-op (like `substr`, §4.7).
+
+A **struct** (v0.4) is a nominal record declared at top level with `type Name =
+{ field: Type, ... };`. Like `List`, it has **reference semantics** — a value is
+a heap handle (a pointer), so a struct also fits the uniform list slot, and a
+binding copy aliases the same record. Construct one with **named fields**,
+`Point { x: 1, y: 2 }` (all fields required, each once, order free); read a field
+with `p.x`; write one with the lvalue `p.x = v` (chains too: `p.a.b = v`). A
+field write requires the chain's **root** to be a `let mut` binding (same surface
+discipline as `push`/`set`). v0.4 fields are `Int`/`Bool`/`String` or **another
+struct** (by handle, including self- and mutual reference); enum-typed and
+List-typed fields are deferred (§11). There is no field-update expression and no
+positional construction — one way per concept (§10).
 
 A payload variant is **constructed** with its argument (`.code(42)`,
 `.message("oops")`); a bare variant takes none (`.none`). A mismatch — a
@@ -476,6 +490,12 @@ Each is deferred, not rejected; each ships *only when the OS needs it*:
 - **Generics / parametric types** — still deferred. `List<T>` is a *built-in
   special case* (the compiler knows it), **not** user-defined generics
   (`fn f<T>`); those wait until the stdlib actually demands them.
+- ~~**`struct` / nominal records**~~ — **landed in v0.4** (§4.2): reference
+  semantics (heap handle), named-field construction `Point { x: 1, y: 2 }`,
+  field read `p.x` and lvalue write `p.x = v` (chains too), `let mut` root
+  required to write. Fields are Int/Bool/String or another struct; enum/List
+  fields deferred. With List (v0.3) this is the data-modelling core needed to
+  express the compiler's own tables — the precondition for self-hosting (§12).
 - **Traits / interfaces** — when polymorphism over types is unavoidable.
 - ~~**Enum payloads** (`.some(Int)`)~~ — **landed in v0.2** (§4.2, §4.5): a
   variant carries at most one Int/Bool/String payload; enum/Unit/World

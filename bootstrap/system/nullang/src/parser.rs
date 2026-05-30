@@ -101,11 +101,12 @@ impl<'a> Parser<'a> {
             match self.peek() {
                 TokenKind::Fn => items.push(Item::Func(self.parse_func()?)),
                 TokenKind::Enum => items.push(Item::Enum(self.parse_enum()?)),
+                TokenKind::Type => items.push(Item::Struct(self.parse_struct()?)),
                 other => {
                     return Err(self.err(
                         DiagCode::Par010,
-                        format!("expected `fn` or `enum` at top level, found `{}`", other),
-                        "fn or enum",
+                        format!("expected `fn`, `enum`, or `type` at top level, found `{}`", other),
+                        "fn, enum, or type",
                     ))
                 }
             }
@@ -149,6 +150,33 @@ impl<'a> Parser<'a> {
             variants,
             span,
         })
+    }
+
+    /// `type Name = { field: Type, ... };` — a nominal struct (SPEC §11, v0.4).
+    fn parse_struct(&mut self) -> Result<StructDef, Diag> {
+        let span = self.span_here();
+        self.expect(&TokenKind::Type, "to start a struct declaration")?;
+        let (name, _) = self.expect_ident("for the struct name")?;
+        self.expect(&TokenKind::Eq, "after the struct name")?;
+        self.expect(&TokenKind::LBrace, "to open the field list")?;
+        let mut fields = Vec::new();
+        if *self.peek() != TokenKind::RBrace {
+            loop {
+                let fspan = self.span_here();
+                let (fname, _) = self.expect_ident("for a field name")?;
+                self.expect(&TokenKind::Colon, "after the field name")?;
+                let ty = self.parse_type()?;
+                fields.push(FieldDef { name: fname, ty, span: fspan });
+                if *self.peek() == TokenKind::Comma {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+        self.expect(&TokenKind::RBrace, "to close the field list")?;
+        self.expect(&TokenKind::Semi, "to end the struct declaration")?;
+        Ok(StructDef { name, fields, span })
     }
 
     fn parse_func(&mut self) -> Result<Func, Diag> {
@@ -295,23 +323,34 @@ impl<'a> Parser<'a> {
                 _ => {
                     let expr = self.parse_expr()?;
                     if *self.peek() == TokenKind::Eq {
-                        // Assignment: `<ident> = <value>;`. Only a bare
-                        // variable is assignable (no field/index lvalues yet).
+                        // Assignment. Two lvalue forms: a bare variable
+                        // (`x = v`) and a struct field chain (`p.x = v`,
+                        // `p.a.b = v`, SPEC §11). An index lvalue (`xs[i] = v`)
+                        // is intentionally not a form — list writes go through
+                        // `set` (§10, one way per concept).
                         let span = expr.span();
-                        let name = match expr {
-                            Expr::Ident { name, .. } => name,
-                            _ => {
-                                return Err(self.err(
-                                    DiagCode::Par010,
-                                    "only a variable can be assigned (left of `=`)",
-                                    "an identifier",
-                                ))
-                            }
-                        };
                         self.advance(); // `=`
                         let value = self.parse_expr()?;
                         self.expect(&TokenKind::Semi, "to end the assignment")?;
-                        stmts.push(Stmt::Assign { name, value, span });
+                        match expr {
+                            Expr::Ident { name, .. } => {
+                                stmts.push(Stmt::Assign { name, value, span });
+                            }
+                            field @ Expr::Field { .. } => {
+                                stmts.push(Stmt::FieldAssign {
+                                    target: Box::new(field),
+                                    value,
+                                    span,
+                                });
+                            }
+                            _ => {
+                                return Err(self.err(
+                                    DiagCode::Par010,
+                                    "only a variable or a struct field can be assigned (left of `=`)",
+                                    "an identifier or a field access",
+                                ))
+                            }
+                        }
                     } else if *self.peek() == TokenKind::Semi {
                         self.advance();
                         stmts.push(Stmt::Expr(expr));
@@ -480,20 +519,38 @@ impl<'a> Parser<'a> {
         self.parse_postfix()
     }
 
-    /// A primary followed by zero or more `[index]` reads (SPEC §11 lists):
-    /// `xs[0]`, `grid[i][j]` once nesting lands. Tighter than unary `-`.
+    /// A primary followed by zero or more postfix operators (SPEC §11):
+    /// `[index]` reads on a list and `.field` reads on a struct, chained
+    /// freely (`p.next.value`, `xs[i]`). Tighter than unary `-`. A `.field`
+    /// here is unambiguous against an enum symbol `.red`: the latter only
+    /// appears at the *start* of a primary, never after a value expression.
     fn parse_postfix(&mut self) -> Result<Expr, Diag> {
         let mut expr = self.parse_primary()?;
-        while *self.peek() == TokenKind::LBracket {
-            let span = expr.span();
-            self.advance(); // `[`
-            let index = self.parse_expr()?;
-            self.expect(&TokenKind::RBracket, "to close an index `[...]`")?;
-            expr = Expr::Index {
-                base: Box::new(expr),
-                index: Box::new(index),
-                span,
-            };
+        loop {
+            match self.peek() {
+                TokenKind::LBracket => {
+                    let span = expr.span();
+                    self.advance(); // `[`
+                    let index = self.parse_expr()?;
+                    self.expect(&TokenKind::RBracket, "to close an index `[...]`")?;
+                    expr = Expr::Index {
+                        base: Box::new(expr),
+                        index: Box::new(index),
+                        span,
+                    };
+                }
+                TokenKind::Dot => {
+                    let span = expr.span();
+                    self.advance(); // `.`
+                    let (field, _) = self.expect_ident("for a struct field name")?;
+                    expr = Expr::Field {
+                        base: Box::new(expr),
+                        field,
+                        span,
+                    };
+                }
+                _ => break,
+            }
         }
         Ok(expr)
     }
@@ -556,6 +613,16 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Ident(name) => {
                 self.advance();
+                // A PascalCase name immediately followed by `{` is a struct
+                // literal `Point { x: 1, y: 2 }` (SPEC §11, v0.4). The case
+                // convention (§4.1: typenames are PascalCase, values snake_case)
+                // disambiguates it from `if cond { ... }` / `while cond { ... }`,
+                // whose conditions are lowercase value identifiers.
+                if *self.peek() == TokenKind::LBrace
+                    && name.chars().next().map_or(false, |c| c.is_ascii_uppercase())
+                {
+                    return self.parse_struct_lit(name, span);
+                }
                 if *self.peek() == TokenKind::LParen {
                     self.advance();
                     let mut args = Vec::new();
@@ -585,6 +652,29 @@ impl<'a> Parser<'a> {
                 "expression",
             )),
         }
+    }
+
+    /// `Name { field: expr, ... }` — a struct literal (SPEC §11, v0.4). The
+    /// name and opening `{` are already consumed-by-lookahead at the call site.
+    fn parse_struct_lit(&mut self, name: String, span: Span) -> Result<Expr, Diag> {
+        self.expect(&TokenKind::LBrace, "to open a struct literal")?;
+        let mut fields = Vec::new();
+        if *self.peek() != TokenKind::RBrace {
+            loop {
+                let fspan = self.span_here();
+                let (fname, _) = self.expect_ident("for a struct field name")?;
+                self.expect(&TokenKind::Colon, "after the field name")?;
+                let value = self.parse_expr()?;
+                fields.push(FieldInit { name: fname, value, span: fspan });
+                if *self.peek() == TokenKind::Comma {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+        self.expect(&TokenKind::RBrace, "to close a struct literal")?;
+        Ok(Expr::StructLit { name, fields, span })
     }
 
     fn parse_if(&mut self) -> Result<Expr, Diag> {

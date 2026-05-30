@@ -21,6 +21,7 @@ pub enum TokenKind {
     Match,
     Mut,
     While,
+    Type,
 
     // Identifiers (values and type names; the parser disambiguates by position)
     Ident(String),
@@ -77,6 +78,7 @@ impl fmt::Display for TokenKind {
             Match => write!(f, "match"),
             Mut => write!(f, "mut"),
             While => write!(f, "while"),
+            Type => write!(f, "type"),
             Ident(s) => write!(f, "{}", s),
             LParen => write!(f, "("),
             RParen => write!(f, ")"),
@@ -243,6 +245,7 @@ impl<'a> Lexer<'a> {
             "match" => TokenKind::Match,
             "mut" => TokenKind::Mut,
             "while" => TokenKind::While,
+            "type" => TokenKind::Type,
             "true" => TokenKind::Bool(true),
             "false" => TokenKind::Bool(false),
             _ => TokenKind::Ident(s),

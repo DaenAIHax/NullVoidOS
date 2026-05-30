@@ -566,6 +566,110 @@ fn main(world: World) -> Int uses !tty {
     assert!(!c.contains("nlu_main"));
 }
 
+// ---- struct (SPEC §11, v0.4) ---------------------------------------------
+
+const POINT: &str = "type Point = { x: Int, y: Int };\n";
+
+#[test]
+fn struct_construct_and_read_compile() {
+    let src = format!(
+        "{POINT}fn main(world: World) -> Int uses !tty {{\n  let p = Point {{ x: 1, y: 2 }};\n  print(world, str_of_int(p.x));\n  0\n}}\n"
+    );
+    let c = compile_to_c(&src, "s.null").expect("struct construct + read compiles");
+    // Reference semantics: the value is a heap handle, built with malloc.
+    assert!(c.contains("typedef struct nlstruct0_s* nlstruct0;"));
+    assert!(c.contains("malloc(sizeof("));
+    // Fields are mangled (`nlf_`) to dodge C keywords; read is `->`.
+    assert!(c.contains("->nlf_x"));
+}
+
+#[test]
+fn struct_field_write_requires_mut() {
+    // p.x = v mutates through the handle; the root binding must be `let mut`.
+    let src = format!(
+        "{POINT}fn main(world: World) -> Int uses !tty {{\n  let p = Point {{ x: 1, y: 2 }};\n  p.x = 9;\n  0\n}}\n"
+    );
+    let err = compile_to_c(&src, "s.null").expect_err("field write needs let mut");
+    assert_eq!(format!("{:?}", err.code), "Typ001");
+}
+
+#[test]
+fn struct_field_write_compiles_with_mut() {
+    let src = format!(
+        "{POINT}fn main(world: World) -> Int uses !tty {{\n  let mut p = Point {{ x: 1, y: 2 }};\n  p.x = 9;\n  0\n}}\n"
+    );
+    let c = compile_to_c(&src, "s.null").expect("mut field write compiles");
+    assert!(c.contains("->nlf_x = 9"));
+}
+
+#[test]
+fn struct_missing_field_is_rejected() {
+    let src = format!(
+        "{POINT}fn main(world: World) -> Int uses !tty {{\n  let p = Point {{ x: 1 }};\n  0\n}}\n"
+    );
+    let err = compile_to_c(&src, "s.null").expect_err("missing field");
+    assert_eq!(format!("{:?}", err.code), "Typ001");
+}
+
+#[test]
+fn struct_unknown_field_is_ref_error() {
+    let src = format!(
+        "{POINT}fn main(world: World) -> Int uses !tty {{\n  let p = Point {{ x: 1, y: 2, z: 3 }};\n  0\n}}\n"
+    );
+    let err = compile_to_c(&src, "s.null").expect_err("unknown field");
+    assert_eq!(format!("{:?}", err.code), "Ref001");
+}
+
+#[test]
+fn struct_field_type_mismatch_is_typ001() {
+    let src = format!(
+        "{POINT}fn main(world: World) -> Int uses !tty {{\n  let p = Point {{ x: 1, y: \"two\" }};\n  0\n}}\n"
+    );
+    let err = compile_to_c(&src, "s.null").expect_err("field type mismatch");
+    assert_eq!(format!("{:?}", err.code), "Typ001");
+}
+
+#[test]
+fn reading_field_of_non_struct_is_rejected() {
+    let src = "fn main(world: World) -> Int uses !tty {\n  let n = 5;\n  let bad = n.x;\n  0\n}\n";
+    let err = compile_to_c(src, "s.null").expect_err("only structs have fields");
+    assert_eq!(format!("{:?}", err.code), "Typ001");
+}
+
+#[test]
+fn struct_field_can_hold_another_struct() {
+    // A field of struct type lowers to a nested handle; chained read `p.a.b`
+    // and write `p.a.b = v` go through the pointers.
+    let src = "type Inner = { v: Int };\ntype Outer = { inner: Inner };\nfn main(world: World) -> Int uses !tty {\n  let mut o = Outer { inner: Inner { v: 1 } };\n  o.inner.v = 42;\n  print(world, str_of_int(o.inner.v));\n  0\n}\n";
+    let c = compile_to_c(src, "s.null").expect("nested struct compiles");
+    assert!(c.contains("nlstruct0")); // Inner
+    assert!(c.contains("nlstruct1")); // Outer
+    assert!(c.contains("->nlf_inner")); // chain hop
+}
+
+#[test]
+fn struct_field_cannot_be_list_yet() {
+    // List-typed fields are deferred in v0.4 (resolve_field_ty rejects them).
+    let src = "type Bad = { items: List<Int> };\nfn main(world: World) -> Int uses !tty {\n  print(world, \"x\");\n  0\n}\n";
+    let err = compile_to_c(src, "s.null").expect_err("list field deferred");
+    assert_eq!(format!("{:?}", err.code), "Sch010");
+}
+
+#[test]
+fn duplicate_type_name_is_sch010() {
+    let src = "type Point = { x: Int };\ntype Point = { y: Int };\nfn main(world: World) -> Int uses !tty {\n  print(world, \"x\");\n  0\n}\n";
+    let err = compile_to_c(src, "s.null").expect_err("duplicate type name");
+    assert_eq!(format!("{:?}", err.code), "Sch010");
+}
+
+#[test]
+fn struct_value_returns_from_function_by_handle() {
+    // A struct returned from a fn is the same handle the callee built.
+    let src = "type Box = { v: Int };\nfn make(n: Int) -> Box { Box { v: n } }\nfn main(world: World) -> Int uses !tty {\n  let b = make(5);\n  print(world, str_of_int(b.v));\n  0\n}\n";
+    let c = compile_to_c(src, "s.null").expect("struct return compiles");
+    assert!(c.contains("nlstruct0 nlu_make("));
+}
+
 // ---- List<T> (SPEC §11, v0.3) --------------------------------------------
 
 #[test]
