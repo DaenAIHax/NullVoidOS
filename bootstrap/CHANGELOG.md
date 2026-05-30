@@ -8,6 +8,69 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang self-host: il codegen — Wave 1, AST→C→ELF da Nullang (2026-05-30)
+
+Il terzo e ultimo stadio del compilatore comincia a esistere in Nullang.
+`selfhost-parser.null` (ormai il compilatore-in-Nullang: lexer+parser+codegen)
+cammina l'arena del parser ed emette C. **Wave 1 = sottoinsieme Int-only**:
+aritmetica, `let`/`while`/`assign`, chiamate utente, `main` con `World`
+cancellato. Mangling come il codegen Rust (`nlu_` su fn/parametri/locali,
+`main` resta `main`), forward-declaration prima dei corpi, ogni binop parato
+da parentesi (le precedenze sono già nell'albero), l'espressione di coda di un
+corpo-blocco diventa `return`.
+
+Prerequisito caduto: **il parser non scarta più i tipi**. `parse_param` ora
+classifica l'annotazione (`type_code_after_colon`) in un codice — Int/Bool/
+String/World/List/altro — abbastanza perché il codegen mappi su C e cancelli
+`World`. (AST di tipi completo ancora differito.)
+
+Prova end-to-end: dato `fn fact(n) { …while… } fn main { fact(5) }`, il
+codegen-Nullang emette C valido, `write_file` lo scrive, **gcc lo compila e
+l'ELF esce con codice 120 = fact(5)**. Il giro AST→C→ELF è chiuso e ogni
+stadio sopra gcc è autorato in Nullang. Self-ingest invariato (110/110 item,
+zero spuri), effect-check pulito.
+
+Restano le onde: String+builtin (`print`/`concat`/`str_*`), List+struct
+(box/unbox, `nlf_` field mangling, typedef), if-come-espressione (lowering a
+temp+if-statement), preludio completo — fino a quando il codegen compila il
+compilatore stesso (fixpoint stage0→stage2, allora Rust è togliibile).
+
+### Nullang self-host: il parser mangia la propria coda (2026-05-30)
+
+`selfhost-parser.null` ora parsa l'INTERO proprio sorgente. Prima gestiva
+solo espressioni e statement; mancava la grammatica di cui è fatto il file
+stesso. Aggiunto:
+
+- **Dichiarazioni top-level.** `parse_fn` (`fn nome(params) -> T uses !cap
+  { corpo }`), `parse_type_decl` (`type Nome = { campi };`), con
+  `parse_params`/`parse_param` e `parse_type_fields`/`parse_type_field`.
+  Le annotazioni di tipo (`: T`, `-> T`, anche generiche `List<Token>`) e
+  le clausole d'effetto `uses` si saltano in modo robusto (`skip_type` con
+  profondità `<...>`, `skip_anno`, `skip_return_type`, `skip_uses`): sono
+  affare di un'altra fase, il nome e la forma restano. `parse_program` ora
+  dispatcha su `parse_item` (fn / type / statement).
+- **`if` come espressione.** Il muro che bloccava il self-ingest: in Nullang
+  `let x = if c { a } else { b }` è legale, ma `parse_primary` trattava `if`
+  come un identificatore → desync. Estratto `parse_if`, condiviso fra
+  statement-context e primary-expression context. (Trovato bisezionando il
+  desync su `scan_string`, isolato a `let endpos = if i < n {…} else {…}`.)
+- **Driver `ingest`.** Legge il proprio file via `read_file` (`uses
+  !fs.read`), lo parsa, stampa l'indice degli item recuperati.
+
+Prova: sul proprio sorgente (34709 byte, 8001 token) costruisce 4462 nodi
+AST e recupera **91 item top-level = 91 dichiarazioni reali, zero spuri,
+zero nodi `?`**. Effect-check pulito. Stesso passo del lexer, un livello
+più su: il cuore ricorsivo del compilatore ora si dà una forma ad albero
+da solo. Resta il codegen (Wave self-host successiva).
+
+### `bootstrap/LANDSCAPE.md` — analisi del paesaggio competitivo (2026-05-30)
+
+Materiale per blog/paper. Smonta NullVoidOS in 4 layer e per ognuno mappa
+chi lo persegue (Zero/Vercel, Pel, SICA, Darwin Gödel Machine, Voyager,
+Sandlock, AIOS), con fonti citate. Verdetto: ogni mattone esiste già; il
+contributo proprio è l'integrazione verticale dei 4 layer come una cosa
+sola, non l'invenzione dei singoli pezzi.
+
 ### DESIGN: interfaccia agentica a voce (fast/slow) — visione, non task corrente (2026-05-30)
 
 Nuova sezione `DESIGN.md` "Layer 4 vision — voice-orchestrated agentic

@@ -157,6 +157,10 @@ fn nd_while()  -> Int { 14 }
 fn nd_return() -> Int { 15 }
 fn nd_block()  -> Int { 16 }
 fn nd_expr()   -> Int { 17 }
+fn nd_fn()     -> Int { 18 }
+fn nd_type()   -> Int { 19 }
+fn nd_param()  -> Int { 20 }
+fn nd_tfield() -> Int { 21 }
 
 # Sentinella "nessun figlio" — niente handle null, quindi un indice impossibile.
 fn none() -> Int { 0 - 1 }
@@ -292,9 +296,13 @@ fn parse_primary(toks: List<Token>, src: String, nodes: List<Node>, c: Cur, nost
       let lx = cur_lex(toks, src, c);
       if lx == "true" || lx == "false" {
         adv(c); mk(ns, nd_bool(), none(), none(), none(), tk)
+      } else { if lx == "if" {
+        # `if` È un'espressione in Nullang (`let x = if c {a} else {b}`): qui sta
+        # come primary, non solo come statement. Stessa forma, stesso nodo nd_if.
+        parse_if(toks, src, ns, c)
       } else {
         adv(c); mk(ns, nd_id(), none(), none(), none(), tk)
-      }
+      } }
     }
     else { if k == 1 {
       adv(c);
@@ -434,6 +442,24 @@ fn parse_expr(toks: List<Token>, src: String, nodes: List<Node>, c: Cur, minprec
   left
 }
 
+# `if COND { then } else { else }`. In Nullang l'if è un'espressione (ha un
+# valore, pretende l'else) E può stare come statement: un solo parser per
+# entrambi. cond con nostruct=true (la `Ident {` dopo la condizione è il blocco,
+# non un letterale-struct). `else if` ricorre su sé stesso. tok = -1, a=cond,
+# b=then-block, c=else (block, altro nd_if, o none() se l'else è omesso).
+fn parse_if(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  adv(c);
+  let cond = parse_expr(toks, src, ns, c, 0, true);
+  let thenb = parse_block(toks, src, ns, c);
+  let elseb = if word_is(toks, src, c, "else") {
+    adv(c);
+    if word_is(toks, src, c, "if") { parse_if(toks, src, ns, c) }
+    else { parse_block(toks, src, ns, c) }
+  } else { none() };
+  mk(ns, nd_if(), cond, thenb, elseb, 0 - 1)
+}
+
 # Il `{` corrente apre un blocco; ne raccoglie gli statement in una catena.
 fn parse_block(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
   let mut ns = nodes;
@@ -467,15 +493,7 @@ fn parse_stmt(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int 
     mk(ns, nd_let(), val, none(), ismut, nametk)
   }
   else { if word_is(toks, src, c, "if") {
-    adv(c);
-    let cond = parse_expr(toks, src, ns, c, 0, true);
-    let thenb = parse_block(toks, src, ns, c);
-    let elseb = if word_is(toks, src, c, "else") {
-      adv(c);
-      if word_is(toks, src, c, "if") { parse_stmt(toks, src, ns, c) }
-      else { parse_block(toks, src, ns, c) }
-    } else { none() };
-    mk(ns, nd_if(), cond, thenb, elseb, 0 - 1)
+    parse_if(toks, src, ns, c)
   }
   else { if word_is(toks, src, c, "while") {
     adv(c);
@@ -506,7 +524,196 @@ fn parse_stmt(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int 
   } } } } }
 }
 
-# Un programma = sequenza di statement top-level, raccolti come un blocco.
+# ============================================================================
+# Dichiarazioni top-level — `fn` e `type`. È la grammatica di cui è fatto QUESTO
+# file: per mangiare la propria coda il parser deve leggerle. Le annotazioni di
+# tipo (`: T`, `-> T`) e le clausole d'effetto (`uses !cap`) non hanno ancora un
+# AST proprio — il check semantico è di un'altra fase — quindi qui si SALTANO
+# in modo robusto, fermandosi al confine giusto. Il nome resta, la forma resta.
+# ============================================================================
+
+# Salta un'espressione di tipo (anche generica `List<Token>`, `Map<K, V>`)
+# fino al terminatore `endp` o a una virgola, a profondità di `<...>` zero.
+# Limite noto: `>>` di un generico annidato lessa come un solo operatore e qui
+# non chiuderebbe due livelli — non capita in questo file (nessun annidamento).
+fn skip_type(toks: List<Token>, src: String, c: Cur, endp: String) -> Int {
+  let mut depth = 0;
+  let mut going = true;
+  while going {
+    if eof(toks, c) { going = false; }
+    else { if depth == 0 && at_punct(toks, src, c, ",") { going = false; }
+    else { if depth == 0 && at_punct(toks, src, c, endp) { going = false; }
+    else {
+      let o = cur_op(toks, src, c);
+      let d = if o == "<" { 1 } else { if o == ">" { 0 - 1 } else { 0 } };
+      let nd2 = depth + d;
+      depth = if nd2 < 0 { 0 } else { nd2 };
+      adv(c);
+    } } }
+  }
+  0
+}
+
+# `: T` opzionale che precede `endp` (`)` per i parametri, `}` per i campi-tipo).
+fn skip_anno(toks: List<Token>, src: String, c: Cur, endp: String) -> Int {
+  if at_op(toks, src, c, ":") { adv(c); skip_type(toks, src, c, endp) } else { 0 }
+}
+
+# `-> T` opzionale: il tipo di ritorno corre fino al `{` del corpo o a `uses`.
+fn skip_return_type(toks: List<Token>, src: String, c: Cur) -> Int {
+  if at_op(toks, src, c, "->") {
+    adv(c);
+    let mut going = true;
+    while going {
+      if eof(toks, c) { going = false; }
+      else { if at_punct(toks, src, c, "{") { going = false; }
+      else { if word_is(toks, src, c, "uses") { going = false; }
+      else { adv(c); } } }
+    }
+    1
+  } else { 0 }
+}
+
+# `uses !cap, !cap2` opzionale: la clausola d'effetto corre fino al `{` del corpo.
+fn skip_uses(toks: List<Token>, src: String, c: Cur) -> Int {
+  if word_is(toks, src, c, "uses") {
+    adv(c);
+    let mut going = true;
+    while going {
+      if eof(toks, c) { going = false; }
+      else { if at_punct(toks, src, c, "{") { going = false; } else { adv(c); } }
+    }
+    1
+  } else { 0 }
+}
+
+# Codici di tipo: il codegen ha bisogno del tipo che il parser altrimenti
+# scarterebbe. Non un AST di tipi completo (differito) — solo quel tanto che
+# serve a mappare su C: 0=Int 1=Bool 2=String 3=World 4=List 5=altro(struct).
+fn tc_int()   -> Int { 0 }
+fn tc_bool()  -> Int { 1 }
+fn tc_str()   -> Int { 2 }
+fn tc_world() -> Int { 3 }
+fn tc_list()  -> Int { 4 }
+fn tc_other() -> Int { 5 }
+
+# Classifica il tipo che segue un `:` guardando il suo primo token (senza
+# consumarlo: skip_anno consuma poi tutto). `List<T>` → tc_list, il nome di
+# uno struct → tc_other, i primitivi sul loro codice.
+fn type_code_after_colon(toks: List<Token>, src: String, c: Cur) -> Int {
+  if at_op(toks, src, c, ":") {
+    let lx = tok_lex(toks, src, c.pos + 1);
+    if lx == "World" { tc_world() }
+    else { if lx == "Int" { tc_int() }
+    else { if lx == "Bool" { tc_bool() }
+    else { if lx == "String" { tc_str() }
+    else { if lx == "List" { tc_list() }
+    else { tc_other() } } } } }
+  } else { tc_int() }
+}
+
+# Un parametro `name: T`. Il nome è il nodo; il codice di tipo va in `a` (per il
+# codegen), il resto dell'annotazione si salta.
+fn parse_param(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  let nametk = c.pos;
+  eat_ident(toks, c);
+  let tc = type_code_after_colon(toks, src, c);
+  skip_anno(toks, src, c, ")");
+  mk(ns, nd_param(), tc, none(), none(), nametk)
+}
+
+# La lista parametri dopo `fn name`: il `(...)` con parametri incatenati via next.
+fn parse_params(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  eat_punct(toks, src, c, "(");
+  if at_punct(toks, src, c, ")") { adv(c); none() }
+  else {
+    let head = parse_param(toks, src, ns, c);
+    let mut tail = head;
+    let mut going = true;
+    while going {
+      if at_punct(toks, src, c, ",") {
+        adv(c);
+        let nx = parse_param(toks, src, ns, c);
+        set_next(ns, tail, nx);
+        tail = nx;
+      } else { going = false; }
+    }
+    eat_punct(toks, src, c, ")");
+    head
+  }
+}
+
+# `fn name(params) -> T uses !cap { body }`. tok=nome, a=catena parametri,
+# b=blocco corpo. Il tipo di ritorno e `uses` si saltano (altra fase).
+fn parse_fn(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  adv(c);
+  let nametk = c.pos;
+  eat_ident(toks, c);
+  let params = parse_params(toks, src, ns, c);
+  skip_return_type(toks, src, c);
+  skip_uses(toks, src, c);
+  let body = parse_block(toks, src, ns, c);
+  mk(ns, nd_fn(), params, body, none(), nametk)
+}
+
+# Un campo-tipo `name: T` — gemello di parse_param ma terminato da `}`.
+fn parse_type_field(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  let nametk = c.pos;
+  eat_ident(toks, c);
+  skip_anno(toks, src, c, "}");
+  mk(ns, nd_tfield(), none(), none(), none(), nametk)
+}
+
+# Il `{ ... }` di una `type`: campi `name: T` separati da virgola, incatenati.
+fn parse_type_fields(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  eat_punct(toks, src, c, "{");
+  if at_punct(toks, src, c, "}") { adv(c); none() }
+  else {
+    let head = parse_type_field(toks, src, ns, c);
+    let mut tail = head;
+    let mut going = true;
+    while going {
+      if at_punct(toks, src, c, ",") {
+        adv(c);
+        if at_punct(toks, src, c, "}") { going = false; }
+        else {
+          let nx = parse_type_field(toks, src, ns, c);
+          set_next(ns, tail, nx);
+          tail = nx;
+        }
+      } else { going = false; }
+    }
+    eat_punct(toks, src, c, "}");
+    head
+  }
+}
+
+# `type Name = { fields };`. tok=nome, a=catena campi.
+fn parse_type_decl(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  adv(c);
+  let nametk = c.pos;
+  eat_ident(toks, c);
+  eat_op(toks, src, c, "=");
+  let head = parse_type_fields(toks, src, ns, c);
+  eat_punct(toks, src, c, ";");
+  mk(ns, nd_type(), head, none(), none(), nametk)
+}
+
+# Un item top-level: `fn`, `type`, o (per i frammenti di prova) uno statement.
+fn parse_item(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  if word_is(toks, src, c, "fn") { parse_fn(toks, src, ns, c) }
+  else { if word_is(toks, src, c, "type") { parse_type_decl(toks, src, ns, c) }
+  else { parse_stmt(toks, src, ns, c) } }
+}
+
+# Un programma = sequenza di item top-level, raccolti come un blocco.
 fn parse_program(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
   let mut ns = nodes;
   let mut head = none();
@@ -515,7 +722,7 @@ fn parse_program(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> I
   while going {
     if eof(toks, c) { going = false; }
     else {
-      let s = parse_stmt(toks, src, ns, c);
+      let s = parse_item(toks, src, ns, c);
       if head == none() { head = s; tail = s; }
       else { set_next(ns, tail, s); tail = s; }
     }
@@ -630,11 +837,236 @@ fn print_node(world: World, toks: List<Token>, src: String, ns: List<Node>, idx:
       print(world, concat(pad, "block"));
       print_chain(world, toks, src, ns, nd.a, depth + 1); 0
     }
-    else {
+    else { if nd.kind == nd_expr() {
       print(world, concat(pad, "expr"));
       print_node(world, toks, src, ns, nd.a, depth + 1); 0
-    } } } } } } } } } } } } } } } } }
+    }
+    else { if nd.kind == nd_fn() {
+      print(world, concat(pad, concat("fn ", tok_lex(toks, src, nd.tok))));
+      print_chain(world, toks, src, ns, nd.a, depth + 1);
+      print_node(world, toks, src, ns, nd.b, depth + 1); 0
+    }
+    else { if nd.kind == nd_type() {
+      print(world, concat(pad, concat("type ", tok_lex(toks, src, nd.tok))));
+      print_chain(world, toks, src, ns, nd.a, depth + 1); 0
+    }
+    else { if nd.kind == nd_param() {
+      print(world, concat(pad, concat("param ", tok_lex(toks, src, nd.tok)))); 0
+    }
+    else { if nd.kind == nd_tfield() {
+      print(world, concat(pad, concat("tfield ", tok_lex(toks, src, nd.tok)))); 0
+    }
+    else {
+      print(world, concat(pad, "?")); 0
+    } } } } } } } } } } } } } } } } } } } } } }
   }
+}
+
+# ============================================================================
+# CODEGEN — AST → C (Wave 1). Il terzo stadio: cammina l'arena del parser e
+# emette C. Wave 1 è un SOTTOINSIEME Int-only (aritmetica, let/while/assign,
+# chiamate, `main` con `World` cancellato) — abbastanza da chiudere il giro
+# AST→C→ELF tutto guidato da Nullang. String/List/struct/if-espressione sono le
+# onde successive. Mangling come il codegen Rust: fn/parametri/locali con
+# prefisso `nlu_`, `main` resta `main`, builtin sarebbero `nullang_*`.
+# ============================================================================
+
+# Wave 1: nessun builtin né List usati → preludio minimo. Le onde dopo lo
+# faranno crescere (o leggeranno un template via read_file).
+fn c_prelude() -> String {
+  concat("/* generato da selfhost-codegen (Nullang) */\n",
+  concat("#include <stdio.h>\n", "#include <stdlib.h>\n\n"))
+}
+
+# Il tipo C di un codice-tipo. World non compare mai come parametro C (cancellato
+# a monte da emit_params), qui resta solo per totalità.
+fn c_type(tc: Int) -> String {
+  if tc == tc_str() { "const char*" }
+  else { if tc == tc_list() { "nl_list" }
+  else { "long" } }
+}
+
+# `nlu_` + lessema: il nome C di una fn/locale/parametro utente.
+fn mangle(toks: List<Token>, src: String, tok: Int) -> String {
+  concat("nlu_", tok_lex(toks, src, tok))
+}
+
+# Espressione → C, ricorsiva. Le precedenze sono già nell'albero: ogni binop si
+# para con le parentesi, così non serve ri-ragionare sulla priorità in C.
+fn emit_expr(toks: List<Token>, src: String, ns: List<Node>, idx: Int) -> String {
+  if idx < 0 { "0" }
+  else {
+    let nd = ns[idx];
+    if nd.kind == nd_num() { tok_lex(toks, src, nd.tok) }
+    else { if nd.kind == nd_id() { mangle(toks, src, nd.tok) }
+    else { if nd.kind == nd_bool() {
+      if tok_lex(toks, src, nd.tok) == "true" { "1" } else { "0" }
+    }
+    else { if nd.kind == nd_str() { tok_lex(toks, src, nd.tok) }
+    else { if nd.kind == nd_unary() {
+      concat("(-", concat(emit_expr(toks, src, ns, nd.a), ")"))
+    }
+    else { if nd.kind == nd_bin() {
+      concat("(", concat(emit_expr(toks, src, ns, nd.a),
+        concat(" ", concat(tok_lex(toks, src, nd.tok),
+        concat(" ", concat(emit_expr(toks, src, ns, nd.b), ")"))))))
+    }
+    else { if nd.kind == nd_call() {
+      concat(emit_expr(toks, src, ns, nd.a),
+        concat("(", concat(emit_args(toks, src, ns, nd.b), ")")))
+    }
+    else { concat("/*?*/0", "") } } } } } } }
+  }
+}
+
+# Catena di argomenti (via `next`) → "a, b, c".
+fn emit_args(toks: List<Token>, src: String, ns: List<Node>, head: Int) -> String {
+  let mut cur = head;
+  let mut out = "";
+  let mut first = true;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      let piece = emit_expr(toks, src, ns, cur);
+      out = if first { piece } else { concat(out, concat(", ", piece)) };
+      first = false;
+      cur = e.next;
+    }
+  }
+  out
+}
+
+# Statement → C. `tail` = questo è l'ultimo statement di un corpo che produce un
+# valore: l'espressione finale diventa `return`, come nelle fn a corpo-blocco.
+fn emit_stmt(toks: List<Token>, src: String, ns: List<Node>, idx: Int, tail: Bool) -> String {
+  let nd = ns[idx];
+  if nd.kind == nd_let() {
+    concat("  long ", concat(mangle(toks, src, nd.tok),
+      concat(" = ", concat(emit_expr(toks, src, ns, nd.a), ";"))))
+  }
+  else { if nd.kind == nd_assign() {
+    concat("  ", concat(emit_expr(toks, src, ns, nd.a),
+      concat(" = ", concat(emit_expr(toks, src, ns, nd.b), ";"))))
+  }
+  else { if nd.kind == nd_return() {
+    concat("  return ", concat(emit_expr(toks, src, ns, nd.a), ";"))
+  }
+  else { if nd.kind == nd_while() {
+    concat("  while (", concat(emit_expr(toks, src, ns, nd.a),
+      concat(") {\n", concat(emit_block(toks, src, ns, nd.b, false), "  }"))))
+  }
+  else { if nd.kind == nd_if() {
+    let elsepart = if nd.c < 0 { "" }
+      else { concat(" else {\n", concat(emit_block(toks, src, ns, nd.c, false), "  }")) };
+    concat("  if (", concat(emit_expr(toks, src, ns, nd.a),
+      concat(") {\n", concat(emit_block(toks, src, ns, nd.b, false),
+      concat("  }", elsepart)))))
+  }
+  else { if nd.kind == nd_expr() {
+    if tail {
+      concat("  return ", concat(emit_expr(toks, src, ns, nd.a), ";"))
+    } else {
+      concat("  ", concat(emit_expr(toks, src, ns, nd.a), ";"))
+    }
+  }
+  else { concat("  /*?stmt*/;", "") } } } } } }
+}
+
+# Il corpo di un blocco (nd_block): la sua catena di statement → C. `tail_ret`
+# si propaga solo all'ULTIMO statement (quello che porta il valore della fn).
+fn emit_block(toks: List<Token>, src: String, ns: List<Node>, blk: Int, tail_ret: Bool) -> String {
+  let b = ns[blk];
+  let mut cur = b.a;
+  let mut out = "";
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      let is_tail = e.next < 0 && tail_ret;
+      out = concat(out, concat(emit_stmt(toks, src, ns, cur, is_tail), "\n"));
+      cur = e.next;
+    }
+  }
+  out
+}
+
+# I parametri C di una fn: salta World (cancellato), mangla gli altri. "void"
+# se non resta nessun parametro.
+fn emit_params(toks: List<Token>, src: String, ns: List<Node>, head: Int) -> String {
+  let mut cur = head;
+  let mut out = "";
+  let mut any = false;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      if e.a == tc_world() { out = out; }
+      else {
+        let piece = concat(c_type(e.a), concat(" ", mangle(toks, src, e.tok)));
+        out = if any { concat(out, concat(", ", piece)) } else { piece };
+        any = true;
+      }
+      cur = e.next;
+    }
+  }
+  if any { out } else { "void" }
+}
+
+# La firma C di una fn (senza `;` né `{`). `main` è speciale: resta `main`, tipo
+# `int`, e Wave 1 ne ignora i parametri (niente ancora argc/argv).
+fn c_sig(toks: List<Token>, src: String, ns: List<Node>, fnidx: Int) -> String {
+  let nd = ns[fnidx];
+  let nm = tok_lex(toks, src, nd.tok);
+  if nm == "main" { "int main(void)" }
+  else {
+    concat("long ", concat("nlu_", concat(nm,
+      concat("(", concat(emit_params(toks, src, ns, nd.a), ")")))))
+  }
+}
+
+# Definizione completa di una fn: firma + corpo. Il corpo è un nd_block; il suo
+# valore finale diventa il `return` (tail_ret = true).
+fn emit_fn(toks: List<Token>, src: String, ns: List<Node>, fnidx: Int) -> String {
+  let nd = ns[fnidx];
+  concat(c_sig(toks, src, ns, fnidx),
+    concat(" {\n", concat(emit_block(toks, src, ns, nd.b, true), "}\n")))
+}
+
+# Programma → C: preludio, poi le forward-declaration di ogni fn (tranne main),
+# poi i corpi. Due passate sulla catena di item top-level del blocco-programma.
+fn gen(toks: List<Token>, src: String, ns: List<Node>, root: Int) -> String {
+  let r = ns[root];
+  let mut out = c_prelude();
+  let mut cur = r.a;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      out = if e.kind == nd_fn() && tok_lex(toks, src, e.tok) != "main" {
+        concat(out, concat(c_sig(toks, src, ns, cur), ";\n"))
+      } else { out };
+      cur = e.next;
+    }
+  }
+  out = concat(out, "\n");
+  let mut cur2 = r.a;
+  let mut g2 = true;
+  while g2 {
+    if cur2 < 0 { g2 = false; }
+    else {
+      let e = ns[cur2];
+      out = if e.kind == nd_fn() {
+        concat(out, concat(emit_fn(toks, src, ns, cur2), "\n"))
+      } else { out };
+      cur2 = e.next;
+    }
+  }
+  out
 }
 
 # ============================================================================
@@ -654,7 +1086,80 @@ fn show(world: World, snippet: String) -> Int uses !tty {
   0
 }
 
-fn main(world: World) -> Int uses !tty {
+# Lunghezza di una catena di fratelli (per contare gli item top-level).
+fn count_chain(ns: List<Node>, head: Int) -> Int {
+  let mut cur = head;
+  let mut n = 0;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else { n = n + 1; let e = ns[cur]; cur = e.next; }
+  }
+  n
+}
+
+# Indice degli item top-level recuperati: `fn nome` / `type Nome`. La prova
+# strutturale che la forma del file è stata ricostruita, senza dumpare l'albero.
+fn print_toc(world: World, toks: List<Token>, src: String, ns: List<Node>, root: Int) -> Int uses !tty {
+  let r = ns[root];
+  let mut cur = r.a;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      let label = if e.kind == nd_fn() { "fn   " }
+        else { if e.kind == nd_type() { "type " } else { "stmt " } };
+      print(world, concat("  ", concat(label, tok_lex(toks, src, e.tok))));
+      cur = e.next;
+    }
+  }
+  0
+}
+
+# Il percorso del sorgente da ingerire: argv(1) se passato, altrimenti il file
+# stesso, relativo alla cwd da cui gira `nullang run` (la radice di bootstrap).
+fn src_path() -> String {
+  if argc() > 1 { argv(1) } else { "system/nullang/examples/selfhost-parser.null" }
+}
+
+# MANGIA LA PROPRIA CODA. Legge l'intero sorgente, lo lessa, lo parsa in un AST,
+# e ne stampa l'indice degli item top-level. Se questo gira sul proprio file,
+# il parser di Nullang ha appena letto sé stesso.
+fn ingest(world: World, path: String) -> Int uses !tty, !fs.read {
+  print(world, "");
+  print(world, concat("=== mangia la propria coda: ", concat(path, " ===")));
+  let src = read_file(world, path);
+  let toks = lex(src);
+  let mut nodes: List<Node> = [];
+  let cur = Cur { pos: 0 };
+  let root = parse_program(toks, src, nodes, cur);
+  let r = nodes[root];
+  print(world, concat("sorgente: ", concat(str_of_int(str_len(src)),
+        concat(" byte   tokens: ", str_of_int(list_len(toks))))));
+  print(world, concat("nodi AST: ", concat(str_of_int(list_len(nodes)),
+        concat("   item top-level: ", str_of_int(count_chain(nodes, r.a))))));
+  print_toc(world, toks, src, nodes, root);
+  0
+}
+
+# Codegen wave 1 end-to-end: lessa+parsa il target, emette C, lo stampa e lo
+# scrive su disco perché l'host (gcc) chiuda il giro AST→C→ELF.
+fn codegen_show(world: World, target: String) -> Int uses !tty, !fs.write {
+  print(world, "");
+  print(world, "=== codegen wave 1: AST → C (Int-only) ===");
+  let toks = lex(target);
+  let mut nodes: List<Node> = [];
+  let cur = Cur { pos: 0 };
+  let root = parse_program(toks, target, nodes, cur);
+  let c = gen(toks, target, nodes, root);
+  print(world, c);
+  write_file(world, "/tmp/nullang-codegen-out.c", c);
+  print(world, "(C scritto in /tmp/nullang-codegen-out.c — compilalo con gcc)");
+  0
+}
+
+fn main(world: World) -> Int uses !tty, !fs.read, !fs.write {
   print(world, "selfhost-parser — Nullang che si dà una forma ad albero");
 
   # Precedenza: deve venire ((1 + (2*3)) - 4).
@@ -676,5 +1181,23 @@ fn main(world: World) -> Int uses !tty {
   show(world, "while i < n { i = i + 1; }");
   # if/else, condizione poi blocchi.
   show(world, "if c == \"a\" { i = i + 1; } else { i = i + 2; }");
+
+  # --- DICHIARAZIONI: la grammatica di cui è fatto questo stesso file. ---
+  # type-decl: campi nome:Tipo (i tipi si saltano, i nomi restano).
+  show(world, "type Token = { kind: Int, start: Int, len: Int };");
+  # fn minima: nessun parametro, corpo a espressione singola.
+  show(world, "fn none() -> Int { 0 - 1 }");
+  # fn con parametri tipati e corpo multi-statement (cursore condiviso).
+  show(world, "fn adv(c: Cur) -> Int { let mut m = c; m.pos = m.pos + 1; 0 }");
+  # fn con tipi generici nei parametri + letterale-struct nel corpo.
+  show(world, "fn mk(nodes: List<Node>, kind: Int, tok: Int) -> Int { let mut ns = nodes; push(ns, Node { kind: kind, tok: tok }); list_len(ns) }");
+  # fn con clausola d'effetto `uses` (saltata, ma non rompe il parsing).
+  show(world, "fn main(world: World) -> Int uses !tty, !fs.read { print(world, \"hi\"); 0 }");
+
+  # --- E ORA la propria coda: parsa l'intero file sorgente. ---
+  ingest(world, src_path());
+
+  # --- CODEGEN wave 1: AST → C, compilabile, tutto da Nullang. fact(5)=120. ---
+  codegen_show(world, "fn fact(n: Int) -> Int { let mut acc = 1; let mut i = 1; while i < n + 1 { acc = acc * i; i = i + 1; } acc } fn main(world: World) -> Int uses !tty { fact(5) }");
   0
 }
