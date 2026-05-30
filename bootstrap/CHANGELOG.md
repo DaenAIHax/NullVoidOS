@@ -8,6 +8,22 @@ applicable.
 
 ## [Unreleased]
 
+### DESIGN: orizzonte "tutto in VM" — visione, non task corrente (2026-05-30)
+
+Nuova sezione `DESIGN.md` "Horizon — everything in the VM", subito dopo il
+Trust model. Fissa la direzione (l'end-state di un OS agent-primario: l'agente
+fa tutto in VM, host fuori dal loop) **senza costruirla** — coerente con alfa
+di ricerca e con la cornice visioni-da-scrivere-non-da-costruire. Registra:
+cosa è GIÀ in VM (l'evoluzione del compilatore via rito self-improve), cosa
+resta host e perché ognuno è load-bearing (git=nessun accesso GitHub by design
++ contraddirebbe il threat-model dare un credential di push a un agente non
+sandboxato; chirurgia parser/typer=blast-radius totale non smoke-probe-able;
+floor `/bin/nullang` cotto=rete di rollback), le precondizioni gating (chiudere
+le sharp-edge del perimetro, una rete di verifica = self-host, un canale
+mediato per gli artefatti) e l'ordine se mai perseguito (self-host → confinare
+l'agente → egress mediato; git-in-VM è l'ULTIMO passo, forse mai giusto per
+un'alfa mono-utente). Solo documentazione, zero codice.
+
 ### Nullang: P1 stdlib — `index_of` + `split` (autorati dall'agente in-VM) (2026-05-30)
 
 Secondo grappolo stdlib, **autorato dall'agente DENTRO la VM** col rito

@@ -393,6 +393,61 @@ but is the first thing to tighten before any multi-tenant or untrusted
 use: narrow the share (RO credentials + separate writable scratch) and
 replace NAT with a whitelisted egress proxy.
 
+## Horizon — "everything in the VM" (vision, not a current task)
+
+The natural end-state of an agent-primary OS is that the agent does *all* of
+its own work inside the VM, with the host out of the loop entirely. We are
+deliberately **not** building this yet (research alpha; the bootable VM demo is
+the goal, see Phase plan). Recorded here so the direction is fixed and the
+preconditions are explicit — visions get written down, not necessarily built.
+
+**Where we already are (2026-05-30).** The compiler's *evolution* already
+happens in the VM: the self-improvement loop edits Nullang's source in `/var`,
+`cargo build`s it, packages it as `nv-toolchain`, hot-swaps via `nv-rebuild
+switch`, smoke-probes, rolls back on red. The in-VM agent has authored builtins
+unaided (`char_at`, then `index_of` + `split` — the latter the first builtin to
+*produce* a `List`). So "language work happens in the VM" is largely already
+true.
+
+**What still lives on the host, and why each is load-bearing — not laziness:**
+
+1. **Git integration (commit + push).** The VM has *no* GitHub access by
+   design (Via B: private repo, host SSH key not authorised, no PAT inside).
+   The agent pastes a diff; the host applies, commits, pushes. Moving this
+   into the VM means putting a write credential to the repo in the hands of an
+   **unsandboxed, potentially prompt-steered agent** — which directly
+   contradicts the Trust model section above. This is the single hardest line
+   to cross and the last one that should move.
+2. **Parser/typer surgery.** Work outside the builtin boundary (`List`,
+   `struct`, `mut`/`while`) is total-blast-radius; `BUILTINS_CONTRACT.md`
+   keeps the agent to builtins precisely because a broken parser is not
+   smoke-probe-recoverable the way a broken builtin is. Lifting this is the
+   real **self-hosting** step (§Thesis, "self-hosting pattern"): it requires
+   either a much stronger in-VM verification net than the current smoke-probe,
+   or the compiler rewritten in Nullang (so a bad edit fails to compile rather
+   than miscompiling silently).
+3. **The cooked `/bin/nullang` floor.** Rebuilt by the host; it is the
+   rollback floor when a generation is bad. If the VM becomes the source of
+   truth, the floor and the "truth lives on origin/host" safety both weaken
+   (note `/` is RAM-only; only `/var` persists).
+
+**Preconditions before any of this is worth building** (all gating, none met):
+
+- The Trust-model sharp edges closed first (RO credentials, egress proxy) —
+  you cannot widen the agent's authority while the perimeter still leaks.
+- A verification net strong enough to let the agent touch parser/typer:
+  realistically, **self-hosting** the compiler in Nullang, so the bootstrap
+  build itself is the check.
+- A mediated, audited path for work to leave the VM that is *not* a raw git
+  credential — e.g. a proposal channel the host (or a human gate) approves,
+  consistent with "agent proposes, trusted gate disposes."
+
+**Order, if/when pursued:** self-hosting the compiler (removes reason #2 and
+shrinks the host floor) → in-guest confinement + clean perimeter (makes the
+agent safe to widen) → a mediated egress for artifacts (removes reason #1
+without handing over a repo credential). Git-in-the-VM is the *last* step, not
+the first — and may never be the right trade for a single-user research alpha.
+
 ## Open design questions (Layer 3, to resolve in Phase 2)
 
 These are deliberately deferred until the bootstrap is alive and the
