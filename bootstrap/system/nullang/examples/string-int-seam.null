@@ -1,0 +1,31 @@
+# string-int-seam.null — i due builtin P0 che chiudono il confine String<->Int.
+#
+# Gap confermato 3/3 da due sonde indipendenti (selfhost-lexer + config-parser):
+# entrambe rifacevano a mano parse_int (catena ~22 LOC) ed enumeravano le classi
+# di carattere perche mancava char->Int. Questi due builtin tolgono entrambi.
+#
+#   char_code(s, i) -> Int   # byte a indice i, -1 fuori range
+#   int_of_str(s)   -> Int   # parse decimale totale, 0 su input non valido
+
+# Con char_code le classi di carattere diventano range aritmetici, non piu
+# catene di == a 10 rami (com'era costretto a fare il lexer).
+fn is_digit(code: Int) -> Bool { code >= 48 && code <= 57 }   # '0'..'9'
+fn is_upper(code: Int) -> Bool { code >= 65 && code <= 90 }   # 'A'..'Z'
+
+fn main(world: World) -> Int uses !tty {
+  # int_of_str: ciò che il config-parser rifaceva a mano ogni volta.
+  let port = int_of_str("8080");
+  print(world, str_of_int(port + 1));            # 8081 — è un Int vero
+  print(world, str_of_int(int_of_str("-42")));   # -42 (segno)
+  print(world, str_of_int(int_of_str("12ab")));  # 12 (si ferma al non-cifra)
+  print(world, str_of_int(int_of_str("oops")));  # 0 (totale, niente panic)
+
+  # char_code: classifica per range invece che per enumerazione.
+  let c = char_code("7", 0);                      # 55
+  print(world, str_of_int(c));
+  if is_digit(c) { print(world, "digit"); } else { print(world, "other"); }
+  if is_upper(char_code("Q", 0)) { print(world, "upper"); } else { print(world, "no"); }
+  print(world, str_of_int(char_code("", 0)));     # -1 (fuori range)
+
+  0
+}

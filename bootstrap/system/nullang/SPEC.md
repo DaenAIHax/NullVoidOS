@@ -273,6 +273,8 @@ str_of_int(n: Int) -> String                                      # pure; decima
 str_len(s: String) -> Int                                         # pure (Tier 0)
 substr(s: String, start: Int, len: Int) -> String                 # pure; indices clamp (Tier 0)
 char_at(s: String, i: Int) -> String                              # pure; 1-char, O(i), "" out of range
+char_code(s: String, i: Int) -> Int                               # pure; byte at i, -1 out of range (P0)
+int_of_str(s: String) -> Int                                      # pure; decimal parse, total, 0 on junk (P0)
 
 read_file(world: World, path: String) -> String   uses !fs.read   # "" on error (Tier 0)
 write_file(world: World, path: String, content: String) -> ()   uses !fs.write   # (Tier 0)
@@ -311,6 +313,19 @@ grant in `system.null` (`!fs.read."/dir"`) scopes it, which is what Landlock
 enforces at `nv-rebuild run`. So the language effect maps 1:1 onto the runtime
 capability. `read_file` returns `""` on error today; a `Result`-returning
 variant (§10) is the follow-up. `str_of_bool` and friends are still deferred.
+
+**P0 stdlib — the String↔Int seam.** Two pure, total builtins that two
+independent probes (the self-host lexer and a config-parser) both needed and
+hand-rolled identically. `char_code(s,i)` is the missing `char→Int`: the byte
+value at index `i` (0..255), or `-1` out of range — so character classes become
+arithmetic ranges (`code >= 48 && code <= 57`) instead of 10-arm `==` chains.
+`int_of_str(s)` parses a decimal (optional leading `-`, digits, stops at the
+first non-digit; `""`/junk → `0`) — the headline deterministic gap, confirmed
+3/3, every config-parser otherwise re-implementing the same ~22-LOC parse. Both
+total (no panic, no error type); a `Result`-returning `int_of_str` that
+distinguishes `"0"` from a parse error is the §10 follow-up, as for `read_file`.
+Still deferred in this cluster: `split`/`index_of` (P1 — both probes reached for
+them), `str_of_bool` and `else if` ergonomics (P2).
 
 **String equality.** `==` and `!=` work on `String` (lowered to `strcmp`), in
 addition to `Int`/`Bool` — needed to recognise commands and keystrokes. No

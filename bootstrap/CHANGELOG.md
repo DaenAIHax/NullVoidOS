@@ -8,6 +8,29 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang: P0 stdlib — `char_code` + `int_of_str` (confine String↔Int) (2026-05-30)
+
+Due builtin puri e totali che chiudono il gap stdlib **confermato 3/3 da due
+sonde indipendenti** (il lexer self-host e il config-parser dell'altro agente):
+entrambe rifacevano a mano `parse_int` (catena ~22 LOC) ed enumeravano le classi
+di carattere perché mancava `char→Int`.
+
+- `char_code(s, i) -> Int` — il byte a indice `i` (0..255), `-1` fuori range. È
+  il `char→Int` mancante: le classi di carattere diventano range aritmetici
+  (`code >= 48 && code <= 57`) invece di catene `==` a 10 rami. Sentinella `-1`
+  (un byte reale è 0..255), non `""` come `char_at` (che collide con NUL).
+- `int_of_str(s) -> Int` — parse decimale totale: `-` opzionale, cifre, si ferma
+  al primo non-cifra; `""`/spazzatura → `0`. È il gap headline deterministico.
+  Variante `Result` (distinguere `"0"` da errore) è il follow-up §10, come
+  `read_file`.
+
+Builtin = la fascia normalmente auto-servita dall'agente in-VM; qui fatti host
+per scelta esplicita dell'utente (P0 urgenti, nessun boot VM, sbloccano subito le
+due sonde). Suite **69/69** (4 nuovi). Esempio `examples/string-int-seam.null`
+ELF verde (`8081, -42, 12, 0, 55, digit, upper, -1`). SPEC §4.7 aggiornato.
+`Cargo.lock` invariato. Restano: P1 `split`/`index_of` (cercati da entrambe le
+sonde), P2 `str_of_bool`/`else if`.
+
 ### Nullang: `List<struct>` — la lista accetta elementi struct (2026-05-30)
 
 Chiuso il gap che la sonda `selfhost-lexer.null` aveva fatto emergere dall'uso:

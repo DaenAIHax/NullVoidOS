@@ -117,6 +117,33 @@ static const char* nullang_char_at(const char* s, long i) {
   return r;
 }
 
+/* P0 stdlib: the String<->Int seam. Both pure and total. */
+
+/* char_code(s, i): the byte value at index i (unsigned, 0..255), or -1 out of
+   range. Lets character classes be arithmetic ranges instead of == chains. */
+static long nullang_char_code(const char* s, long i) {
+  if (i < 0) return -1;
+  for (long k = 0; k < i; k++) {
+    if (s[k] == '\\0') return -1;
+  }
+  unsigned char c = (unsigned char)s[i];
+  if (c == 0) return -1;
+  return (long)c;
+}
+
+/* int_of_str(s): decimal parse, total. Optional leading '-', then digits;
+   stops at the first non-digit; \"\" or junk yields 0. No overflow checking
+   (i64 wraps) — a Result-returning variant is the SPEC §10 follow-up. */
+static long nullang_int_of_str(const char* s) {
+  long i = 0, sign = 1, n = 0;
+  if (s[i] == '-') { sign = -1; i++; }
+  while (s[i] >= '0' && s[i] <= '9') {
+    n = n * 10 + (s[i] - '0');
+    i++;
+  }
+  return sign * n;
+}
+
 /* Tier 0 file I/O. World is erased at codegen, so it is not a C parameter;
    the capability lives in the fn's `uses` clause (checked) and the grant in
    system.null (enforced by Landlock at run time). Errors are swallowed into

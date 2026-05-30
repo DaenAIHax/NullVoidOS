@@ -144,6 +144,36 @@ fn builtins() -> SigTable {
             c_name: "nullang_char_at".to_string(),
         },
     );
+    // P0 stdlib (the String<->Int seam two probes — lexer + config-parser —
+    // both hit). Pure, total. `char_code(s,i)` is the missing `char->Int`:
+    // the byte value at index i, so character classes become arithmetic
+    // ranges (`c >= 48 && c <= 57`) instead of 10-arm `==` chains. `-1` out of
+    // range (a real byte is 0..255, so -1 is an unambiguous sentinel, unlike
+    // char_at's "" which collides with a NUL).
+    t.insert(
+        "char_code".to_string(),
+        Sig {
+            params: vec![Ty::String, Ty::Int],
+            ret: Ty::Int,
+            effects: vec![],
+            c_name: "nullang_char_code".to_string(),
+        },
+    );
+    // `int_of_str(s) -> Int`: decimal parse, total (no Result yet, like
+    // read_file). Confirmed the headline deterministic gap 3/3 across probes —
+    // every config-parser hand-rolled the same ~22-LOC parse_int. Leading
+    // optional `-`, then digits; stops at the first non-digit; "" or junk -> 0.
+    // A Result-returning variant (to tell "0" from a parse error) is the §10
+    // follow-up, same as read_file.
+    t.insert(
+        "int_of_str".to_string(),
+        Sig {
+            params: vec![Ty::String],
+            ret: Ty::Int,
+            effects: vec![],
+            c_name: "nullang_int_of_str".to_string(),
+        },
+    );
     // Tier 0 — file I/O. Effectful (World-gated, like `print`). The LANGUAGE
     // effect is path-less (`fs.read`/`fs.write`): the path is a runtime
     // String, and the system-level grant in `system.null` scopes it — which

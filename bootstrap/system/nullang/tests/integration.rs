@@ -541,6 +541,64 @@ fn main(world: World) -> Int uses !tty {
     assert!(c.contains("nullang_char_at(\"banana\", 2)"));
 }
 
+// ---- P0 stdlib: char_code + int_of_str (the String<->Int seam) -----------
+
+#[test]
+fn char_code_builtin_compiles_and_is_pure() {
+    let src = r#"
+fn main(world: World) -> Int uses !tty {
+  print(world, str_of_int(char_code("A", 0)));
+  0
+}
+"#;
+    let c = compile_to_c(src, "cc.null").expect("char_code should compile");
+    // Returns Int, pure (no World), lowered to the runtime helper.
+    assert!(c.contains("nullang_char_code(\"A\", 0)"));
+}
+
+#[test]
+fn int_of_str_builtin_compiles_and_is_pure() {
+    let src = r#"
+fn main(world: World) -> Int uses !tty {
+  print(world, str_of_int(int_of_str("8080")));
+  0
+}
+"#;
+    let c = compile_to_c(src, "ios.null").expect("int_of_str should compile");
+    assert!(c.contains("nullang_int_of_str(\"8080\")"));
+}
+
+#[test]
+fn int_of_str_return_is_int_not_string() {
+    // The result is an Int, so it can drive arithmetic directly.
+    let src = r#"
+fn main(world: World) -> Int uses !tty {
+  let n = int_of_str("40");
+  print(world, str_of_int(n + 2));
+  0
+}
+"#;
+    let c = compile_to_c(src, "ios2.null").expect("int_of_str arithmetic compiles");
+    assert!(c.contains("nullang_int_of_str(\"40\")"));
+}
+
+#[test]
+fn char_code_returns_int_for_ranges() {
+    // char_code feeds an arithmetic range test (the point of char->Int):
+    // a digit class without a 10-arm == chain.
+    let src = r#"
+fn is_digit(c: Int) -> Bool { c >= 48 && c <= 57 }
+fn main(world: World) -> Int uses !tty {
+  let code = char_code("7", 0);
+  print(world, str_of_int(code));
+  if is_digit(code) { print(world, "digit"); } else { print(world, "no"); }
+  0
+}
+"#;
+    let c = compile_to_c(src, "cc2.null").expect("char_code range compiles");
+    assert!(c.contains("nullang_char_code("));
+}
+
 #[test]
 fn user_identifiers_clashing_with_c_keywords_are_mangled() {
     // `double` is a C keyword; a Nullang fn/param/let named so must not reach
