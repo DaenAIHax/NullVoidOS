@@ -8,6 +8,28 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang self-host: enum/match — Stadio 1, payload-free (Direzione B) (2026-05-30)
+
+Porta gli **enum** dentro il compilatore self-hostato (`selfhost-parser.null`),
+che finora non li aveva (li ha solo il seme Rust). È il pezzo language-core che
+sblocca l'error-handling `Result` endorsed da SPEC §10. Affrontato a due stadi;
+questo è lo **Stadio 1: enum payload-free**.
+
+- **Lexer:** keyword `enum`/`match` (l'operatore `=>` lexa già via maximal-munch).
+- **Parser:** `enum Name = .v1 | .v2;` (item top-level), `.simbolo` in posizione
+  primary, `match scrut { .v => e, ... }` come espressione (come `if`). Nuovi
+  node-kind `nd_enum/nd_evar/nd_symbol/nd_match/nd_arm`.
+- **Codegen:** un enum payload-free **È un `long`** in C — `.east` → l'indice
+  della variante (il tag), `match` → `switch` sul valore intero. Risoluzione
+  simbolo→indice per scansione-nome degli `nd_enum`. ABI **identica** al seme Rust.
+
+Verificato: demo `enum Dir + match` compilato sia dal **seme Rust** sia dal
+**compilatore self-hostato** → stesso output (90) e stesso exit code; **gate
+fixpoint byte-identico** (112530 byte; `selfhost-parser.null` non usa enum, quindi
+il fixpoint regge). Limite noto: il self-host fa typing enum *lasco* (payload-free
+= Int), il seme Rust è *stretto* (`Dir`≠`Int`) — per programmi validi coincidono;
+gap di soundness, non di fixpoint. Lo Stadio 2 (tagged union + payload) segue.
+
 ### Nullang: `http_fetch` — primo effetto di RETE `!net` (Direzione B) (2026-05-30)
 
 Terzo builtin di B e il salto: il **primo effetto di rete** in construction-mode.

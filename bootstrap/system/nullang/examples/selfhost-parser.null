@@ -70,6 +70,7 @@ fn is_keyword(word: String) -> Bool {
   word == "fn" || word == "let" || word == "mut" || word == "if"
   || word == "else" || word == "while" || word == "type"
   || word == "uses" || word == "true" || word == "false"
+  || word == "enum" || word == "match"
 }
 
 fn scan_number(src: String, start: Int, n: Int) -> Token {
@@ -162,6 +163,15 @@ fn nd_type()   -> Int { 19 }
 fn nd_param()  -> Int { 20 }
 fn nd_tfield() -> Int { 21 }
 fn nd_list()   -> Int { 22 }
+# Enum/match (Direzione B). nd_enum: tok=nome enum, a=catena varianti (nd_evar).
+# nd_evar: tok=nome variante, a=token-tipo del payload (o none = bare). nd_symbol:
+# tok=nome simbolo, a=arg-espr (o none). nd_match: a=scrutinee, b=catena arm.
+# nd_arm: tok=nome simbolo, a=token del binder (o none = nessun payload), b=corpo.
+fn nd_enum()   -> Int { 23 }
+fn nd_evar()   -> Int { 24 }
+fn nd_symbol() -> Int { 25 }
+fn nd_match()  -> Int { 26 }
+fn nd_arm()    -> Int { 27 }
 
 # Sentinella "nessun figlio" — niente handle null, quindi un indice impossibile.
 fn none() -> Int { 0 - 1 }
@@ -301,9 +311,12 @@ fn parse_primary(toks: List<Token>, src: String, nodes: List<Node>, c: Cur, nost
         # `if` È un'espressione in Nullang (`let x = if c {a} else {b}`): qui sta
         # come primary, non solo come statement. Stessa forma, stesso nodo nd_if.
         parse_if(toks, src, ns, c)
+      } else { if lx == "match" {
+        # `match` È un'espressione (Direzione B), come `if`.
+        parse_match(toks, src, ns, c)
       } else {
         adv(c); mk(ns, nd_id(), none(), none(), none(), tk)
-      } }
+      } } }
     }
     else { if k == 1 {
       adv(c);
@@ -323,9 +336,24 @@ fn parse_primary(toks: List<Token>, src: String, nodes: List<Node>, c: Cur, nost
     else { if at_punct(toks, src, c, "[") {
       adv(c);
       parse_list_lit(toks, src, ns, c)
+    }
+    else { if at_op(toks, src, c, ".") {
+      # `.sym` o `.sym(arg)` — costruzione di un valore enum (Direzione B). In
+      # posizione primary (niente espressione che precede) il `.` non è un accesso
+      # a campo ma un simbolo. a = arg-espr (o none), tok = nome del simbolo.
+      adv(c);
+      let symtk = c.pos;
+      eat_ident(toks, c);
+      let arg = if at_punct(toks, src, c, "(") {
+        adv(c);
+        let aa = parse_expr(toks, src, ns, c, 0, false);
+        eat_punct(toks, src, c, ")");
+        aa
+      } else { none() };
+      mk(ns, nd_symbol(), arg, none(), none(), symtk)
     } else {
       adv(c); mk(ns, nd_num(), none(), none(), none(), tk)
-    } } } } } }
+    } } } } } } }
   }
 }
 
@@ -488,6 +516,51 @@ fn parse_if(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
     else { parse_block(toks, src, ns, c) }
   } else { none() };
   mk(ns, nd_if(), cond, thenb, elseb, 0 - 1)
+}
+
+# `match SCRUT { .v1 => e, .v2(b) => e }` (Direzione B). Espressione, come `if`.
+# scrut con nostruct=true (il `{` dopo è il blocco del match). a=scrutinee,
+# b=catena di arm (nd_arm via next). Almeno un arm.
+fn parse_match(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  adv(c);
+  let scrut = parse_expr(toks, src, ns, c, 0, true);
+  eat_punct(toks, src, c, "{");
+  let head = parse_arm(toks, src, ns, c);
+  let mut tail = head;
+  let mut going = true;
+  while going {
+    if at_punct(toks, src, c, ",") {
+      adv(c);
+      if at_punct(toks, src, c, "}") { going = false; }
+      else {
+        let nx = parse_arm(toks, src, ns, c);
+        set_next(ns, tail, nx);
+        tail = nx;
+      }
+    } else { going = false; }
+  }
+  eat_punct(toks, src, c, "}");
+  mk(ns, nd_match(), scrut, head, none(), 0 - 1)
+}
+
+# Un arm: `.sym => body` o `.sym(binder) => body`. tok=nome simbolo, a=token del
+# binder (o none), b=corpo. Il corpo è una qualunque espressione.
+fn parse_arm(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  eat_op(toks, src, c, ".");
+  let symtk = c.pos;
+  eat_ident(toks, c);
+  let bindtk = if at_punct(toks, src, c, "(") {
+    adv(c);
+    let bt = c.pos;
+    eat_ident(toks, c);
+    eat_punct(toks, src, c, ")");
+    bt
+  } else { 0 - 1 };
+  eat_op(toks, src, c, "=>");
+  let body = parse_expr(toks, src, ns, c, 0, false);
+  mk(ns, nd_arm(), bindtk, body, none(), symtk)
 }
 
 # Il `{` corrente apre un blocco; ne raccoglie gli statement in una catena.
@@ -747,12 +820,52 @@ fn parse_type_decl(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) ->
   mk(ns, nd_type(), head, none(), none(), nametk)
 }
 
+# `.name` o `.name(T)` — una variante d'enum. tok=nome variante, a=token del tipo
+# payload (o none = variante bare). Payload mono-token (Int/Bool/String/struct).
+fn parse_variant(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  eat_op(toks, src, c, ".");
+  let nametk = c.pos;
+  eat_ident(toks, c);
+  let ptok = if at_punct(toks, src, c, "(") {
+    adv(c);
+    let pt = c.pos;
+    eat_ident(toks, c);
+    eat_punct(toks, src, c, ")");
+    pt
+  } else { 0 - 1 };
+  mk(ns, nd_evar(), ptok, none(), none(), nametk)
+}
+
+# `enum Name = .v1(T) | .v2 | ...;` (Direzione B). tok=nome, a=catena varianti.
+fn parse_enum_decl(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  adv(c);
+  let nametk = c.pos;
+  eat_ident(toks, c);
+  eat_op(toks, src, c, "=");
+  let head = parse_variant(toks, src, ns, c);
+  let mut tail = head;
+  let mut going = true;
+  while going {
+    if at_op(toks, src, c, "|") {
+      adv(c);
+      let nx = parse_variant(toks, src, ns, c);
+      set_next(ns, tail, nx);
+      tail = nx;
+    } else { going = false; }
+  }
+  eat_punct(toks, src, c, ";");
+  mk(ns, nd_enum(), head, none(), none(), nametk)
+}
+
 # Un item top-level: `fn`, `type`, o (per i frammenti di prova) uno statement.
 fn parse_item(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
   let mut ns = nodes;
   if word_is(toks, src, c, "fn") { parse_fn(toks, src, ns, c) }
   else { if word_is(toks, src, c, "type") { parse_type_decl(toks, src, ns, c) }
-  else { parse_stmt(toks, src, ns, c) } }
+  else { if word_is(toks, src, c, "enum") { parse_enum_decl(toks, src, ns, c) }
+  else { parse_stmt(toks, src, ns, c) } } }
 }
 
 # Un programma = sequenza di item top-level, raccolti come un blocco.
@@ -1178,6 +1291,50 @@ fn unbox_slot(code: Int, s: String) -> String {
   else { s } }
 }
 
+# --- Enum/match (Direzione B) ------------------------------------------------
+# Indice di un simbolo dentro la catena di varianti che inizia a `head`; -1 se
+# assente. La posizione È il tag (e, per gli enum payload-free, il valore C).
+fn vidx_in(toks: List<Token>, src: String, ns: List<Node>, head: Int, symname: String) -> Int {
+  let mut v = head;
+  let mut idx = 0;
+  let mut found = 0 - 1;
+  let mut going = true;
+  while going {
+    if v < 0 { going = false; }
+    else {
+      let ve = ns[v];
+      if tok_lex(toks, src, ve.tok) == symname { found = idx; going = false; }
+      else { idx = idx + 1; v = ve.next; }
+    }
+  }
+  found
+}
+
+# Indice globale di un simbolo: cerca in ogni enum top-level; -1 se di nessuno.
+fn sym_idx(toks: List<Token>, src: String, ns: List<Node>, root: Int, symname: String) -> Int {
+  let r = ns[root];
+  let mut cur = r.a;
+  let mut found = 0 - 1;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      if e.kind == nd_enum() {
+        let k = vidx_in(toks, src, ns, e.a, symname);
+        if k >= 0 { found = k; going = false; }
+        else { cur = e.next; }
+      } else { cur = e.next; }
+    }
+  }
+  found
+}
+
+# Corpo del primo arm di una catena di arm (per inferire il tipo del match).
+fn first_arm_body(ns: List<Node>, head: Int) -> Int {
+  if head < 0 { 0 - 1 } else { let a = ns[head]; a.b }
+}
+
 # Id di uno struct = posizione fra gli item `type` top-level (l'ordine di
 # dichiarazione). -1 se il nome non è uno struct dichiarato.
 fn struct_id(toks: List<Token>, src: String, ns: List<Node>, root: Int, name: String) -> Int {
@@ -1424,7 +1581,15 @@ fn type_of_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: 
         else { find_fn_ret(toks, src, ns, root, name) }
       } else { tc_int() }
     }
-    else { tc_int() } } } } } } } }
+    else { if nd.kind == nd_symbol() {
+      # Stadio 1: enum payload-free → intero. (Stadio 2 raffina i tagged.)
+      tc_int()
+    }
+    else { if nd.kind == nd_match() {
+      # Il tipo del match = tipo del corpo del primo arm.
+      type_of_expr(toks, src, ns, root, env, first_arm_body(ns, nd.b))
+    }
+    else { tc_int() } } } } } } } } } }
   }
 }
 
@@ -1589,8 +1754,46 @@ fn emit_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: Lis
       let raw = concat("nl_list_get(", concat(bc.expr, concat(", ", concat(ic.expr, ")"))));
       ExprC { pre: concat(bc.pre, ic.pre), expr: unbox_slot(elem, raw) }
     }
-    else { ec_pure("/*?*/0") } } } } } } } } } } } }
+    else { if nd.kind == nd_symbol() {
+      # Stadio 1: enum payload-free → indice intero nudo.
+      ec_pure(str_of_int(sym_idx(toks, src, ns, root, tok_lex(toks, src, nd.tok))))
+    }
+    else { if nd.kind == nd_match() {
+      # match-ESPRESSIONE (Stadio 1, payload-free): switch sul valore intero dello
+      # scrutinee; ogni case assegna il proprio corpo a un temp `_mN`. Stesso
+      # schema dell'if-espressione (temp + statement nei `pre`, expr = temp).
+      let id = fresh(ctr);
+      let tn = concat("_m", str_of_int(id));
+      let bt = type_of_expr(toks, src, ns, root, env, first_arm_body(ns, nd.b));
+      let sc = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+      let decl = concat("  ", concat(c_type(bt), concat(" ", concat(tn, ";\n"))));
+      let sw = concat("  switch (", concat(sc.expr, ") {\n"));
+      let cases = emit_arms(toks, src, ns, root, env, ctr, nd.b, tn);
+      ExprC { pre: concat(sc.pre, concat(decl, concat(sw, concat(cases, "  default: break;\n  }\n")))), expr: tn }
+    }
+    else { ec_pure("/*?*/0") } } } } } } } } } } } } } }
   }
+}
+
+# Gli arm di un match (Stadio 1, payload-free): per ogni arm `case <idx>: { corpo
+# → assegnato a tn; break; }`. L'idx del simbolo È il tag/valore intero.
+fn emit_arms(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, ctr: Ctr, head: Int, tn: String) -> String {
+  let mut cur = head;
+  let mut out = "";
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let arm = ns[cur];
+      let idx = sym_idx(toks, src, ns, root, tok_lex(toks, src, arm.tok));
+      let bc = emit_expr(toks, src, ns, root, env, ctr, arm.b);
+      let casehd = concat("  case ", concat(str_of_int(idx), ": {\n"));
+      let assign = concat(bc.pre, concat("  ", concat(tn, concat(" = ", concat(bc.expr, ";\n")))));
+      out = concat(out, concat(casehd, concat(assign, "  break;\n  }\n")));
+      cur = arm.next;
+    }
+  }
+  out
 }
 
 # Push di ogni elemento di un letterale-lista nel temp `lname`, boxando ciascuno
