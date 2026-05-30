@@ -233,6 +233,47 @@ static const char* nullang_join(nl_list l, const char* sep) {
   return r;
 }
 
+/* replace(s, from, to) -> String. Substitutes every leftmost, non-overlapping
+   occurrence of `from` with `to`, in two passes: count matches to size the
+   buffer, then build, resuming AFTER each replaced segment (so the replacement
+   is not re-scanned: replace(\"aaa\",\"aa\",\"b\") is \"ba\" not \"bb\"). Empty
+   `from` returns a fresh copy of `s`; `from` absent returns a fresh copy
+   unchanged; `to == \"\"` deletes. Total. Allocations not freed (§11). AUTHORED
+   BY THE IN-VM AGENT under BUILTINS_CONTRACT; folded host-side. */
+static const char* nullang_replace(const char* s, const char* from, const char* to) {
+  long sl = (long)strlen(s);
+  long fl = (long)strlen(from);
+  if (fl == 0) {
+    char* r = malloc((size_t)sl + 1);
+    memcpy(r, s, (size_t)sl + 1);
+    return r;
+  }
+  long tl = (long)strlen(to);
+  long matches = 0;
+  {
+    long i = 0;
+    while (i + fl <= sl) {
+      if (memcmp(s + i, from, (size_t)fl) == 0) { matches++; i += fl; }
+      else i++;
+    }
+  }
+  long out_len = sl + matches * (tl - fl);
+  char* r = malloc((size_t)out_len + 1);
+  long off = 0;
+  long i = 0;
+  while (i < sl) {
+    if (i + fl <= sl && memcmp(s + i, from, (size_t)fl) == 0) {
+      memcpy(r + off, to, (size_t)tl);
+      off += tl;
+      i += fl;
+    } else {
+      r[off++] = s[i++];
+    }
+  }
+  r[off] = '\\0';
+  return r;
+}
+
 /* Tier 0 file I/O. World is erased at codegen, so it is not a C parameter;
    the capability lives in the fn's `uses` clause (checked) and the grant in
    system.null (enforced by Landlock at run time). Errors are swallowed into

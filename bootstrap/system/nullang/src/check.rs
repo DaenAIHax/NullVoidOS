@@ -220,6 +220,23 @@ fn builtins() -> SigTable {
             c_name: "nullang_join".to_string(),
         },
     );
+    // `replace(s, from, to) -> String`: substitutes every leftmost,
+    // non-overlapping occurrence of `from` in `s` with `to`. Total: `from == ""`
+    // returns a fresh copy of `s` (no splitting on nothing — same convention as
+    // `split`); `from` absent returns `s` unchanged; `to == ""` deletes. After
+    // each match the scan resumes AFTER the replaced segment, so
+    // `replace("aaa", "aa", "b")` is `"ba"` not `"bb"` (the replacement is not
+    // re-scanned). Pure. AUTHORED BY THE IN-VM AGENT under BUILTINS_CONTRACT.md;
+    // folded host-side (Via B) — the agent cannot push.
+    t.insert(
+        "replace".to_string(),
+        Sig {
+            params: vec![Ty::String, Ty::String, Ty::String],
+            ret: Ty::String,
+            effects: vec![],
+            c_name: "nullang_replace".to_string(),
+        },
+    );
     // Tier 0 — file I/O. Effectful (World-gated, like `print`). The LANGUAGE
     // effect is path-less (`fs.read`/`fs.write`): the path is a runtime
     // String, and the system-level grant in `system.null` scopes it — which
