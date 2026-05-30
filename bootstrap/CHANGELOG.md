@@ -8,6 +8,25 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang self-host: codegen Wave 2 — String + builtin (2026-05-30)
+
+Il codegen-in-Nullang ora emette programmi che STAMPANO. Aggiunto al preludio
+(embeddato come string literal multi-riga, verbatim dal codegen Rust) gli
+helper `nullang_print`/`concat`/`str_of_int`/`str_len`/`substr`/`char_at`, e in
+`emit_expr` il **dispatch dei builtin**: un nome in `is_builtin` diventa
+`nullang_<name>` invece di `nlu_<name>`, e per i builtin World-gated
+(`world_gated`: print/read_file/write_file) il **primo argomento `World` si
+droppa** dalla call (a runtime World è cancellato, vive nella clausola `uses`).
+
+Prova end-to-end: `fn sq(n) { n*n } fn main { print(world, "…"); print(world,
+concat("sq(7) = ", str_of_int(sq(7)))); 0 }` → codegen-Nullang emette C → gcc →
+ELF che stampa `codegen Nullang: vivo` / `sq(7) = 49`. Verificato anche il
+literal multi-riga del preludio: il lexer-in-Nullang lo ri-lessa senza desync,
+self-ingest invariato (112/112 item, zero spuri), effect-check pulito.
+
+Restano: type-inference per `let`-String e return-type String nelle firme
+(oggi i `let` sono sempre `long`), `==` su String → `strcmp`, poi List+struct.
+
 ### Nullang self-host: il codegen — Wave 1, AST→C→ELF da Nullang (2026-05-30)
 
 Il terzo e ultimo stadio del compilatore comincia a esistere in Nullang.

@@ -871,11 +871,62 @@ fn print_node(world: World, toks: List<Token>, src: String, ns: List<Node>, idx:
 # prefisso `nlu_`, `main` resta `main`, builtin sarebbero `nullang_*`.
 # ============================================================================
 
-# Wave 1: nessun builtin né List usati → preludio minimo. Le onde dopo lo
-# faranno crescere (o leggeranno un template via read_file).
+# Wave 2: il preludio porta gli helper C dei builtin String/IO usati — copiati
+# verbatim dal codegen Rust così il C generato coincide (un giorno: stesso
+# preludio al fixpoint). Cresce per onde insieme a `is_builtin`. Embeddato come
+# string literal multi-riga (escape `"`→\" e `\`→\\); più avanti, quando sarà
+# completo, conviene leggerlo da un template condiviso via read_file (DRY).
 fn c_prelude() -> String {
-  concat("/* generato da selfhost-codegen (Nullang) */\n",
-  concat("#include <stdio.h>\n", "#include <stdlib.h>\n\n"))
+"/* generato da selfhost-codegen (Nullang) */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+
+static void nullang_print(const char* s) { fputs(s, stdout); fputs(\"\\n\", stdout); }
+
+static const char* nullang_concat(const char* a, const char* b) {
+  size_t la = strlen(a), lb = strlen(b);
+  char* r = malloc(la + lb + 1);
+  memcpy(r, a, la);
+  memcpy(r + la, b, lb + 1);
+  return r;
+}
+
+static const char* nullang_str_of_int(long n) {
+  char* r = malloc(24);
+  snprintf(r, 24, \"%ld\", n);
+  return r;
+}
+
+static long nullang_str_len(const char* s) { return (long)strlen(s); }
+
+static const char* nullang_substr(const char* s, long start, long len) {
+  long n = (long)strlen(s);
+  if (start < 0) start = 0;
+  if (start > n) start = n;
+  if (len < 0) len = 0;
+  long avail = n - start;
+  if (len > avail) len = avail;
+  char* r = malloc((size_t)len + 1);
+  memcpy(r, s + start, (size_t)len);
+  r[len] = '\\0';
+  return r;
+}
+
+static const char* nullang_char_at(const char* s, long i) {
+  if (i < 0) return \"\";
+  for (long k = 0; k < i; k++) {
+    if (s[k] == '\\0') return \"\";
+  }
+  if (s[i] == '\\0') return \"\";
+  char* r = malloc(2);
+  r[0] = s[i];
+  r[1] = '\\0';
+  return r;
+}
+
+"
 }
 
 # Il tipo C di un codice-tipo. World non compare mai come parametro C (cancellato
@@ -889,6 +940,19 @@ fn c_type(tc: Int) -> String {
 # `nlu_` + lessema: il nome C di una fn/locale/parametro utente.
 fn mangle(toks: List<Token>, src: String, tok: Int) -> String {
   concat("nlu_", tok_lex(toks, src, tok))
+}
+
+# I builtin che il codegen conosce in Wave 2: il loro nome C è `nullang_<name>`
+# (uniforme col codegen Rust). Cresce insieme al preludio.
+fn is_builtin(name: String) -> Bool {
+  name == "print" || name == "concat" || name == "str_of_int"
+  || name == "str_len" || name == "substr" || name == "char_at"
+}
+
+# Builtin che prendono `World` come primo argomento: a runtime World è cancellato
+# (vive nella clausola `uses` + grant Landlock), quindi il primo arg si droppa.
+fn world_gated(name: String) -> Bool {
+  name == "print" || name == "read_file" || name == "write_file"
 }
 
 # Espressione → C, ricorsiva. Le precedenze sono già nell'albero: ogni binop si
@@ -912,8 +976,21 @@ fn emit_expr(toks: List<Token>, src: String, ns: List<Node>, idx: Int) -> String
         concat(" ", concat(emit_expr(toks, src, ns, nd.b), ")"))))))
     }
     else { if nd.kind == nd_call() {
-      concat(emit_expr(toks, src, ns, nd.a),
-        concat("(", concat(emit_args(toks, src, ns, nd.b), ")")))
+      let cnode = ns[nd.a];
+      if cnode.kind == nd_id() {
+        let name = tok_lex(toks, src, cnode.tok);
+        let bi = is_builtin(name);
+        let cname = if bi { concat("nullang_", name) } else { concat("nlu_", name) };
+        # Droppa il primo argomento (World) per i builtin World-gated.
+        let argh = if bi && world_gated(name) {
+          if nd.b < 0 { 0 - 1 } else { let h = ns[nd.b]; h.next }
+        } else { nd.b };
+        concat(cname, concat("(", concat(emit_args(toks, src, ns, argh), ")")))
+      } else {
+        # Callee non-identificatore (raro: Nullang non ha fn di prima classe).
+        concat(emit_expr(toks, src, ns, nd.a),
+          concat("(", concat(emit_args(toks, src, ns, nd.b), ")")))
+      }
     }
     else { concat("/*?*/0", "") } } } } } } }
   }
@@ -1145,17 +1222,17 @@ fn ingest(world: World, path: String) -> Int uses !tty, !fs.read {
 
 # Codegen wave 1 end-to-end: lessa+parsa il target, emette C, lo stampa e lo
 # scrive su disco perché l'host (gcc) chiuda il giro AST→C→ELF.
-fn codegen_show(world: World, target: String) -> Int uses !tty, !fs.write {
+fn codegen_show(world: World, label: String, outpath: String, target: String) -> Int uses !tty, !fs.write {
   print(world, "");
-  print(world, "=== codegen wave 1: AST → C (Int-only) ===");
+  print(world, concat("=== ", concat(label, " ===")));
   let toks = lex(target);
   let mut nodes: List<Node> = [];
   let cur = Cur { pos: 0 };
   let root = parse_program(toks, target, nodes, cur);
   let c = gen(toks, target, nodes, root);
   print(world, c);
-  write_file(world, "/tmp/nullang-codegen-out.c", c);
-  print(world, "(C scritto in /tmp/nullang-codegen-out.c — compilalo con gcc)");
+  write_file(world, outpath, c);
+  print(world, concat("(C scritto in ", concat(outpath, " — compilalo con gcc)")));
   0
 }
 
@@ -1197,7 +1274,12 @@ fn main(world: World) -> Int uses !tty, !fs.read, !fs.write {
   # --- E ORA la propria coda: parsa l'intero file sorgente. ---
   ingest(world, src_path());
 
-  # --- CODEGEN wave 1: AST → C, compilabile, tutto da Nullang. fact(5)=120. ---
-  codegen_show(world, "fn fact(n: Int) -> Int { let mut acc = 1; let mut i = 1; while i < n + 1 { acc = acc * i; i = i + 1; } acc } fn main(world: World) -> Int uses !tty { fact(5) }");
+  # --- CODEGEN wave 1: AST → C, compilabile. fact(5)=120 (exit code). ---
+  codegen_show(world, "codegen wave 1: AST → C (Int-only)", "/tmp/nlcg-w1.c",
+    "fn fact(n: Int) -> Int { let mut acc = 1; let mut i = 1; while i < n + 1 { acc = acc * i; i = i + 1; } acc } fn main(world: World) -> Int uses !tty { fact(5) }");
+
+  # --- CODEGEN wave 2: String + builtin (print/concat/str_of_int), World droppato. ---
+  codegen_show(world, "codegen wave 2: String + builtin", "/tmp/nlcg-w2.c",
+    "fn sq(n: Int) -> Int { n * n } fn main(world: World) -> Int uses !tty { print(world, \"codegen Nullang: vivo\"); print(world, concat(\"sq(7) = \", str_of_int(sq(7)))); 0 }");
   0
 }
