@@ -702,6 +702,10 @@ fn tc_str()   -> Int { 2 }
 fn tc_world() -> Int { 3 }
 fn tc_list()  -> Int { 4 }
 fn tc_other() -> Int { 5 }
+# Banda dei codici-tipo per gli enum TAGGED (Stadio 2): code = 100000 + eid.
+# Alta apposta per non collidere con struct (10..1000) né List (>=1000); c_type
+# la controlla per PRIMA. Gli enum payload-free restano tc_int (sono `long`).
+fn tc_enum_base() -> Int { 100000 }
 
 # Mappa un lessema-tipo sul suo codice. `List<T>` → tc_list, nome struct → other.
 fn classify_type_lex(lx: String) -> Int {
@@ -1270,11 +1274,12 @@ static const char* nullang_argv(long i) {
 # Il tipo C di un codice-tipo. Schema: code >= 1000 = List<T> (T = code-1000);
 # 10 <= code < 1000 = struct id (handle `nlstruct<id>`); altrimenti primitivo.
 fn c_type(code: Int) -> String {
-  if code >= 1000 { "nl_list" }
+  if code >= tc_enum_base() { concat("nlenum", str_of_int(code - tc_enum_base())) }
+  else { if code >= 1000 { "nl_list" }
   else { if code >= 10 { concat("nlstruct", str_of_int(code - 10)) }
   else { if code == tc_str() { "const char*" }
   else { if code == tc_list() { "nl_list" }
-  else { "long" } } } }
+  else { "long" } } } } }
 }
 
 # Box di un valore in uno slot-lista (64-bit): puntatori (String/struct/lista)
@@ -1335,6 +1340,112 @@ fn first_arm_body(ns: List<Node>, head: Int) -> Int {
   if head < 0 { 0 - 1 } else { let a = ns[head]; a.b }
 }
 
+# --- Stadio 2: tagged enum -----------------------------------------------------
+# Id di un enum = posizione fra gli item `enum` top-level. -1 se non dichiarato.
+fn enum_id_of(toks: List<Token>, src: String, ns: List<Node>, root: Int, name: String) -> Int {
+  let r = ns[root];
+  let mut cur = r.a;
+  let mut id = 0;
+  let mut found = 0 - 1;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      if e.kind == nd_enum() {
+        if tok_lex(toks, src, e.tok) == name { found = id; going = false; }
+        else { id = id + 1; cur = e.next; }
+      } else { cur = e.next; }
+    }
+  }
+  found
+}
+
+# Il nodo nd_enum all'id `eid` (posizione fra gli nd_enum). -1 se fuori range.
+fn enum_node_at(ns: List<Node>, root: Int, eid: Int) -> Int {
+  let r = ns[root];
+  let mut cur = r.a;
+  let mut id = 0;
+  let mut found = 0 - 1;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      if e.kind == nd_enum() {
+        if id == eid { found = cur; going = false; }
+        else { id = id + 1; cur = e.next; }
+      } else { cur = e.next; }
+    }
+  }
+  found
+}
+
+# Id dell'enum che possiede il simbolo `symname`. -1 se di nessuno.
+fn sym_enum_id(toks: List<Token>, src: String, ns: List<Node>, root: Int, symname: String) -> Int {
+  let r = ns[root];
+  let mut cur = r.a;
+  let mut id = 0;
+  let mut found = 0 - 1;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      if e.kind == nd_enum() {
+        if vidx_in(toks, src, ns, e.a, symname) >= 0 { found = id; going = false; }
+        else { id = id + 1; cur = e.next; }
+      } else { cur = e.next; }
+    }
+  }
+  found
+}
+
+# La catena di varianti `head` ha almeno un payload (→ enum tagged)?
+fn enum_tagged_chain(ns: List<Node>, head: Int) -> Bool {
+  let mut v = head;
+  let mut tagged = false;
+  let mut going = true;
+  while going {
+    if v < 0 { going = false; }
+    else {
+      let ve = ns[v];
+      if ve.a >= 0 { tagged = true; going = false; }
+      else { v = ve.next; }
+    }
+  }
+  tagged
+}
+
+# Token del tipo payload della variante a indice `idx` nella catena `head`; -1 bare.
+fn variant_ptok(ns: List<Node>, head: Int, idx: Int) -> Int {
+  let mut v = head;
+  let mut i = 0;
+  let mut found = 0 - 1;
+  let mut going = true;
+  while going {
+    if v < 0 { going = false; }
+    else {
+      let ve = ns[v];
+      if i == idx { found = ve.a; going = false; }
+      else { i = i + 1; v = ve.next; }
+    }
+  }
+  found
+}
+
+# Codice-tipo di un enum dato il suo nome: tagged → 100000+eid; payload-free →
+# tc_int (è un long); -1 se il nome non è un enum.
+fn enum_type_code(toks: List<Token>, src: String, ns: List<Node>, root: Int, name: String) -> Int {
+  let eid = enum_id_of(toks, src, ns, root, name);
+  if eid < 0 { 0 - 1 }
+  else {
+    let en = enum_node_at(ns, root, eid);
+    let ennd = ns[en];
+    if enum_tagged_chain(ns, ennd.a) { tc_enum_base() + eid } else { tc_int() }
+  }
+}
+
 # Id di uno struct = posizione fra gli item `type` top-level (l'ordine di
 # dichiarazione). -1 se il nome non è uno struct dichiarato.
 fn struct_id(toks: List<Token>, src: String, ns: List<Node>, root: Int, name: String) -> Int {
@@ -1368,8 +1479,12 @@ fn tc_of_typetok(toks: List<Token>, src: String, ns: List<Node>, root: Int, type
     } else {
       let base = classify_type_lex(lx);
       if base == tc_other() {
-        let sid = struct_id(toks, src, ns, root, lx);
-        if sid < 0 { tc_other() } else { 10 + sid }
+        let ec = enum_type_code(toks, src, ns, root, lx);
+        if ec >= 0 { ec }
+        else {
+          let sid = struct_id(toks, src, ns, root, lx);
+          if sid < 0 { tc_other() } else { 10 + sid }
+        }
       } else { base }
     }
   }
@@ -1582,8 +1697,14 @@ fn type_of_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: 
       } else { tc_int() }
     }
     else { if nd.kind == nd_symbol() {
-      # Stadio 1: enum payload-free → intero. (Stadio 2 raffina i tagged.)
-      tc_int()
+      # Tagged → codice enum (100000+eid); payload-free → intero.
+      let eid = sym_enum_id(toks, src, ns, root, tok_lex(toks, src, nd.tok));
+      if eid < 0 { tc_int() }
+      else {
+        let en = enum_node_at(ns, root, eid);
+        let ennd = ns[en];
+        if enum_tagged_chain(ns, ennd.a) { tc_enum_base() + eid } else { tc_int() }
+      }
     }
     else { if nd.kind == nd_match() {
       # Il tipo del match = tipo del corpo del primo arm.
@@ -1755,21 +1876,57 @@ fn emit_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: Lis
       ExprC { pre: concat(bc.pre, ic.pre), expr: unbox_slot(elem, raw) }
     }
     else { if nd.kind == nd_symbol() {
-      # Stadio 1: enum payload-free → indice intero nudo.
-      ec_pure(str_of_int(sym_idx(toks, src, ns, root, tok_lex(toks, src, nd.tok))))
+      let sym = tok_lex(toks, src, nd.tok);
+      let eid = sym_enum_id(toks, src, ns, root, sym);
+      let idx = sym_idx(toks, src, ns, root, sym);
+      let en = enum_node_at(ns, root, eid);
+      let ennd = ns[en];
+      if enum_tagged_chain(ns, ennd.a) {
+        # Tagged: compound literal `((nlenum<eid>){ .tag = idx, .u._v<idx> = arg })`.
+        # ABI identica al seme Rust. Variante bare di un enum tagged = solo .tag.
+        let sname = concat("nlenum", str_of_int(eid));
+        if nd.a >= 0 {
+          let ac = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+          ExprC { pre: ac.pre, expr: concat("((", concat(sname, concat("){ .tag = ",
+            concat(str_of_int(idx), concat(", .u._v", concat(str_of_int(idx),
+            concat(" = ", concat(ac.expr, " })")))))))) }
+        } else {
+          ec_pure(concat("((", concat(sname, concat("){ .tag = ", concat(str_of_int(idx), " })")))))
+        }
+      } else {
+        # Payload-free → indice intero nudo (Stadio 1).
+        ec_pure(str_of_int(idx))
+      }
     }
     else { if nd.kind == nd_match() {
-      # match-ESPRESSIONE (Stadio 1, payload-free): switch sul valore intero dello
-      # scrutinee; ogni case assegna il proprio corpo a un temp `_mN`. Stesso
-      # schema dell'if-espressione (temp + statement nei `pre`, expr = temp).
+      # match-ESPRESSIONE: temp `_mN` del tipo del primo arm + switch nei `pre`,
+      # expr = temp (stesso schema dell'if-espressione). Tagged: bind lo scrutinee
+      # a un `_svN`, switch su `.tag`, e ogni arm lega il payload. Payload-free:
+      # switch sul valore intero (Stadio 1).
       let id = fresh(ctr);
       let tn = concat("_m", str_of_int(id));
-      let bt = type_of_expr(toks, src, ns, root, env, first_arm_body(ns, nd.b));
       let sc = emit_expr(toks, src, ns, root, env, ctr, nd.a);
-      let decl = concat("  ", concat(c_type(bt), concat(" ", concat(tn, ";\n"))));
-      let sw = concat("  switch (", concat(sc.expr, ") {\n"));
-      let cases = emit_arms(toks, src, ns, root, env, ctr, nd.b, tn);
-      ExprC { pre: concat(sc.pre, concat(decl, concat(sw, concat(cases, "  default: break;\n  }\n")))), expr: tn }
+      let st = type_of_expr(toks, src, ns, root, env, nd.a);
+      if st >= tc_enum_base() {
+        let eid = st - tc_enum_base();
+        # Il binder del primo arm va in scope PRIMA di inferire il tipo-risultato
+        # (il corpo può riferirlo, es. `.ok(body) => body`).
+        bind_first_arm_payload(toks, src, ns, root, env, nd.b, eid);
+        let bt = type_of_expr(toks, src, ns, root, env, first_arm_body(ns, nd.b));
+        let decl = concat("  ", concat(c_type(bt), concat(" ", concat(tn, ";\n"))));
+        let svid = fresh(ctr);
+        let sv = concat("_sv", str_of_int(svid));
+        let svdecl = concat("  ", concat(c_type(st), concat(" ", concat(sv, concat(" = ", concat(sc.expr, ";\n"))))));
+        let sw = concat("  switch (", concat(sv, ".tag) {\n"));
+        let cases = emit_arms_tagged(toks, src, ns, root, env, ctr, nd.b, tn, sv, eid);
+        ExprC { pre: concat(sc.pre, concat(decl, concat(svdecl, concat(sw, concat(cases, "  default: break;\n  }\n"))))), expr: tn }
+      } else {
+        let bt = type_of_expr(toks, src, ns, root, env, first_arm_body(ns, nd.b));
+        let decl = concat("  ", concat(c_type(bt), concat(" ", concat(tn, ";\n"))));
+        let sw = concat("  switch (", concat(sc.expr, ") {\n"));
+        let cases = emit_arms(toks, src, ns, root, env, ctr, nd.b, tn);
+        ExprC { pre: concat(sc.pre, concat(decl, concat(sw, concat(cases, "  default: break;\n  }\n")))), expr: tn }
+      }
     }
     else { ec_pure("/*?*/0") } } } } } } } } } } } } } }
   }
@@ -1790,6 +1947,59 @@ fn emit_arms(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: Lis
       let casehd = concat("  case ", concat(str_of_int(idx), ": {\n"));
       let assign = concat(bc.pre, concat("  ", concat(tn, concat(" = ", concat(bc.expr, ";\n")))));
       out = concat(out, concat(casehd, concat(assign, "  break;\n  }\n")));
+      cur = arm.next;
+    }
+  }
+  out
+}
+
+# Spinge nell'env il binder del PRIMO arm (col suo tipo payload), così l'inferenza
+# del tipo-risultato del match vede il binder se il corpo lo riferisce (es.
+# `.ok(body) => body`). emit_arms_tagged lo ri-spingerà: innocuo (env_lookup =
+# primo match, stesso tipo). No-op se il primo arm è bare o senza binder.
+fn bind_first_arm_payload(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, head: Int, eid: Int) -> Int {
+  if head < 0 { 0 }
+  else {
+    let arm = ns[head];
+    if arm.a >= 0 {
+      let en = enum_node_at(ns, root, eid);
+      let ennd = ns[en];
+      let idx = vidx_in(toks, src, ns, ennd.a, tok_lex(toks, src, arm.tok));
+      let ptok = variant_ptok(ns, ennd.a, idx);
+      if ptok >= 0 { env_push(env, arm.a, tc_of_typetok(toks, src, ns, root, ptok)); 0 }
+      else { 0 }
+    } else { 0 }
+  }
+}
+
+# Gli arm di un match su enum TAGGED: `case <idx>: { <pty> binder = sv.u._v<idx>;
+# corpo→tn; break; }`. Lega il payload nell'env (per token) prima di emettere il
+# corpo — convenzione "nomi unici per fn" come per i `let` (env_lookup = 1° match).
+fn emit_arms_tagged(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, ctr: Ctr, head: Int, tn: String, sv: String, eid: Int) -> String {
+  let en = enum_node_at(ns, root, eid);
+  let ennd = ns[en];
+  let vhead = ennd.a;
+  let mut cur = head;
+  let mut out = "";
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let arm = ns[cur];
+      let idx = vidx_in(toks, src, ns, vhead, tok_lex(toks, src, arm.tok));
+      let ptok = variant_ptok(ns, vhead, idx);
+      let bind = if arm.a >= 0 {
+        if ptok >= 0 {
+          let pc = tc_of_typetok(toks, src, ns, root, ptok);
+          env_push(env, arm.a, pc);
+          concat("  ", concat(c_type(pc), concat(" ", concat(mangle(toks, src, arm.a),
+            concat(" = ", concat(sv, concat(".u._v", concat(str_of_int(idx), ";\n"))))))))
+        } else { "" }
+      } else { "" };
+      let bc = emit_expr(toks, src, ns, root, env, ctr, arm.b);
+      let casehd = concat("  case ", concat(str_of_int(idx), ": {\n"));
+      let assign = concat(bc.pre, concat("  ", concat(tn, concat(" = ", concat(bc.expr, ";\n")))));
+      out = concat(out, concat(casehd, concat(bind, concat(assign, "  break;\n  }\n"))));
       cur = arm.next;
     }
   }
@@ -2039,11 +2249,60 @@ fn emit_structs(toks: List<Token>, src: String, ns: List<Node>, root: Int) -> St
   concat(out, "\n")
 }
 
-# Programma → C: preludio, typedef struct, forward-decl di ogni fn (tranne main),
-# poi i corpi. Passate sulla catena di item top-level del blocco-programma.
+# I membri union di un enum tagged: `<tipo> _v<idx>;` per ogni variante CON
+# payload (le bare non occupano slot). idx = posizione della variante.
+fn emit_union_members(toks: List<Token>, src: String, ns: List<Node>, root: Int, head: Int) -> String {
+  let mut v = head;
+  let mut idx = 0;
+  let mut out = "";
+  let mut going = true;
+  while going {
+    if v < 0 { going = false; }
+    else {
+      let ve = ns[v];
+      if ve.a >= 0 {
+        let pty = c_type(tc_of_typetok(toks, src, ns, root, ve.a));
+        out = concat(out, concat("    ", concat(pty, concat(" _v", concat(str_of_int(idx), ";\n")))));
+        idx = idx + 1; v = ve.next;
+      } else { idx = idx + 1; v = ve.next; }
+    }
+  }
+  out
+}
+
+# Typedef dei soli enum TAGGED: `typedef struct { long tag; union { ... } u; }
+# nlenum<eid>;`. ABI identica al seme Rust. id conta TUTTI gli nd_enum (anche i
+# payload-free, che non emettono typedef ma consumano un eid — coerente con
+# enum_id_of). Vengono dopo gli struct, così un payload può essere un handle struct.
+fn emit_enums(toks: List<Token>, src: String, ns: List<Node>, root: Int) -> String {
+  let r = ns[root];
+  let mut out = "";
+  let mut cur = r.a;
+  let mut id = 0;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      if e.kind == nd_enum() {
+        if enum_tagged_chain(ns, e.a) {
+          let nm = concat("nlenum", str_of_int(id));
+          out = concat(out, concat("typedef struct {\n  long tag;\n  union {\n",
+            concat(emit_union_members(toks, src, ns, root, e.a),
+            concat("  } u;\n} ", concat(nm, ";\n")))));
+          id = id + 1; cur = e.next;
+        } else { id = id + 1; cur = e.next; }
+      } else { cur = e.next; }
+    }
+  }
+  concat(out, "\n")
+}
+
+# Programma → C: preludio, typedef struct, typedef enum, forward-decl di ogni fn
+# (tranne main), poi i corpi. Passate sulla catena di item top-level.
 fn gen(toks: List<Token>, src: String, ns: List<Node>, root: Int) -> String {
   let r = ns[root];
-  let mut out = concat(c_prelude(), emit_structs(toks, src, ns, root));
+  let mut out = concat(c_prelude(), concat(emit_structs(toks, src, ns, root), emit_enums(toks, src, ns, root)));
   let mut cur = r.a;
   let mut going = true;
   while going {

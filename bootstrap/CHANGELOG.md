@@ -8,6 +8,33 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang self-host: enum/match — Stadio 2, tagged + payload (Direzione B) (2026-05-30)
+
+Completa gli enum nel compilatore self-hostato con i **payload** — la forma
+`Result` endorsed da SPEC §10 ora compila anche col compilatore-in-Nullang, non
+solo col seme Rust. Con lo Stadio 1 (payload-free) chiude il pezzo language-core
+scelto come rotta di Direzione B.
+
+- **Banda codici-tipo** per gli enum tagged: `100000 + eid` (alta, controllata per
+  prima in `c_type` → `nlenum<eid>`; non collide con struct 10..1000 né List
+  ≥1000). Gli enum payload-free restano `tc_int` (sono `long`).
+- **Typedef** `emit_enums`: `typedef struct { long tag; union { <T> _v<idx>; } u;
+  } nlenum<eid>;` (solo varianti con payload occupano slot), dopo gli struct così
+  un payload può essere un handle struct.
+- **Costruzione** `.ok(x)` → compound literal `((nlenum<eid>){ .tag=idx,
+  .u._v<idx>=x })`; variante bare di un tagged → solo `.tag`.
+- **Match** su tagged: bind dello scrutinee a `_svN`, `switch (_sv.tag)`, e ogni
+  arm lega il payload `<T> binder = _sv.u._v<idx>;`. ABI **identica** al seme Rust.
+- Fix d'inferenza: il binder del primo arm va in scope *prima* di inferire il
+  tipo-risultato del match (`.ok(body) => body` deve dare String, non Int).
+
+Verificato: `examples/enum-result.null` (Result con payload Int **e** String)
++ demo `safe_div`/`unwrap_or` → output e exit code **identici** fra seme Rust e
+compilatore self-hostato; **gate fixpoint byte-identico** (125280 byte). Limiti
+noti dell'MVP (il seme Rust li gestisce, il self-host no): match Unit-returning
+(arm che ritornano `()`, es. solo `print`) e il discard `_` nel binder; binder
+con nomi unici per fn (come i `let`, env_lookup = primo match).
+
 ### Nullang self-host: enum/match — Stadio 1, payload-free (Direzione B) (2026-05-30)
 
 Porta gli **enum** dentro il compilatore self-hostato (`selfhost-parser.null`),

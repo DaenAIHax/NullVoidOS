@@ -1,0 +1,31 @@
+# enum-result.null — enum/match con un Result TAGGED, compilabile anche dal
+# compilatore SELF-HOSTATO (Direzione B, Stadio 2). È la forma di error-handling
+# endorsed da SPEC §10 («enum result; the caller matches it»), ora dentro il
+# compilatore-in-Nullang, non solo nel seme Rust.
+#
+# Verifica del crossing self-host (dalla cartella bootstrap/, in `nix develop`):
+#   STAGE0=$(result/bin/nullang build system/nullang/examples/selfhost-parser.null | tail -1)
+#   "$STAGE0" system/nullang/examples/selfhost-parser.null /tmp/self.c && gcc -O2 -o /tmp/selfc /tmp/self.c
+#   /tmp/selfc system/nullang/examples/enum-result.null /tmp/r.c && gcc -O2 -o /tmp/r /tmp/r.c && /tmp/r
+
+enum Parsed = .ok(Int) | .err(String);
+
+# Una "parse" fittizia: stringa vuota → errore, altrimenti la sua lunghezza.
+fn parse(s: String) -> Parsed {
+  if s == "" { .err("stringa vuota") }
+  else { .ok(str_len(s)) }
+}
+
+# match che lega il payload Int del ramo .ok e quello String del ramo .err.
+fn render(p: Parsed) -> String {
+  match p {
+    .ok(n) => concat("ok: ", str_of_int(n)),
+    .err(msg) => concat("err: ", msg)
+  }
+}
+
+fn main(world: World) -> Int uses !tty {
+  print(world, render(parse("hello")));
+  print(world, render(parse("")));
+  0
+}
