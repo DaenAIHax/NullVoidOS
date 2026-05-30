@@ -8,6 +8,33 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang: builtin `now` — primo effetto `!time`, primo non-determinismo (2026-05-30)
+
+Apre la **Direzione B** (modello capability / builtin effectful). `now(world)
+-> Int` ritorna il tempo Unix in **secondi interi** (la VM è LP64 → `long`
+64-bit, niente Y2038). È:
+
+- **il primo builtin non-deterministico** — valore diverso a ogni run by design.
+  Vincolo conseguente: `now` non entra mai in un confronto-per-uguaglianza di
+  smoke-probe; le probe lo esercitano solo come "compila + gira + ritorna > 0".
+- **il primo a esercitare `!time`** (già nel vocabolario SPEC §5). Effectful,
+  World-gated come l'I/O file: `uses !time` richiesto, altrimenti **EFF001**.
+  L'effetto è *static-only per necessità* — `time()` è una lettura vDSO, non un
+  syscall che seccomp possa gateare utilmente: audita l'intento, non sandboxa
+  (a differenza di `!net`/`!fs`/`!proc`/`!rand` che hanno enforcement reale).
+
+Fold completo seguendo `BUILTINS_CONTRACT.md`: `Sig` in `check.rs::builtins()`
++ `nullang_now` nel `PRELUDE` di `codegen.rs` (con `#include <time.h>`), e lo
+stesso preludio + `is_builtin` nel compilatore self-hostato
+(`examples/selfhost-parser.null`). World erased → la call C è `nullang_now()`
+senza argomenti.
+
+Verificato: (1) seme Rust typecheck+run, stampa timestamp reale; (2) reiezione
+EFF001 senza `uses !time`; (3) **gate fixpoint self-host ancora byte-identico**
+(98806 byte sui tre stadi); (4) `now` attraversa il compilatore self-hostato
+end-to-end (binario gira). Due regression test (`now_is_time_effectful_and_
+world_erased`, `now_without_time_capability_is_rejected`) → 75 test verdi.
+
 ### Nullang self-host: bootstrap a stadi formalizzato (2026-05-30)
 
 Il fixpoint diventa un artefatto riproducibile, non una verifica manuale.

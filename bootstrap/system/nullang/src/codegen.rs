@@ -36,6 +36,7 @@ const PRELUDE: &str = "\
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <time.h>
 
 /* List<T> runtime (SPEC §11). A list value is a HANDLE — a pointer to a heap
    header — so push/set mutate through it without changing the handle, giving
@@ -299,6 +300,10 @@ static void nullang_write_file(const char* path, const char* content) {
   fputs(content, f);
   fclose(f);
 }
+
+/* !time (SPEC §5). World erased: no C parameter. Returns Unix seconds as a
+   64-bit long — non-deterministic by design, never used in an equality probe. */
+static long nullang_now(void) { return (long)time((time_t*)0); }
 
 /* Process arguments (Wave 2). `main` stashes argc/argv here at entry; the
    builtins read them. Pure from Nullang's view (startup data, no World). */

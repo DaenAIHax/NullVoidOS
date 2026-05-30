@@ -260,6 +260,22 @@ fn builtins() -> SigTable {
             c_name: "nullang_write_file".to_string(),
         },
     );
+    // The first *non-deterministic* builtin and the first to exercise `!time`
+    // (SPEC §5 vocabulary). Effectful, World-gated like file I/O. Returns Unix
+    // time in **whole seconds** as an Int (the VM is LP64, so `long` is 64-bit:
+    // no Y2038). The `!time` effect is static-only by necessity — `time()` is a
+    // vDSO read, not a syscall seccomp can usefully gate — so it audits intent,
+    // it does not sandbox. MUST NOT appear in any smoke-probe equality check:
+    // its value differs every run by design (see selfhost-bootstrap discipline).
+    t.insert(
+        "now".to_string(),
+        Sig {
+            params: vec![Ty::World],
+            ret: Ty::Int,
+            effects: vec!["time".to_string()],
+            c_name: "nullang_now".to_string(),
+        },
+    );
     // Process arguments (Wave 2 — gate for `cat <file>`/`grep`/`sed`-likes).
     // Pure: argv is startup data the runtime provides, like a constant — no
     // World, no effect (and so no `!proc.argv` to add to `null`'s vocabulary).

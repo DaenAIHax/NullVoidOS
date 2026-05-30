@@ -924,6 +924,7 @@ fn c_prelude() -> String {
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <time.h>
 
 typedef struct { long len; long cap; long* data; } nl_list_s;
 typedef nl_list_s* nl_list;
@@ -1076,6 +1077,8 @@ static void nullang_write_file(const char* path, const char* content) {
   fclose(f);
 }
 
+static long nullang_now(void) { return (long)time((time_t*)0); }
+
 static int nl_argc = 0;
 static char** nl_argv = 0;
 static long nullang_argc(void) { return (long)nl_argc; }
@@ -1209,7 +1212,7 @@ fn is_builtin(name: String) -> Bool {
   || name == "str_len" || name == "substr" || name == "char_at"
   || name == "char_code" || name == "int_of_str" || name == "index_of"
   || name == "split" || name == "read_file" || name == "write_file"
-  || name == "argc" || name == "argv"
+  || name == "argc" || name == "argv" || name == "now"
 }
 
 # Tipo di ritorno di un builtin (per inferire il tipo di un `let`).

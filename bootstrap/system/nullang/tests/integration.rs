@@ -71,6 +71,38 @@ fn main(world: World) -> Int {
 }
 
 #[test]
+fn now_is_time_effectful_and_world_erased() {
+    // `now` is the first non-deterministic builtin and the first to exercise
+    // `!time` (SPEC §5). It is effectful (World-gated) and World-erased like the
+    // file builtins: the C call carries no `world` argument and reads the clock.
+    let src = r#"
+fn main(world: World) -> Int uses !time {
+  now(world)
+}
+"#;
+    let c = compile_to_c(src, "now.null").expect("now should compile with !time");
+    assert!(c.contains("#include <time.h>"));
+    assert!(c.contains("static long nullang_now(void)"));
+    // World erased: the lowered call is argument-less.
+    assert!(c.contains("nullang_now()"));
+}
+
+#[test]
+fn now_without_time_capability_is_rejected() {
+    // Calling `now` without `uses !time` is the same EFF001 discipline as any
+    // other effect — audit, not security, but statically enforced.
+    let src = r#"
+fn main(world: World) -> Int {
+  now(world)
+}
+"#;
+    let err = compile_to_c(src, "now-bad.null").expect_err("should fail effect check");
+    assert_eq!(format!("{:?}", err.code), "Eff001");
+    let repair = err.repair.expect("EFF001 carries a repair");
+    assert_eq!(repair.id, "add-uses-clause");
+}
+
+#[test]
 fn unknown_function_is_ref_error() {
     let src = r#"
 fn main(world: World) -> Int uses !tty {
