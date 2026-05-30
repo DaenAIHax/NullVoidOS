@@ -8,6 +8,29 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang self-host: bootstrap a stadi formalizzato (2026-05-30)
+
+Il fixpoint diventa un artefatto riproducibile, non una verifica manuale.
+`system/nullang/selfhost-bootstrap.sh` esegue i tre stadi e fa da **gate**:
+
+- **stage0** = il `nullang` Rust (il SEME, via `nix build .#nullang`; non un
+  blob committato — l'unica radice di fiducia esterna).
+- **stage1** = stage0 esegue il sorgente → emette il C del compilatore → `cc`.
+- **stage2** = stage1 ri-emette il proprio C → `cc` (Rust fuori dal giro).
+- **gate**: `self0.c == self1.c == self2.c` byte-identico *e* stdout identico
+  fra gli stadi (a meno della riga col path di uscita). Esce ≠0 se diverge.
+
+Entrambi i gate passano (~98.6 KB di C, identici). Per renderlo possibile,
+`ingest` ora accetta il path di uscita del C come `argv(2)` (default `/tmp`),
+così ogni stadio scrive su un file proprio.
+
+Documentato in `DESIGN.md` (nuova sezione **§Self-host — ACHIEVED**, col modello
+a stadi e i tre fix del codegen) e aggiornata la sezione *Horizon*: la
+precondizione "verification net per far toccare parser/typer all'agente" è ora
+**soddisfatta** — il fixpoint stage1→stage2 È quel check (un'edit cattiva rompe
+la build invece di miscompilare). Ciò che resta per allargare l'agente è
+perimetro/trust, non più lavoro di linguaggio.
+
 ### Nullang self-host: FIXPOINT RAGGIUNTO — il compilatore compila sé stesso (2026-05-30)
 
 SPEC §12 chiuso. Il compilatore-in-Nullang (lexer+parser+codegen, ~2000 righe in

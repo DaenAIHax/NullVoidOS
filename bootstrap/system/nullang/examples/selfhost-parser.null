@@ -1871,11 +1871,13 @@ fn ingest(world: World, path: String) -> Int uses !tty, !fs.read, !fs.write {
         concat("   item top-level: ", str_of_int(count_chain(nodes, r.a))))));
   print_toc(world, toks, src, nodes, root);
   # FIXPOINT: emette il C del PROPRIO sorgente. Se gcc lo compila e il binario
-  # si comporta come questo compilatore, il self-host è raggiunto.
+  # si comporta come questo compilatore, il self-host è raggiunto. Il path di
+  # uscita è argv(2) se dato (lo usa il bootstrap a stadi), altrimenti /tmp.
   let c = gen(toks, src, nodes, root);
-  write_file(world, "/tmp/nlcg-self.c", c);
+  let outp = if argc() > 2 { argv(2) } else { "/tmp/nlcg-self.c" };
+  write_file(world, outp, c);
   print(world, concat("C di sé stesso: ", concat(str_of_int(str_len(c)),
-        " byte → /tmp/nlcg-self.c")));
+        concat(" byte → ", outp))));
   0
 }
 

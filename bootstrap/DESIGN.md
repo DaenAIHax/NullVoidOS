@@ -393,6 +393,45 @@ but is the first thing to tighten before any multi-tenant or untrusted
 use: narrow the share (RO credentials + separate writable scratch) and
 replace NAT with a whitelisted egress proxy.
 
+## Self-host — the compiler in Nullang (ACHIEVED 2026-05-30, SPEC §12)
+
+The Nullang compiler is now written in Nullang. `system/nullang/examples/
+selfhost-parser.null` (~2000 lines) is a full lexer + parser + codegen: it
+reads a `.null` source and emits C. Pointed at **its own source**, the C it
+produces — compiled by `cc` — *is* the compiler. Verified by a **two-stage
+fixpoint** (`system/nullang/selfhost-bootstrap.sh`, a hard gate):
+
+```
+stage0  the Rust `nullang` — the SEED, the only external root of trust
+        (reproducible via `nix build .#nullang`; not a checked-in blob).
+stage1  stage0 runs the source → emits the compiler's C → cc.   (Rust-built)
+stage2  stage1 re-emits its own C → cc.                          (self-built)
+gate    self0.c == self1.c == self2.c  (byte-identical emitted C)
+        AND stdout identical across stages (behaviour).
+```
+
+Both gates pass: ~98.6 KB of C, byte-identical across stages, behaviour
+identical. This is the classic self-hosting fixpoint — `compiler(src)` is the
+same whether the compiler was built by Rust or by itself — so **Rust is now
+only the seed and is removable** (frozen as stage0, exactly the `bootstrap-
+tools` pattern of Nix).
+
+Three things made the codegen reach its own source: (1) **uniform `World`
+erasure** — every argument of type `World` is dropped at call sites (builtins
+*and* user functions), since `World` is a zero-sized erased capability token;
+(2) **`c_string_escape`** — Nullang allows real newlines inside a string
+literal (the embedded C prelude), C does not, so raw control chars are
+re-escaped; (3) a **complete prelude** (all builtins + the `nl_list` runtime)
+and a `main` argc/argv shim. Known gap vs the Rust codegen: no enum/Option
+(§11; the compiler doesn't use them) and the prelude is embedded rather than
+shared with Rust (a future DRY via a read-from-template).
+
+Why it matters beyond the milestone: self-hosting is the verification net that
+the Horizon section (below) names as the precondition for letting the in-VM
+agent touch the parser/typer — *"a bad edit fails to compile rather than
+miscompiling silently."* That enabler now exists; the remaining work to widen
+the agent is perimeter/trust, not language.
+
 ## Horizon — "everything in the VM" (vision, not a current task)
 
 The natural end-state of an agent-primary OS is that the agent does *all* of
@@ -425,7 +464,11 @@ true.
    real **self-hosting** step (§Thesis, "self-hosting pattern"): it requires
    either a much stronger in-VM verification net than the current smoke-probe,
    or the compiler rewritten in Nullang (so a bad edit fails to compile rather
-   than miscompiling silently).
+   than miscompiling silently). **The latter now exists** (see §Self-host,
+   2026-05-30): the self-host fixpoint *is* that check — a bad edit to the
+   Nullang compiler breaks the stage1→stage2 build instead of miscompiling.
+   What remains for this reason is wiring that gate into the in-VM loop, not
+   the language work.
 3. **The cooked `/bin/nullang` floor.** Rebuilt by the host; it is the
    rollback floor when a generation is bad. If the VM becomes the source of
    truth, the floor and the "truth lives on origin/host" safety both weaken
@@ -437,7 +480,8 @@ true.
   you cannot widen the agent's authority while the perimeter still leaks.
 - A verification net strong enough to let the agent touch parser/typer:
   realistically, **self-hosting** the compiler in Nullang, so the bootstrap
-  build itself is the check.
+  build itself is the check. **(Met 2026-05-30 — see §Self-host; the
+  stage1→stage2 fixpoint is the check. Remaining: run it inside the VM loop.)**
 - A mediated, audited path for work to leave the VM that is *not* a raw git
   credential — e.g. a proposal channel the host (or a human gate) approves,
   consistent with "agent proposes, trusted gate disposes."
