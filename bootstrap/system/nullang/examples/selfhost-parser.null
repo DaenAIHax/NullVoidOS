@@ -1020,15 +1020,64 @@ fn env_lookup(toks: List<Token>, src: String, ns: List<Node>, env: List<Binding>
   found
 }
 
+# Wave 5 — statement-hoisting. Alcune espressioni (l'if-espressione; in futuro i
+# letterali struct/lista) devono emettere statement PRIMA di sé, perché il C non
+# ha blocchi-valore. emit_expr quindi ritorna {pre, expr}: `pre` sono gli
+# statement da piazzare prima, `expr` l'espressione vera. I chiamanti accumulano
+# i `pre` dei figli in ordine di valutazione e li antepongono alla propria riga.
+type ExprC = { pre: String, expr: String };
+fn ec_pure(s: String) -> ExprC { ExprC { pre: "", expr: s } }
+
+# Contatore di temporanei, condiviso per riferimento (come Cur): nomi `_tN` unici.
+type Ctr = { n: Int };
+fn fresh(ctr: Ctr) -> Int {
+  let mut m = ctr;
+  let id = m.n;
+  m.n = m.n + 1;
+  id
+}
+
+# Modi di coda per l'ultimo statement di un blocco-valore: nessuno / `return` /
+# `tname = …` (per i rami di un if-espressione, che assegnano un temp).
+fn tm_none()   -> Int { 0 }
+fn tm_return() -> Int { 1 }
+fn tm_assign() -> Int { 2 }
+
+# Indice dell'ultimo statement di un blocco (il suo valore di coda).
+fn block_last(ns: List<Node>, blk: Int) -> Int {
+  let b = ns[blk];
+  let mut cur = b.a;
+  let mut last = 0 - 1;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else { last = cur; let e = ns[cur]; cur = e.next; }
+  }
+  last
+}
+
+# Tipo del valore di un blocco = tipo della sua espressione di coda.
+fn block_tail_type(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, blk: Int) -> Int {
+  let last = block_last(ns, blk);
+  if last < 0 { tc_int() }
+  else {
+    let e = ns[last];
+    if e.kind == nd_expr() { type_of_expr(toks, src, ns, root, env, e.a) }
+    else { if e.kind == nd_if() { type_of_expr(toks, src, ns, root, env, last) }
+    else { tc_int() } }
+  }
+}
+
 # Inferenza di tipo SUFFICIENTE per dichiarare un `let` e scegliere `==` vs
-# strcmp: literal sul loro tipo, `id` risolto nell'ambiente (Wave 4), call sul
-# ritorno del builtin/della fn utente, binop → long.
+# strcmp: literal sul loro tipo, `id` risolto nell'ambiente, call sul ritorno del
+# builtin/fn utente, if-espressione sul tipo del ramo, binop → long.
 fn type_of_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, idx: Int) -> Int {
   if idx < 0 { tc_int() }
   else {
     let nd = ns[idx];
     if nd.kind == nd_str() { tc_str() }
     else { if nd.kind == nd_id() { env_lookup(toks, src, ns, env, nd.tok) }
+    else { if nd.kind == nd_if() { block_tail_type(toks, src, ns, root, env, nd.b) }
     else { if nd.kind == nd_call() {
       let cnode = ns[nd.a];
       if cnode.kind == nd_id() {
@@ -1037,41 +1086,41 @@ fn type_of_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: 
         else { find_fn_ret(toks, src, ns, root, name) }
       } else { tc_int() }
     }
-    else { tc_int() } } }
+    else { tc_int() } } } }
   }
 }
 
-# Espressione → C, ricorsiva. Le precedenze sono già nell'albero: ogni binop si
-# para con le parentesi, così non serve ri-ragionare sulla priorità in C. `root`
-# serve a type_of_expr per risolvere il ritorno delle fn utente.
-fn emit_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, idx: Int) -> String {
-  if idx < 0 { "0" }
+# Espressione → {pre, expr}. Le precedenze sono già nell'albero: ogni binop si
+# para con le parentesi. `ctr` per i temp dell'if-espressione.
+fn emit_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, ctr: Ctr, idx: Int) -> ExprC {
+  if idx < 0 { ec_pure("0") }
   else {
     let nd = ns[idx];
-    if nd.kind == nd_num() { tok_lex(toks, src, nd.tok) }
-    else { if nd.kind == nd_id() { mangle(toks, src, nd.tok) }
+    if nd.kind == nd_num() { ec_pure(tok_lex(toks, src, nd.tok)) }
+    else { if nd.kind == nd_id() { ec_pure(mangle(toks, src, nd.tok)) }
     else { if nd.kind == nd_bool() {
-      if tok_lex(toks, src, nd.tok) == "true" { "1" } else { "0" }
+      ec_pure(if tok_lex(toks, src, nd.tok) == "true" { "1" } else { "0" })
     }
-    else { if nd.kind == nd_str() { tok_lex(toks, src, nd.tok) }
+    else { if nd.kind == nd_str() { ec_pure(tok_lex(toks, src, nd.tok)) }
     else { if nd.kind == nd_unary() {
-      concat("(-", concat(emit_expr(toks, src, ns, root, env, nd.a), ")"))
+      let c = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+      ExprC { pre: c.pre, expr: concat("(-", concat(c.expr, ")")) }
     }
     else { if nd.kind == nd_bin() {
       let op = tok_lex(toks, src, nd.tok);
+      let lc = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+      let rc = emit_expr(toks, src, ns, root, env, ctr, nd.b);
       let lt = type_of_expr(toks, src, ns, root, env, nd.a);
       let rt = type_of_expr(toks, src, ns, root, env, nd.b);
       let streq = (op == "==" || op == "!=") && (lt == tc_str() || rt == tc_str());
-      if streq {
+      let e = if streq {
         # Uguaglianza di String: strcmp, non `==` di puntatori.
-        let tail = if op == "==" { ") == 0)" } else { ") != 0)" };
-        concat("(strcmp(", concat(emit_expr(toks, src, ns, root, env, nd.a),
-          concat(", ", concat(emit_expr(toks, src, ns, root, env, nd.b), tail))))
+        let tl = if op == "==" { ") == 0)" } else { ") != 0)" };
+        concat("(strcmp(", concat(lc.expr, concat(", ", concat(rc.expr, tl))))
       } else {
-        concat("(", concat(emit_expr(toks, src, ns, root, env, nd.a),
-          concat(" ", concat(op,
-          concat(" ", concat(emit_expr(toks, src, ns, root, env, nd.b), ")"))))))
-      }
+        concat("(", concat(lc.expr, concat(" ", concat(op, concat(" ", concat(rc.expr, ")"))))))
+      };
+      ExprC { pre: concat(lc.pre, rc.pre), expr: e }
     }
     else { if nd.kind == nd_call() {
       let cnode = ns[nd.a];
@@ -1083,20 +1132,37 @@ fn emit_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: Lis
         let argh = if bi && world_gated(name) {
           if nd.b < 0 { 0 - 1 } else { let h = ns[nd.b]; h.next }
         } else { nd.b };
-        concat(cname, concat("(", concat(emit_args(toks, src, ns, root, env, argh), ")")))
+        let ac = emit_args(toks, src, ns, root, env, ctr, argh);
+        ExprC { pre: ac.pre, expr: concat(cname, concat("(", concat(ac.expr, ")"))) }
       } else {
         # Callee non-identificatore (raro: Nullang non ha fn di prima classe).
-        concat(emit_expr(toks, src, ns, root, env, nd.a),
-          concat("(", concat(emit_args(toks, src, ns, root, env, nd.b), ")")))
+        let cc = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+        let ac = emit_args(toks, src, ns, root, env, ctr, nd.b);
+        ExprC { pre: concat(cc.pre, ac.pre), expr: concat(cc.expr, concat("(", concat(ac.expr, ")"))) }
       }
     }
-    else { concat("/*?*/0", "") } } } } } } }
+    else { if nd.kind == nd_if() {
+      # if-ESPRESSIONE: si abbassa a un temp + if-statement. Alloca `_tN` del tipo
+      # del ramo, emette l'if nei `pre` con tm_assign (entrambi i rami fanno
+      # `_tN = <coda>;`), e l'espressione È `_tN`.
+      let id = fresh(ctr);
+      let tname = concat("_t", str_of_int(id));
+      let bt = block_tail_type(toks, src, ns, root, env, nd.b);
+      let cc = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+      let thenb = emit_block(toks, src, ns, root, env, ctr, nd.b, tm_assign(), tname);
+      let elsepart = emit_else(toks, src, ns, root, env, ctr, nd.c, tm_assign(), tname);
+      let decl = concat("  ", concat(c_type(bt), concat(" ", concat(tname, ";\n"))));
+      let body = concat("  if (", concat(cc.expr, concat(") {\n", concat(thenb, concat("  }", concat(elsepart, "\n"))))));
+      ExprC { pre: concat(cc.pre, concat(decl, body)), expr: tname }
+    }
+    else { ec_pure("/*?*/0") } } } } } } } }
   }
 }
 
-# Catena di argomenti (via `next`) → "a, b, c".
-fn emit_args(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, head: Int) -> String {
+# Catena di argomenti (via `next`) → {pre = unione dei pre, expr = "a, b, c"}.
+fn emit_args(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, ctr: Ctr, head: Int) -> ExprC {
   let mut cur = head;
+  let mut pre = "";
   let mut out = "";
   let mut first = true;
   let mut going = true;
@@ -1104,58 +1170,78 @@ fn emit_args(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: Lis
     if cur < 0 { going = false; }
     else {
       let e = ns[cur];
-      let piece = emit_expr(toks, src, ns, root, env, cur);
-      out = if first { piece } else { concat(out, concat(", ", piece)) };
+      let ec = emit_expr(toks, src, ns, root, env, ctr, cur);
+      pre = concat(pre, ec.pre);
+      out = if first { ec.expr } else { concat(out, concat(", ", ec.expr)) };
       first = false;
       cur = e.next;
     }
   }
-  out
+  ExprC { pre: pre, expr: out }
 }
 
-# Statement → C. `tail` = questo è l'ultimo statement di un corpo che produce un
-# valore: l'espressione finale diventa `return`, come nelle fn a corpo-blocco.
-fn emit_stmt(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, idx: Int, tail: Bool) -> String {
+# Il ramo `else` di un if: può essere assente, un blocco, oppure un altro `if`
+# (catena `else if` — il parser lo lega come nd_if, non come blocco). Si avvolge
+# in `{ }` e si emette di conseguenza, propagando il tailmode.
+fn emit_else(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, ctr: Ctr, elsenode: Int, tailmode: Int, tname: String) -> String {
+  if elsenode < 0 { "" }
+  else {
+    let ec = ns[elsenode];
+    let inner = if ec.kind == nd_if() {
+      concat(emit_stmt(toks, src, ns, root, env, ctr, elsenode, tailmode, tname), "\n")
+    } else {
+      emit_block(toks, src, ns, root, env, ctr, elsenode, tailmode, tname)
+    };
+    concat(" else {\n", concat(inner, "  }"))
+  }
+}
+
+# Statement → C. `tailmode` decide cosa fa l'espressione di coda di un blocco-
+# valore: tm_return → `return …`, tm_assign → `tname = …`, tm_none → `…;`.
+fn emit_stmt(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, ctr: Ctr, idx: Int, tailmode: Int, tname: String) -> String {
   let nd = ns[idx];
   if nd.kind == nd_let() {
-    # Il tipo C della locale viene inferito dall'inizializzatore.
     let ct = c_type(type_of_expr(toks, src, ns, root, env, nd.a));
-    concat("  ", concat(ct, concat(" ", concat(mangle(toks, src, nd.tok),
-      concat(" = ", concat(emit_expr(toks, src, ns, root, env, nd.a), ";"))))))
+    let ec = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+    concat(ec.pre, concat("  ", concat(ct, concat(" ", concat(mangle(toks, src, nd.tok),
+      concat(" = ", concat(ec.expr, ";")))))))
   }
   else { if nd.kind == nd_assign() {
-    concat("  ", concat(emit_expr(toks, src, ns, root, env, nd.a),
-      concat(" = ", concat(emit_expr(toks, src, ns, root, env, nd.b), ";"))))
+    let lc = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+    let rc = emit_expr(toks, src, ns, root, env, ctr, nd.b);
+    concat(lc.pre, concat(rc.pre, concat("  ", concat(lc.expr,
+      concat(" = ", concat(rc.expr, ";"))))))
   }
   else { if nd.kind == nd_return() {
-    concat("  return ", concat(emit_expr(toks, src, ns, root, env, nd.a), ";"))
+    let ec = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+    concat(ec.pre, concat("  return ", concat(ec.expr, ";")))
   }
   else { if nd.kind == nd_while() {
-    concat("  while (", concat(emit_expr(toks, src, ns, root, env, nd.a),
-      concat(") {\n", concat(emit_block(toks, src, ns, root, env, nd.b, false), "  }"))))
+    let cc = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+    concat(cc.pre, concat("  while (", concat(cc.expr,
+      concat(") {\n", concat(emit_block(toks, src, ns, root, env, ctr, nd.b, tm_none(), ""), "  }")))))
   }
   else { if nd.kind == nd_if() {
-    let elsepart = if nd.c < 0 { "" }
-      else { concat(" else {\n", concat(emit_block(toks, src, ns, root, env, nd.c, false), "  }")) };
-    concat("  if (", concat(emit_expr(toks, src, ns, root, env, nd.a),
-      concat(") {\n", concat(emit_block(toks, src, ns, root, env, nd.b, false),
-      concat("  }", elsepart)))))
+    # Un if-statement in coda propaga il tailmode ai rami (così `return`/assegnano).
+    let cc = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+    let elsepart = emit_else(toks, src, ns, root, env, ctr, nd.c, tailmode, tname);
+    concat(cc.pre, concat("  if (", concat(cc.expr,
+      concat(") {\n", concat(emit_block(toks, src, ns, root, env, ctr, nd.b, tailmode, tname),
+      concat("  }", elsepart))))))
   }
   else { if nd.kind == nd_expr() {
-    if tail {
-      concat("  return ", concat(emit_expr(toks, src, ns, root, env, nd.a), ";"))
-    } else {
-      concat("  ", concat(emit_expr(toks, src, ns, root, env, nd.a), ";"))
-    }
+    let ec = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+    let line = if tailmode == tm_return() { concat("  return ", concat(ec.expr, ";")) }
+      else { if tailmode == tm_assign() { concat("  ", concat(tname, concat(" = ", concat(ec.expr, ";")))) }
+      else { concat("  ", concat(ec.expr, ";")) } };
+    concat(ec.pre, line)
   }
   else { concat("  /*?stmt*/;", "") } } } } } }
 }
 
-# Il corpo di un blocco (nd_block): la sua catena di statement → C. `tail_ret`
-# si propaga solo all'ULTIMO statement (quello che porta il valore della fn).
-# Ogni `let` registra il proprio binding nell'ambiente (condiviso) così gli
-# statement successivi ne risolvono il tipo.
-fn emit_block(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, blk: Int, tail_ret: Bool) -> String {
+# Il corpo di un blocco (nd_block) → C. Il `tailmode` si applica solo all'ULTIMO
+# statement. Ogni `let` registra il proprio binding nell'ambiente (condiviso).
+fn emit_block(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, ctr: Ctr, blk: Int, tailmode: Int, tname: String) -> String {
   let b = ns[blk];
   let mut cur = b.a;
   let mut out = "";
@@ -1164,8 +1250,8 @@ fn emit_block(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: Li
     if cur < 0 { going = false; }
     else {
       let e = ns[cur];
-      let is_tail = e.next < 0 && tail_ret;
-      out = concat(out, concat(emit_stmt(toks, src, ns, root, env, cur, is_tail), "\n"));
+      let tm = if e.next < 0 { tailmode } else { tm_none() };
+      out = concat(out, concat(emit_stmt(toks, src, ns, root, env, ctr, cur, tm, tname), "\n"));
       if e.kind == nd_let() {
         env_push(env, e.tok, type_of_expr(toks, src, ns, root, env, e.a)); 0
       } else { 0 };
@@ -1223,8 +1309,9 @@ fn emit_fn(toks: List<Token>, src: String, ns: List<Node>, root: Int, fnidx: Int
     if p < 0 { gp = false; }
     else { let pe = ns[p]; env_push(env, pe.tok, pe.a); p = pe.next; }
   }
+  let ctr = Ctr { n: 0 };
   concat(c_sig(toks, src, ns, fnidx),
-    concat(" {\n", concat(emit_block(toks, src, ns, root, env, nd.b, true), "}\n")))
+    concat(" {\n", concat(emit_block(toks, src, ns, root, env, ctr, nd.b, tm_return(), ""), "}\n")))
 }
 
 # Programma → C: preludio, poi le forward-declaration di ogni fn (tranne main),
@@ -1403,5 +1490,9 @@ fn main(world: World) -> Int uses !tty, !fs.read, !fs.write {
   # --- CODEGEN wave 4: scope di variabili. let y = x (String), a == b (due var String). ---
   codegen_show(world, "codegen wave 4: scope di variabili", "/tmp/nlcg-w4.c",
     "fn greet(name: String) -> String { concat(\"ciao \", name) } fn same(a: String, b: String) -> Int { let mut r = 0; if a == b { r = 1; } else { r = 0; } r } fn main(world: World) -> Int uses !tty { let x = greet(\"X\"); let y = x; print(world, y); print(world, str_of_int(same(\"foo\", \"foo\"))); print(world, str_of_int(same(\"foo\", \"bar\"))); 0 }");
+
+  # --- CODEGEN wave 5: if-ESPRESSIONE (hoisting). let = if, corpo-if con else-if, if in argomento. ---
+  codegen_show(world, "codegen wave 5: if-espressione (hoisting)", "/tmp/nlcg-w5.c",
+    "fn classify(n: Int) -> String { if n < 0 { \"neg\" } else { if n == 0 { \"zero\" } else { \"pos\" } } } fn main(world: World) -> Int uses !tty { let label = if 5 < 10 { \"minore\" } else { \"no\" }; print(world, label); print(world, classify(0 - 3)); print(world, classify(0)); print(world, classify(7)); print(world, concat(\"scelta: \", if 1 == 1 { \"uno\" } else { \"altro\" })); 0 }");
   0
 }

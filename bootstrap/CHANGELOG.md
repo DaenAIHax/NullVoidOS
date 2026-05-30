@@ -8,6 +8,35 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang self-host: codegen Wave 5 — statement-hoisting + if-espressione (2026-05-30)
+
+Il muro grosso. Il C non ha blocchi-valore, ma in Nullang `if` è
+un'espressione (`let x = if c {a} else {b}`): va abbassata a un temp +
+if-statement. Refactor del codegen perché `emit_expr` ritorni `{pre, expr}`
+(`type ExprC`): `pre` sono gli statement da emettere prima, `expr`
+l'espressione. Ogni nodo con figli accumula i `pre` dei figli in ordine di
+valutazione; `emit_stmt` antepone il `pre` alla propria riga.
+
+- **if-espressione** (`emit_expr` su `nd_if`): alloca `_tN` del tipo del ramo
+  (`block_tail_type`), emette l'if nei `pre` con un nuovo `tailmode` =
+  `tm_assign` (entrambi i rami fanno `_tN = <coda>;`), e l'espressione È `_tN`.
+  Contatore temp `Ctr` condiviso per riferimento (come `Cur`).
+- **tail-if** (`emit_stmt` su `nd_if` in coda): propaga il `tailmode` ai rami,
+  così un corpo-fn `if … {a} else {b}` emette `return` in entrambi i rami senza
+  temp.
+- **`else if`**: il parser lo lega come `nd_if` (non blocco); nuovo `emit_else`
+  distingue blocco / else-if e ricorre via `emit_stmt`. (Correggeva un bug
+  latente di emit_stmt dalle Wave 1–4, mai esercitato prima.)
+
+`tailmode` (tm_none/tm_return/tm_assign) sostituisce il vecchio flag booleano
+di coda. Prova: `fn classify(n) { if n<0 {"neg"} else { if n==0 {"zero"} else
+{"pos"} } }` + `let label = if 5<10 {…}` + if-in-argomento → codegen-Nullang →
+gcc -Wall (zero warning) → stampa `minore`/`neg`/`zero`/`pos`/`scelta: uno`.
+W1–W4 invariati, self-ingest 130/130 item zero spuri, effect-check pulito.
+
+Restano (Wave 6): struct literal e list literal (stesso hoisting, +typedef e
+box/unbox del runtime list), field/index access. Poi il fixpoint stage0→stage2.
+
 ### Nullang self-host: codegen Wave 4 — scope di variabili (2026-05-30)
 
 Chiuso il limite di Wave 3: gli `id`-variabile ora si risolvono al loro tipo
