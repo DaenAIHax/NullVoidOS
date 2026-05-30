@@ -8,6 +8,33 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang self-host: codegen Wave 3 — type-inference + strcmp (2026-05-30)
+
+Il codegen-in-Nullang ora tipa quel che emette, non tutto `long`. Tre pezzi:
+
+- **Return-type nelle firme.** Il parser classifica anche `-> T`
+  (`return_type_code`, salvato in `nd_fn.c`); `classify_type_lex` è ora
+  condiviso fra annotazione di parametro e tipo di ritorno. `c_sig` emette
+  `const char* nlu_greet(...)` invece di `long`.
+- **`type_of_expr`.** Inferenza sufficiente a dichiarare un `let` e scegliere
+  `==`/strcmp: literal sul loro tipo, call sul ritorno del builtin
+  (`builtin_ret_tc`) o della fn utente (`find_fn_ret`, lookup fra gli item),
+  binop → long. `emit_stmt` per `let` usa `c_type(type_of_expr(init))`.
+- **`==`/`!=` su String → `strcmp`.** In `emit_expr`, se un operando è di tipo
+  String l'uguaglianza diventa `(strcmp(a, b) == 0)` invece del confronto di
+  puntatori — e il literal da un lato del confronto basta a farlo scattare.
+
+Limite dichiarato (Wave 3): un `id`-variabile in `type_of_expr` torna `Int`
+(niente scope di variabili ancora) → `let y = x_string` sbaglierebbe; non
+capita nei target di prova. `root` filato attraverso tutte le `emit_*` per il
+lookup del ritorno delle fn utente.
+
+Prova: `fn greet(name: String) -> String { concat("ciao, ", name) }` +
+`let msg = greet("Nullang"); … let first = substr(msg,0,1); if first == "c" {…}`
+→ codegen-Nullang emette C tipato → gcc -Wall (zero warning) → stampa
+`ciao, Nullang` / `lunghezza = 13` / `inizia per c`. W1/W2 invariati, self-ingest
+117/117 item zero spuri, effect-check pulito.
+
 ### Nullang self-host: codegen Wave 2 — String + builtin (2026-05-30)
 
 Il codegen-in-Nullang ora emette programmi che STAMPANO. Aggiunto al preludio

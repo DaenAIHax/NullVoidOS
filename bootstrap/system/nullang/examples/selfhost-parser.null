@@ -597,19 +597,27 @@ fn tc_world() -> Int { 3 }
 fn tc_list()  -> Int { 4 }
 fn tc_other() -> Int { 5 }
 
-# Classifica il tipo che segue un `:` guardando il suo primo token (senza
-# consumarlo: skip_anno consuma poi tutto). `List<T>` → tc_list, il nome di
-# uno struct → tc_other, i primitivi sul loro codice.
+# Mappa un lessema-tipo sul suo codice. `List<T>` → tc_list, nome struct → other.
+fn classify_type_lex(lx: String) -> Int {
+  if lx == "World" { tc_world() }
+  else { if lx == "Int" { tc_int() }
+  else { if lx == "Bool" { tc_bool() }
+  else { if lx == "String" { tc_str() }
+  else { if lx == "List" { tc_list() }
+  else { tc_other() } } } } }
+}
+
+# Codice del tipo che segue un `:` (annotazione di parametro/campo), guardando il
+# suo primo token senza consumarlo (skip_anno consuma poi tutto).
 fn type_code_after_colon(toks: List<Token>, src: String, c: Cur) -> Int {
-  if at_op(toks, src, c, ":") {
-    let lx = tok_lex(toks, src, c.pos + 1);
-    if lx == "World" { tc_world() }
-    else { if lx == "Int" { tc_int() }
-    else { if lx == "Bool" { tc_bool() }
-    else { if lx == "String" { tc_str() }
-    else { if lx == "List" { tc_list() }
-    else { tc_other() } } } } }
-  } else { tc_int() }
+  if at_op(toks, src, c, ":") { classify_type_lex(tok_lex(toks, src, c.pos + 1)) }
+  else { tc_int() }
+}
+
+# Codice del tipo di ritorno `-> T`, stesso meccanismo (token dopo `->`).
+fn return_type_code(toks: List<Token>, src: String, c: Cur) -> Int {
+  if at_op(toks, src, c, "->") { classify_type_lex(tok_lex(toks, src, c.pos + 1)) }
+  else { tc_int() }
 }
 
 # Un parametro `name: T`. Il nome è il nodo; il codice di tipo va in `a` (per il
@@ -646,17 +654,18 @@ fn parse_params(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> In
 }
 
 # `fn name(params) -> T uses !cap { body }`. tok=nome, a=catena parametri,
-# b=blocco corpo. Il tipo di ritorno e `uses` si saltano (altra fase).
+# b=blocco corpo, c=codice del tipo di ritorno (per le firme C). `uses` saltato.
 fn parse_fn(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
   let mut ns = nodes;
   adv(c);
   let nametk = c.pos;
   eat_ident(toks, c);
   let params = parse_params(toks, src, ns, c);
+  let rtc = return_type_code(toks, src, c);
   skip_return_type(toks, src, c);
   skip_uses(toks, src, c);
   let body = parse_block(toks, src, ns, c);
-  mk(ns, nd_fn(), params, body, none(), nametk)
+  mk(ns, nd_fn(), params, body, rtc, nametk)
 }
 
 # Un campo-tipo `name: T` — gemello di parse_param ma terminato da `}`.
@@ -955,9 +964,59 @@ fn world_gated(name: String) -> Bool {
   name == "print" || name == "read_file" || name == "write_file"
 }
 
+# Tipo di ritorno di un builtin (per inferire il tipo di un `let`).
+fn builtin_ret_tc(name: String) -> Int {
+  if name == "concat" || name == "str_of_int" || name == "substr" || name == "char_at" {
+    tc_str()
+  } else { tc_int() }
+}
+
+# Cerca una fn utente per nome fra gli item top-level e ne ritorna il codice del
+# tipo di ritorno (campo `c` di nd_fn). Default tc_int se non trovata.
+fn find_fn_ret(toks: List<Token>, src: String, ns: List<Node>, root: Int, name: String) -> Int {
+  let r = ns[root];
+  let mut cur = r.a;
+  let mut found = tc_int();
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      if e.kind == nd_fn() && tok_lex(toks, src, e.tok) == name {
+        found = e.c;
+        going = false;
+      } else { cur = e.next; }
+    }
+  }
+  found
+}
+
+# Inferenza di tipo SUFFICIENTE per dichiarare un `let` e per scegliere `==` vs
+# strcmp: literal sul loro tipo, call sul ritorno del builtin/della fn utente,
+# binop → long. Limite Wave 3: un `id`-variabile ritorna tc_int (niente scope) —
+# quindi `let y = x_string` sbaglierebbe; nei confronti String c'è quasi sempre
+# un literal da un lato, ed È quello a far scattare strcmp.
+fn type_of_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, idx: Int) -> Int {
+  if idx < 0 { tc_int() }
+  else {
+    let nd = ns[idx];
+    if nd.kind == nd_str() { tc_str() }
+    else { if nd.kind == nd_call() {
+      let cnode = ns[nd.a];
+      if cnode.kind == nd_id() {
+        let name = tok_lex(toks, src, cnode.tok);
+        if is_builtin(name) { builtin_ret_tc(name) }
+        else { find_fn_ret(toks, src, ns, root, name) }
+      } else { tc_int() }
+    }
+    else { tc_int() } }
+  }
+}
+
 # Espressione → C, ricorsiva. Le precedenze sono già nell'albero: ogni binop si
-# para con le parentesi, così non serve ri-ragionare sulla priorità in C.
-fn emit_expr(toks: List<Token>, src: String, ns: List<Node>, idx: Int) -> String {
+# para con le parentesi, così non serve ri-ragionare sulla priorità in C. `root`
+# serve a type_of_expr per risolvere il ritorno delle fn utente.
+fn emit_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, idx: Int) -> String {
   if idx < 0 { "0" }
   else {
     let nd = ns[idx];
@@ -968,12 +1027,23 @@ fn emit_expr(toks: List<Token>, src: String, ns: List<Node>, idx: Int) -> String
     }
     else { if nd.kind == nd_str() { tok_lex(toks, src, nd.tok) }
     else { if nd.kind == nd_unary() {
-      concat("(-", concat(emit_expr(toks, src, ns, nd.a), ")"))
+      concat("(-", concat(emit_expr(toks, src, ns, root, nd.a), ")"))
     }
     else { if nd.kind == nd_bin() {
-      concat("(", concat(emit_expr(toks, src, ns, nd.a),
-        concat(" ", concat(tok_lex(toks, src, nd.tok),
-        concat(" ", concat(emit_expr(toks, src, ns, nd.b), ")"))))))
+      let op = tok_lex(toks, src, nd.tok);
+      let lt = type_of_expr(toks, src, ns, root, nd.a);
+      let rt = type_of_expr(toks, src, ns, root, nd.b);
+      let streq = (op == "==" || op == "!=") && (lt == tc_str() || rt == tc_str());
+      if streq {
+        # Uguaglianza di String: strcmp, non `==` di puntatori.
+        let tail = if op == "==" { ") == 0)" } else { ") != 0)" };
+        concat("(strcmp(", concat(emit_expr(toks, src, ns, root, nd.a),
+          concat(", ", concat(emit_expr(toks, src, ns, root, nd.b), tail))))
+      } else {
+        concat("(", concat(emit_expr(toks, src, ns, root, nd.a),
+          concat(" ", concat(op,
+          concat(" ", concat(emit_expr(toks, src, ns, root, nd.b), ")"))))))
+      }
     }
     else { if nd.kind == nd_call() {
       let cnode = ns[nd.a];
@@ -985,11 +1055,11 @@ fn emit_expr(toks: List<Token>, src: String, ns: List<Node>, idx: Int) -> String
         let argh = if bi && world_gated(name) {
           if nd.b < 0 { 0 - 1 } else { let h = ns[nd.b]; h.next }
         } else { nd.b };
-        concat(cname, concat("(", concat(emit_args(toks, src, ns, argh), ")")))
+        concat(cname, concat("(", concat(emit_args(toks, src, ns, root, argh), ")")))
       } else {
         # Callee non-identificatore (raro: Nullang non ha fn di prima classe).
-        concat(emit_expr(toks, src, ns, nd.a),
-          concat("(", concat(emit_args(toks, src, ns, nd.b), ")")))
+        concat(emit_expr(toks, src, ns, root, nd.a),
+          concat("(", concat(emit_args(toks, src, ns, root, nd.b), ")")))
       }
     }
     else { concat("/*?*/0", "") } } } } } } }
@@ -997,7 +1067,7 @@ fn emit_expr(toks: List<Token>, src: String, ns: List<Node>, idx: Int) -> String
 }
 
 # Catena di argomenti (via `next`) → "a, b, c".
-fn emit_args(toks: List<Token>, src: String, ns: List<Node>, head: Int) -> String {
+fn emit_args(toks: List<Token>, src: String, ns: List<Node>, root: Int, head: Int) -> String {
   let mut cur = head;
   let mut out = "";
   let mut first = true;
@@ -1006,7 +1076,7 @@ fn emit_args(toks: List<Token>, src: String, ns: List<Node>, head: Int) -> Strin
     if cur < 0 { going = false; }
     else {
       let e = ns[cur];
-      let piece = emit_expr(toks, src, ns, cur);
+      let piece = emit_expr(toks, src, ns, root, cur);
       out = if first { piece } else { concat(out, concat(", ", piece)) };
       first = false;
       cur = e.next;
@@ -1017,35 +1087,37 @@ fn emit_args(toks: List<Token>, src: String, ns: List<Node>, head: Int) -> Strin
 
 # Statement → C. `tail` = questo è l'ultimo statement di un corpo che produce un
 # valore: l'espressione finale diventa `return`, come nelle fn a corpo-blocco.
-fn emit_stmt(toks: List<Token>, src: String, ns: List<Node>, idx: Int, tail: Bool) -> String {
+fn emit_stmt(toks: List<Token>, src: String, ns: List<Node>, root: Int, idx: Int, tail: Bool) -> String {
   let nd = ns[idx];
   if nd.kind == nd_let() {
-    concat("  long ", concat(mangle(toks, src, nd.tok),
-      concat(" = ", concat(emit_expr(toks, src, ns, nd.a), ";"))))
+    # Il tipo C della locale viene inferito dall'inizializzatore.
+    let ct = c_type(type_of_expr(toks, src, ns, root, nd.a));
+    concat("  ", concat(ct, concat(" ", concat(mangle(toks, src, nd.tok),
+      concat(" = ", concat(emit_expr(toks, src, ns, root, nd.a), ";"))))))
   }
   else { if nd.kind == nd_assign() {
-    concat("  ", concat(emit_expr(toks, src, ns, nd.a),
-      concat(" = ", concat(emit_expr(toks, src, ns, nd.b), ";"))))
+    concat("  ", concat(emit_expr(toks, src, ns, root, nd.a),
+      concat(" = ", concat(emit_expr(toks, src, ns, root, nd.b), ";"))))
   }
   else { if nd.kind == nd_return() {
-    concat("  return ", concat(emit_expr(toks, src, ns, nd.a), ";"))
+    concat("  return ", concat(emit_expr(toks, src, ns, root, nd.a), ";"))
   }
   else { if nd.kind == nd_while() {
-    concat("  while (", concat(emit_expr(toks, src, ns, nd.a),
-      concat(") {\n", concat(emit_block(toks, src, ns, nd.b, false), "  }"))))
+    concat("  while (", concat(emit_expr(toks, src, ns, root, nd.a),
+      concat(") {\n", concat(emit_block(toks, src, ns, root, nd.b, false), "  }"))))
   }
   else { if nd.kind == nd_if() {
     let elsepart = if nd.c < 0 { "" }
-      else { concat(" else {\n", concat(emit_block(toks, src, ns, nd.c, false), "  }")) };
-    concat("  if (", concat(emit_expr(toks, src, ns, nd.a),
-      concat(") {\n", concat(emit_block(toks, src, ns, nd.b, false),
+      else { concat(" else {\n", concat(emit_block(toks, src, ns, root, nd.c, false), "  }")) };
+    concat("  if (", concat(emit_expr(toks, src, ns, root, nd.a),
+      concat(") {\n", concat(emit_block(toks, src, ns, root, nd.b, false),
       concat("  }", elsepart)))))
   }
   else { if nd.kind == nd_expr() {
     if tail {
-      concat("  return ", concat(emit_expr(toks, src, ns, nd.a), ";"))
+      concat("  return ", concat(emit_expr(toks, src, ns, root, nd.a), ";"))
     } else {
-      concat("  ", concat(emit_expr(toks, src, ns, nd.a), ";"))
+      concat("  ", concat(emit_expr(toks, src, ns, root, nd.a), ";"))
     }
   }
   else { concat("  /*?stmt*/;", "") } } } } } }
@@ -1053,7 +1125,7 @@ fn emit_stmt(toks: List<Token>, src: String, ns: List<Node>, idx: Int, tail: Boo
 
 # Il corpo di un blocco (nd_block): la sua catena di statement → C. `tail_ret`
 # si propaga solo all'ULTIMO statement (quello che porta il valore della fn).
-fn emit_block(toks: List<Token>, src: String, ns: List<Node>, blk: Int, tail_ret: Bool) -> String {
+fn emit_block(toks: List<Token>, src: String, ns: List<Node>, root: Int, blk: Int, tail_ret: Bool) -> String {
   let b = ns[blk];
   let mut cur = b.a;
   let mut out = "";
@@ -1063,7 +1135,7 @@ fn emit_block(toks: List<Token>, src: String, ns: List<Node>, blk: Int, tail_ret
     else {
       let e = ns[cur];
       let is_tail = e.next < 0 && tail_ret;
-      out = concat(out, concat(emit_stmt(toks, src, ns, cur, is_tail), "\n"));
+      out = concat(out, concat(emit_stmt(toks, src, ns, root, cur, is_tail), "\n"));
       cur = e.next;
     }
   }
@@ -1094,23 +1166,24 @@ fn emit_params(toks: List<Token>, src: String, ns: List<Node>, head: Int) -> Str
 }
 
 # La firma C di una fn (senza `;` né `{`). `main` è speciale: resta `main`, tipo
-# `int`, e Wave 1 ne ignora i parametri (niente ancora argc/argv).
+# `int`, parametri ignorati (niente ancora argc/argv). Le altre prendono il tipo
+# di ritorno dal codice salvato dal parser (campo `c`).
 fn c_sig(toks: List<Token>, src: String, ns: List<Node>, fnidx: Int) -> String {
   let nd = ns[fnidx];
   let nm = tok_lex(toks, src, nd.tok);
   if nm == "main" { "int main(void)" }
   else {
-    concat("long ", concat("nlu_", concat(nm,
+    concat(c_type(nd.c), concat(" nlu_", concat(nm,
       concat("(", concat(emit_params(toks, src, ns, nd.a), ")")))))
   }
 }
 
 # Definizione completa di una fn: firma + corpo. Il corpo è un nd_block; il suo
 # valore finale diventa il `return` (tail_ret = true).
-fn emit_fn(toks: List<Token>, src: String, ns: List<Node>, fnidx: Int) -> String {
+fn emit_fn(toks: List<Token>, src: String, ns: List<Node>, root: Int, fnidx: Int) -> String {
   let nd = ns[fnidx];
   concat(c_sig(toks, src, ns, fnidx),
-    concat(" {\n", concat(emit_block(toks, src, ns, nd.b, true), "}\n")))
+    concat(" {\n", concat(emit_block(toks, src, ns, root, nd.b, true), "}\n")))
 }
 
 # Programma → C: preludio, poi le forward-declaration di ogni fn (tranne main),
@@ -1138,7 +1211,7 @@ fn gen(toks: List<Token>, src: String, ns: List<Node>, root: Int) -> String {
     else {
       let e = ns[cur2];
       out = if e.kind == nd_fn() {
-        concat(out, concat(emit_fn(toks, src, ns, cur2), "\n"))
+        concat(out, concat(emit_fn(toks, src, ns, root, cur2), "\n"))
       } else { out };
       cur2 = e.next;
     }
@@ -1281,5 +1354,9 @@ fn main(world: World) -> Int uses !tty, !fs.read, !fs.write {
   # --- CODEGEN wave 2: String + builtin (print/concat/str_of_int), World droppato. ---
   codegen_show(world, "codegen wave 2: String + builtin", "/tmp/nlcg-w2.c",
     "fn sq(n: Int) -> Int { n * n } fn main(world: World) -> Int uses !tty { print(world, \"codegen Nullang: vivo\"); print(world, concat(\"sq(7) = \", str_of_int(sq(7)))); 0 }");
+
+  # --- CODEGEN wave 3: type-inference. fn -> String, let-String, == → strcmp. ---
+  codegen_show(world, "codegen wave 3: type-inference + strcmp", "/tmp/nlcg-w3.c",
+    "fn greet(name: String) -> String { concat(\"ciao, \", name) } fn main(world: World) -> Int uses !tty { let msg = greet(\"Nullang\"); print(world, msg); print(world, concat(\"lunghezza = \", str_of_int(str_len(msg)))); let first = substr(msg, 0, 1); if first == \"c\" { print(world, \"inizia per c\"); } else { print(world, \"no\"); } 0 }");
   0
 }
