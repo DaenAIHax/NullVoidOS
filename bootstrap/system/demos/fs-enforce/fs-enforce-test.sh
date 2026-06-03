@@ -36,9 +36,12 @@ rm -rf "${BUILD_DIR}"
 mkdir -p "${PKG_STAGING}/payload/bin"
 cat > "${PKG_STAGING}/payload/bin/${NAME}" <<EOF
 #!/bin/sh
-# Try to read the canary. Under Landlock, this succeeds only if the launching
-# service declared !fs.read."/srv"; otherwise open() returns EACCES.
-if content=\$(cat ${CANARY} 2>/dev/null); then
+# Try to OPEN the canary with a pure-shell read (no cat). Under Landlock this
+# succeeds only if the launching service declared !fs.read."/srv"; otherwise
+# open() returns EACCES. Builtin-only (no fork): the seccomp slice denies fork()
+# without !proc.spawn, so spawning \`cat\` would be killed by the probe's own
+# confinement and mask the Landlock signal. Slice isolates exactly !fs.read.
+if read -r content < ${CANARY} 2>/dev/null; then
   echo "fsprobe: READ ok — \${content}"
   exit 0
 else

@@ -41,10 +41,17 @@ cat > "${PKG_STAGING}/payload/bin/${NAME}" <<'EOF'
 # netns auto-gets `lo` AND `sit0` (the IPv6-in-IPv4 tunnel device), so
 # "any non-lo interface" wrongly reads as "reachable" — the route is the
 # semantically correct, offline-safe signal of off-link connectivity.
-# Route table line with Destination 00000000 is the default route.
-if awk 'NR>1 && $2 == "00000000" { found = 1 } END { exit !found }' /proc/net/route; then
-  gw=$(awk 'NR>1 && $2 == "00000000" { print $1; exit }' /proc/net/route)
-  echo "netprobe: network REACHABLE — default route via ${gw}"
+# Route table line with Destination 00000000 is the default route. Parsed with
+# shell builtins ONLY (while/read/[) — no awk, no cat. The seccomp slice denies
+# fork() to any service without !proc.spawn, so a probe that spawned a helper
+# would be killed by its OWN confinement and mask the netns signal. Fork-free
+# keeps this slice isolating EXACTLY one capability: !net.
+found=0
+while read -r iface dest rest; do
+  [ "$dest" = "00000000" ] && found=1
+done < /proc/net/route
+if [ "$found" = 1 ]; then
+  echo "netprobe: network REACHABLE — default route present"
   exit 0
 else
   echo "netprobe: NO network — no default route (isolated namespace)"

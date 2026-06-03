@@ -8,6 +8,36 @@ applicable.
 
 ## [Unreleased]
 
+### Harness headless di verifica capability — `nix run .#verify-capabilities` (2026-06-04)
+
+Rende l'enforcement Traccia A (atto 2) riproducibile da uno scettico in un
+comando, **senza montare segreti** — il gemello secret-free di
+`selfhost-bootstrap.sh`. Nasce dal preparare il repo al going-public: la frase
+"enforcement is real today" non poteva entrare in un documento esterno senza
+riprova, e la riprova ha scoperto una regressione reale.
+
+- **Nuovo target flake `verify-capabilities`**: boota lo stesso kernel+initramfs
+  con `nvtest` sulla cmdline, disco `/var` effimero (`mktemp`), **nessun**
+  `-virtfs` di `~/.claude` o `~/.ssh`. Cattura l'output seriale, fa grep di
+  `NVTEST-VERDICT: PASS` → exit 0/1.
+- **Branch test-mode nell'`init`** (`pkgs/initramfs.nix`): se `/proc/cmdline`
+  contiene `nvtest`, PID 1 porta su DHCP (il net slice cerca una default route
+  nella host netns), esegue i 3 slice e fa `poweroff` — **prima** dei mount 9P
+  dei segreti. I 3 test + un `run-all.sh` aggregatore sono bakati in
+  `/usr/src/nv-tests/`.
+- **Fix sonde net/fs (regressione scoperta dalla riesecuzione)**: `netprobe` e
+  `fsprobe` erano shell script che forkavano (`awk`, `$(cat …)`). Lo slice
+  seccomp — aggiunto dopo il loro "PASS in VM" del 2026-05-29 — nega `fork()` ai
+  servizi senza `!proc.spawn`, così le sonde venivano uccise dal **proprio**
+  confinamento (exit 2, granted *e* denied), mascherando il segnale netns/
+  Landlock. Riscritte **fork-free** con soli builtin di shell (`while`/`read`/
+  `[`, redirezione `< file`): ogni slice ora isola *esattamente* una capability,
+  senza spillover su `!proc.spawn`.
+- **Esito**: `NVTEST-VERDICT: PASS (3/3)` — netns (`!net`), Landlock (`!fs.read`),
+  seccomp (`!proc.spawn`/`!rand`) tutti applicati e falsificabili. Va alzata la
+  RAM a `-m 8192` (l'initramfs da ~1.1 GB vive in RAM; 4 GB → kernel panic
+  "deadlocked on memory").
+
 ### Nullang self-host: enum/match — Stadio 2, tagged + payload (Direzione B) (2026-05-30)
 
 Completa gli enum nel compilatore self-hostato con i **payload** — la forma

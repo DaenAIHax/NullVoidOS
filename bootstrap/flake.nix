@@ -203,9 +203,59 @@
                 "$@"
             '');
           };
+
+          # Headless, secret-free capability-enforcement harness — the twin
+          # of system/nullang/selfhost-bootstrap.sh, but for Traccia A. Boots
+          # the SAME kernel+initramfs with `nvtest` on the cmdline, which
+          # makes PID 1 run the netns/Landlock/seccomp tests and power off.
+          # It mounts NOTHING from the host: no ~/.claude, no ~/.ssh. This is
+          # the artifact a skeptic runs to reproduce, in one command, that
+          # "the declared capability set IS the enforced set". Exit 0 = all
+          # three slices PASS.
+          verifyCapabilities = {
+            type = "app";
+            program = toString (pkgs.writeShellScript "nullvoid-verify-capabilities" ''
+              set -eu
+
+              VAR_QCOW2=$(mktemp -u --suffix=.qcow2)
+              OUT=$(mktemp)
+              trap 'rm -f "$VAR_QCOW2" "$OUT"' EXIT
+              ${pkgs.qemu_kvm}/bin/qemu-img create -q -f qcow2 "$VAR_QCOW2" 2G >/dev/null
+
+              if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+                ACCEL_ARGS="-accel kvm -cpu host"
+              else
+                ACCEL_ARGS="-accel tcg -cpu max"
+              fi
+
+              echo "Booting headless capability harness (no host secrets mounted)..."
+              echo ""
+              ${pkgs.qemu_kvm}/bin/qemu-system-x86_64 \
+                -kernel ${customPkgs.kernel}/bzImage \
+                -initrd ${customPkgs.initramfs}/initramfs.cpio.gz \
+                -append "console=ttyS0 quiet nvtest" \
+                $ACCEL_ARGS \
+                -netdev user,id=net0 \
+                -device virtio-net-pci,netdev=net0 \
+                -drive "file=$VAR_QCOW2,if=virtio,format=qcow2,cache=writeback" \
+                -nographic \
+                -no-reboot \
+                -m 8192 2>&1 | tee "$OUT"
+
+              echo ""
+              if grep -q "NVTEST-VERDICT: PASS" "$OUT"; then
+                echo "==> verify-capabilities: PASS (netns + Landlock + seccomp enforced)"
+                exit 0
+              else
+                echo "==> verify-capabilities: FAIL — see transcript above"
+                exit 1
+              fi
+            '');
+          };
         in {
           boot-vm = bootVm;
           default = bootVm;
+          verify-capabilities = verifyCapabilities;
         };
       });
 }

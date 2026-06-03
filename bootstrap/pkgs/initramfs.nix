@@ -111,6 +111,33 @@ let
     mkdir -p /run
     ln -snf /var/lib/nv-system/current /run/current
 
+    # ---- Headless capability-verification mode (no secrets) ---------------
+    # Triggered by `nvtest` on the kernel cmdline (flake app
+    # `verify-capabilities`). PID 1 brings up DHCP (the net slice checks for
+    # a default route in the host netns) and runs the Traccia A enforcement
+    # tests, then powers off — WITHOUT reaching the ~/.claude / ~/.ssh 9P
+    # mounts below. This is the secret-free twin of selfhost-bootstrap.sh: a
+    # skeptic reproduces "the declared capability set IS the enforced set" in
+    # a single `nix run .#verify-capabilities`.
+    if grep -qw nvtest /proc/cmdline 2>/dev/null; then
+      export HOME=/root
+      export TERM=xterm-256color
+      export PATH=/run/current/bin:/bin
+      # The seccomp slice compiles its probes with `cc`; ship the alias.
+      [ -e /bin/cc ] || ln -sf gcc /bin/cc 2>/dev/null || true
+      ifconfig lo up 2>/dev/null
+      udhcpc -i eth0 -q -t 5 -T 2 -s /etc/udhcpc/default.script >/dev/null 2>&1
+      [ -s /etc/resolv.conf ] || echo "nameserver 10.0.2.3" > /etc/resolv.conf
+      echo ""
+      echo "=== NullVoidOS headless capability-enforcement harness (nvtest) ==="
+      sh /usr/src/nv-tests/run-all.sh
+      echo ""
+      echo "[nvtest complete — powering off]"
+      poweroff -f
+      # poweroff -f shouldn't return; loop so PID 1 never dies and panics.
+      while true; do sleep 1; done
+    fi
+
     # 9P share: host's ~/.claude/ → /root/.claude/ (RW).
     # Carries the Max-subscription credentials so `claude` inside the
     # VM authenticates without our owning an API key. Mounted RW so
@@ -227,6 +254,36 @@ let
     done
   '';
 
+  # Headless capability-enforcement runner. Baked into the image and invoked
+  # by `init` only when `nvtest` is on the kernel cmdline (flake app
+  # `verify-capabilities`). Runs the three Traccia A slices in sequence and
+  # prints ONE machine-readable verdict line the host harness greps. Each
+  # child test exits 0 on PASS / 1 on FAIL, so we key off the exit code.
+  capTestRunner = writeText "nv-tests-run-all" ''
+    #!/bin/sh
+    set -u
+    T=/usr/src/nv-tests
+    fail=0
+    summary=""
+    for n in net fs procrand; do
+      printf '\n\n###################### TEST: %s ######################\n' "$n"
+      if sh "$T/$n-enforce-test.sh"; then
+        summary="$summary $n=PASS"
+      else
+        summary="$summary $n=FAIL"
+        fail=1
+      fi
+    done
+    echo ""
+    echo "=================================================================="
+    if [ "$fail" -eq 0 ]; then
+      echo "NVTEST-VERDICT: PASS (3/3) —$summary"
+    else
+      echo "NVTEST-VERDICT: FAIL —$summary"
+    fi
+    echo "=================================================================="
+  '';
+
   # Whole transitive closure of claude-code + bash (~30+5 paths,
   # ~360 MB uncompressed). We ship it under /nix/store inside the
   # initramfs. claude-code's wrapper binary patches PATH/LD_LIBRARY_PATH
@@ -325,6 +382,16 @@ runCommand "nullvoid-initramfs" {
   cp -r ${nullangSrc} root/usr/src/nullang
   cp ${nv-pkg}/bin/nv-pkg root/bin/
   cp ${nv-rebuild}/bin/nv-rebuild root/bin/
+
+  # Traccia A capability-enforcement tests, baked in so the headless
+  # `verify-capabilities` harness runs them with NO host mounts. `init`
+  # invokes run-all.sh only when `nvtest` is on the kernel cmdline.
+  mkdir -p root/usr/src/nv-tests
+  cp ${../system/demos/net-enforce/net-enforce-test.sh}           root/usr/src/nv-tests/net-enforce-test.sh
+  cp ${../system/demos/fs-enforce/fs-enforce-test.sh}             root/usr/src/nv-tests/fs-enforce-test.sh
+  cp ${../system/demos/procrand-enforce/procrand-enforce-test.sh} root/usr/src/nv-tests/procrand-enforce-test.sh
+  cp ${capTestRunner} root/usr/src/nv-tests/run-all.sh
+  chmod +x root/usr/src/nv-tests/*.sh
 
   # Ship the agent runtime closure (claude-code + bash) into /nix/store.
   for p in $(cat ${agentClosure}/store-paths); do
