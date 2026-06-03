@@ -8,6 +8,17 @@ applicable.
 
 ## [Unreleased]
 
+### README riscritto come entrypoint going-public (2026-06-04)
+
+`bootstrap/README.md` passa da "Phase 0 — nothing buildable yet" (ormai falso) a
+entrypoint del **loop di fiducia** (autonomia ⊗ enforcement ⊗ audit), con le due
+righe quick-verify riproducibili (`selfhost-bootstrap.sh` per l'atto 1,
+`nix run .#verify-capabilities` per l'atto 2) e l'aggancio esplicito a Cullis.
+Tabella onesta "real today vs next": self-host ✅, enforcement ✅, audit dinamico
+⏳ (next layer, dichiarato non-costruito). Pensato per essere linkato via URL
+diretto a `tree/lfs-bootstrap/bootstrap` — il README root resta la direzione
+legacy `main` e non va toccato da questo branch.
+
 ### Harness headless di verifica capability — `nix run .#verify-capabilities` (2026-06-04)
 
 Rende l'enforcement Traccia A (atto 2) riproducibile da uno scettico in un
