@@ -260,6 +260,41 @@ fn builtins() -> SigTable {
             c_name: "nullang_write_file".to_string(),
         },
     );
+    // Structured-error file I/O: the cause-returning siblings of read_file /
+    // write_file. Same effect gating (`!fs.read` / `!fs.write`) — World-erased
+    // — but instead of swallowing the failure into `""` / no-op, they surface
+    // the OS errno so a Nullang wrapper can build an `IoError` enum
+    // (NotFound / PermissionDenied / IsDirectory / Other) over them. Same
+    // shape as `http_get` over `http_fetch`: the EFFECT is a tiny C primitive,
+    // the ergonomic enum is library code (examples/io-result.null).
+    //
+    // `read_file_io(world, path) -> String` returns FRAMED `"<errno>\n<body>"`:
+    // errno is decimal (0 on success), then a newline, then the file contents.
+    // String is the only return type that can carry both a discriminant and a
+    // payload through the SigTable (enum payloads are Int/Bool/String only —
+    // an `.err(IoError)` would require nesting an enum, deferred).
+    t.insert(
+        "read_file_io".to_string(),
+        Sig {
+            params: vec![Ty::World, Ty::String],
+            ret: Ty::String,
+            effects: vec!["fs.read".to_string()],
+            c_name: "nullang_read_file_io".to_string(),
+        },
+    );
+    // `write_file_io(world, path, content) -> Int`: returns 0 on success, or
+    // the OS errno on failure. A bare Int is enough — there is no body to
+    // ferry back — and the Nullang wrapper turns it into a `WriteResult` /
+    // `IoError` via the same `io_error_of(code)` mapper as the read side.
+    t.insert(
+        "write_file_io".to_string(),
+        Sig {
+            params: vec![Ty::World, Ty::String, Ty::String],
+            ret: Ty::Int,
+            effects: vec!["fs.write".to_string()],
+            c_name: "nullang_write_file_io".to_string(),
+        },
+    );
     // The first *non-deterministic* builtin and the first to exercise `!time`
     // (SPEC §5 vocabulary). Effectful, World-gated like file I/O. Returns Unix
     // time in **whole seconds** as an Int (the VM is LP64, so `long` is 64-bit:

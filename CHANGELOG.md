@@ -8,6 +8,28 @@ applicable.
 
 ## [Unreleased]
 
+### Nullang: errori I/O strutturati `read_file_io`/`write_file_io` — autorati in-VM (2026-06-04)
+
+Primo artefatto consegnato attraverso il loop propose/dispose completo
+(agente in-VM autora → outbox consegna integro → gate host verifica →
+feedback → riparazione). Due builtin gemelli di `read_file`/`write_file` che
+**nominano** la causa di fallimento invece di inghiottirla: `read_file_io`
+ritorna una String framed `"<errno>\n<body>"`, `write_file_io` ritorna l'errno
+come Int (0 = ok). Sopra, in Nullang puro, un enum `IoError`
+(NotFound/PermissionDenied/IsDirectory/Other) + `ReadResult` con wrapper
+`read_file_safe` — stesso pattern di `http_get` su `http_fetch`. Stessa
+capability gating (`!fs.read`/`!fs.write`), World-erased; resta dentro
+`BUILTINS_CONTRACT.md` (solo `builtins()` + PRELUDE). Esempio
+`examples/io-result.null`, 87 test (4+2 nuovi).
+
+**Il gate ha pagato**: la prima consegna passava gli 85 test in-VM ma
+**segfaultava host-side** leggendo una directory (`fopen` di dir su glibc
+riesce → `ftell` = LONG_MAX → `malloc` NULL → deref). I test dell'agente erano
+solo string-match sul C emesso, non lo coglievano. Feedback strutturato
+rimandato via outbox → l'agente ha riparato (`fstat`+`S_ISDIR` prima del
+sizing, helper con fallback ENOMEM) **e** ha aggiunto un test end-to-end che
+esegue il binario. Verificato host-side: `dir: IsDirectory`, RC=0.
+
 ### boot-vm: outbox — canale di ritorno RW agente→host (2026-06-04)
 
 Aggiunto un secondo share 9P **RW** dedicato (`outbox`), mappato da

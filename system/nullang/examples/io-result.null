@@ -1,0 +1,82 @@
+# io-result.null — la superficie a errori strutturati di `!fs.read`/`!fs.write`,
+# costruita in Nullang puro sopra i primitivi `read_file_io`/`write_file_io`.
+# Stesso pattern di `http_get` su `http_fetch` (vedi examples/http-get.null):
+# l'EFFETTO è un builtin C minimo (errno framed nella String / errno raw come
+# Int); l'ERGONOMIA (enum `IoError`, enum `ReadResult`) è codice di libreria.
+#
+# Vincolo di linguaggio (SPEC §4.2): i payload enum sono Int/Bool/String, quindi
+# `.err` trasporta l'errno raw come Int e il chiamante lo decodifica con
+# `io_error_of`. Non si può scrivere `.err(IoError)` finché i payload di enum
+# non includono altri enum — quello è un cambio di linguaggio fuori dal contratto
+# dei builtins (BUILTINS_CONTRACT.md).
+#
+# Mappa errno → IoError: i tre nomi che valgono la distinzione (ENOENT=2,
+# EACCES=13, EISDIR=21) coprono ~tutta la diagnostica utile per leggere/scrivere
+# un file; `Other` cattura il resto (EIO, ENOSPC, …) senza esplodere il tipo.
+
+enum IoError = .not_found | .permission_denied | .is_directory | .other;
+enum ReadResult = .ok(String) | .err(Int);
+
+# Decodifica un errno raw (0 == successo, gestito dal chiamante) nel suo
+# IoError. Cascata di `if`/`else` finché non avremo `match` su Int.
+fn io_error_of(code: Int) -> IoError {
+  if code == 2 { .not_found }
+  else { if code == 13 { .permission_denied }
+  else { if code == 21 { .is_directory }
+  else { .other } } }
+}
+
+# Wrappa `read_file_io` (che ritorna "<errno>\n<body>") in un `ReadResult`.
+# La cornice è il PRIMO '\n' nella risposta: l'errno è ASCII decimale senza
+# newline, quindi il primo '\n' è sempre il confine; eventuali '\n' nel corpo
+# del file restano intatti (`substr` taglia DOPO il primo).
+fn read_file_safe(world: World, path: String) -> ReadResult uses !fs.read {
+  let raw = read_file_io(world, path);
+  let nl = index_of(raw, "\n");
+  let code = int_of_str(substr(raw, 0, nl));
+  if code == 0 {
+    .ok(substr(raw, nl + 1, str_len(raw)))
+  } else {
+    .err(code)
+  }
+}
+
+# Stampa simbolica di un IoError. La forma `Result<T, E>` di SPEC §10:
+# il match esaurisce tutte le varianti, il compilatore lo verifica.
+fn render_io_error(e: IoError) -> String {
+  match e {
+    .not_found         => "NotFound",
+    .permission_denied => "PermissionDenied",
+    .is_directory      => "IsDirectory",
+    .other             => "Other",
+  }
+}
+
+fn main(world: World) -> Int uses !fs.read, !fs.write, !tty {
+  # 1) Scrittura: write_file_io ritorna 0 / errno direttamente; nessun wrapper.
+  let wcode = write_file_io(world, "/tmp/io-result.out", "hello\nworld\n");
+  if wcode == 0 {
+    print(world, "wrote /tmp/io-result.out");
+  } else {
+    print(world, concat("write error: ", render_io_error(io_error_of(wcode))));
+  };
+
+  # 2) Lettura di successo via il wrapper: il match decostruisce il ReadResult.
+  match read_file_safe(world, "/tmp/io-result.out") {
+    .ok(s)     => print(world, concat("ok: ", s)),
+    .err(code) => print(world, concat("err: ", render_io_error(io_error_of(code)))),
+  };
+
+  # 3) Lettura di un path inesistente: ci aspettiamo NotFound (ENOENT=2).
+  match read_file_safe(world, "/no/such/path") {
+    .ok(_)     => print(world, "unexpected: read missing file"),
+    .err(code) => print(world, concat("missing: ", render_io_error(io_error_of(code)))),
+  };
+
+  # 4) Lettura di una directory: ci aspettiamo IsDirectory (EISDIR=21) o Other.
+  match read_file_safe(world, "/tmp") {
+    .ok(_)     => print(world, "unexpected: read a directory as file"),
+    .err(code) => print(world, concat("dir: ", render_io_error(io_error_of(code)))),
+  };
+  0
+}
