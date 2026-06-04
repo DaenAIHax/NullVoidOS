@@ -1,0 +1,48 @@
+# Multi-service system — shows multiple services with different restart policies.
+# Also demonstrates pkgs.* references (requires nv-pkg on PATH with these
+# packages installed; otherwise replace with literal strings like "bash-5.3.9").
+{
+  hostname = "nullvoid-dev";
+
+  # System-level capability whitelist; service `requires` must be a subset.
+  caps = [ !tty !net ];
+
+  # You can mix literal package strings with pkgs.* references.
+  # pkgs.bash expands to "bash-<latest-installed-version>".
+  packages = [
+    "bash-5.3.9"
+    "neovim-mini-0.1.0"
+    "notes-tui-0.1.0"
+    "http-server-0.2.0"
+  ];
+
+  services = {
+    # The AI agent process — always restart on crash.
+    agent = {
+      exec = "/run/current/bin/claude";
+      restart = .always;
+      requires = [ !tty !net ];
+    };
+
+    # A tiny HTTP server — restart only on failure.
+    web = {
+      exec = "/run/current/bin/http-server";
+      restart = .on-failure;
+      requires = [ !net ];
+    };
+
+    # A one-shot init helper — never restart.
+    setup = {
+      exec = "/run/current/bin/setup-env";
+      restart = .never;
+      requires = [];
+    };
+  };
+
+  environment = {
+    EDITOR = "nvim-mini";
+    LANG = "en_US.UTF-8";
+    PORT = "8080";
+    DATA_DIR = "/var/data";
+  };
+}

@@ -1,0 +1,2498 @@
+# selfhost-parser.null — il parser di Nullang, scritto IN Nullang.
+#
+# Scopo: il secondo passo del self-host (SPEC §12), dopo il lexer. Il lexer
+# trasforma testo → token; questo prende i token e costruisce un AST, il cuore
+# RICORSIVO di un compilatore. È una discesa ricorsiva con precedence-climbing
+# (Pratt) sugli operatori — la stessa struttura di un parser vero.
+#
+# DUE MURI sono caduti per renderlo possibile (entrambi questa sessione):
+#
+#  1. MUTUA RICORSIONE. Un parser a discesa ricorsiva è un ciclo intrinseco:
+#     parse_expr ⇄ parse_unary ⇄ parse_postfix ⇄ parse_primary ⇄ parse_args
+#     → parse_expr. Nessun ordine di emissione lo soddisfa. Il codegen ora
+#     emette le forward-declaration C di ogni funzione prima dei corpi, così
+#     il ciclo compila. (Cresce-il-compilatore, guidato da ciò che serve qui.)
+#
+#  2. STATO MUTABILE CONDIVISO senza parametri `mut`. Il cursore sui token e
+#     l'arena dei nodi devono mutare attraverso le chiamate ricorsive, ma i
+#     parametri non sono `let mut`. Si sfrutta la semantica a RIFERIMENTO:
+#     dentro ogni funzione si ri-lega il parametro a un `let mut` locale — un
+#     alias dello stesso handle heap — che rende push/field-write legali E
+#     condivisi col chiamante. (Verificato in probe-mutshare.null.)
+#
+# AST AD ARENA. Niente handle null per i figli mancanti (enum/Option ancora
+# differiti, §11): i nodi vivono in una `List<Node>` piatta e si riferiscono
+# l'un l'altro per INDICE Int (-1 = assente, vedi none()). Le liste a lunghezza
+# variabile (argomenti di chiamata, campi di struct, statement di un blocco) si
+# rappresentano con un campo `next` che incatena i fratelli. Un solo Node a sei
+# campi Int esprime l'intera grammatica.
+
+# ============================================================================
+# LEXER (rifattorizzato in una funzione `lex` — il corpo è quello che già
+# mangiava la propria coda in selfhost-lexer.null, qui ritorna la List<Token>).
+# ============================================================================
+
+fn k_number()  -> Int { 0 }
+fn k_ident()   -> Int { 1 }
+fn k_keyword() -> Int { 2 }
+fn k_punct()   -> Int { 3 }
+fn k_op()      -> Int { 4 }
+fn k_string()  -> Int { 5 }
+
+type Token = { kind: Int, start: Int, len: Int };
+
+fn is_ws(c: String) -> Bool {
+  c == " " || c == "\n" || c == "\t" || c == "\r"
+}
+
+fn is_digit(c: String) -> Bool {
+  c == "0" || c == "1" || c == "2" || c == "3" || c == "4"
+  || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
+}
+
+fn is_structural(c: String) -> Bool {
+  c == "(" || c == ")" || c == "{" || c == "}"
+  || c == "[" || c == "]" || c == "," || c == ";"
+}
+
+fn is_op_char(c: String) -> Bool {
+  c == "+" || c == "-" || c == "*" || c == "/"
+  || c == "<" || c == ">" || c == "=" || c == "!"
+  || c == "|" || c == "&" || c == "." || c == ":"
+}
+
+fn is_ident_char(c: String) -> Bool {
+  c != "" && is_ws(c) == false && is_structural(c) == false
+  && is_op_char(c) == false && c != "\"" && c != "#"
+}
+
+fn is_keyword(word: String) -> Bool {
+  word == "fn" || word == "let" || word == "mut" || word == "if"
+  || word == "else" || word == "while" || word == "type"
+  || word == "uses" || word == "true" || word == "false"
+  || word == "enum" || word == "match"
+}
+
+fn scan_number(src: String, start: Int, n: Int) -> Token {
+  let mut i = start;
+  while i < n && is_digit(char_at(src, i)) { i = i + 1; }
+  Token { kind: k_number(), start: start, len: i - start }
+}
+
+fn scan_word(src: String, start: Int, n: Int) -> Token {
+  let mut i = start;
+  while i < n && is_ident_char(char_at(src, i)) { i = i + 1; }
+  let word = substr(src, start, i - start);
+  let kind = if is_keyword(word) { k_keyword() } else { k_ident() };
+  Token { kind: kind, start: start, len: i - start }
+}
+
+fn scan_op(src: String, start: Int, n: Int) -> Token {
+  let mut i = start;
+  while i < n && is_op_char(char_at(src, i)) { i = i + 1; }
+  Token { kind: k_op(), start: start, len: i - start }
+}
+
+fn scan_string(src: String, start: Int, n: Int) -> Token {
+  let mut i = start + 1;
+  let mut done = false;
+  while i < n && done == false {
+    let c = char_at(src, i);
+    if c == "\"" { done = true; }
+    else { if c == "\\" { i = i + 2; } else { i = i + 1; } }
+  }
+  let endpos = if i < n { i + 1 } else { i };
+  Token { kind: k_string(), start: start, len: endpos - start }
+}
+
+fn skip_comment(src: String, start: Int, n: Int) -> Int {
+  let mut i = start;
+  while i < n && char_at(src, i) != "\n" { i = i + 1; }
+  i
+}
+
+fn lex(src: String) -> List<Token> {
+  let n = str_len(src);
+  let mut toks: List<Token> = [];
+  let mut i = 0;
+  while i < n {
+    let ch = char_at(src, i);
+    if is_ws(ch) { i = i + 1; }
+    else { if ch == "#" { i = skip_comment(src, i, n); }
+    else {
+      let t = if is_digit(ch) { scan_number(src, i, n) }
+        else { if ch == "\"" { scan_string(src, i, n) }
+        else { if is_op_char(ch) { scan_op(src, i, n) }
+        else { if is_structural(ch) {
+          Token { kind: k_punct(), start: i, len: 1 }
+        } else {
+          scan_word(src, i, n)
+        } } } };
+      push(toks, t);
+      i = t.start + t.len;
+    } }
+  }
+  toks
+}
+
+# ============================================================================
+# AST + parser state
+# ============================================================================
+
+# Node kinds (interi nudi; il printer li nomina).
+fn nd_num()    -> Int { 0 }
+fn nd_str()    -> Int { 1 }
+fn nd_id()     -> Int { 2 }
+fn nd_bool()   -> Int { 3 }
+fn nd_unary()  -> Int { 4 }
+fn nd_bin()    -> Int { 5 }
+fn nd_call()   -> Int { 6 }
+fn nd_index()  -> Int { 7 }
+fn nd_field()  -> Int { 8 }
+fn nd_struct() -> Int { 9 }
+fn nd_finit()  -> Int { 10 }
+fn nd_let()    -> Int { 11 }
+fn nd_assign() -> Int { 12 }
+fn nd_if()     -> Int { 13 }
+fn nd_while()  -> Int { 14 }
+fn nd_return() -> Int { 15 }
+fn nd_block()  -> Int { 16 }
+fn nd_expr()   -> Int { 17 }
+fn nd_fn()     -> Int { 18 }
+fn nd_type()   -> Int { 19 }
+fn nd_param()  -> Int { 20 }
+fn nd_tfield() -> Int { 21 }
+fn nd_list()   -> Int { 22 }
+# Enum/match (Direzione B). nd_enum: tok=nome enum, a=catena varianti (nd_evar).
+# nd_evar: tok=nome variante, a=token-tipo del payload (o none = bare). nd_symbol:
+# tok=nome simbolo, a=arg-espr (o none). nd_match: a=scrutinee, b=catena arm.
+# nd_arm: tok=nome simbolo, a=token del binder (o none = nessun payload), b=corpo.
+fn nd_enum()   -> Int { 23 }
+fn nd_evar()   -> Int { 24 }
+fn nd_symbol() -> Int { 25 }
+fn nd_match()  -> Int { 26 }
+fn nd_arm()    -> Int { 27 }
+
+# Sentinella "nessun figlio" — niente handle null, quindi un indice impossibile.
+fn none() -> Int { 0 - 1 }
+
+# Un nodo dell'arena. a/b/c sono indici di figli (o token), tok nomina il nodo
+# (operatore, letterale, identificatore), next incatena i fratelli in una lista.
+type Node = { kind: Int, a: Int, b: Int, c: Int, tok: Int, next: Int };
+
+# Il cursore sui token: uno struct (handle a riferimento) così che adv() possa
+# avanzarlo in modo CONDIVISO attraverso la ricorsione (vedi nota in testa).
+type Cur = { pos: Int };
+
+# Crea un nodo, lo appende all'arena, ritorna il suo indice.
+fn mk(nodes: List<Node>, kind: Int, a: Int, b: Int, cc: Int, tok: Int) -> Int {
+  let mut ns = nodes;
+  let idx = list_len(ns);
+  push(ns, Node { kind: kind, a: a, b: b, c: cc, tok: tok, next: 0 - 1 });
+  idx
+}
+
+# Incatena: imposta il campo next del nodo idx (muta il record dentro la lista).
+fn set_next(nodes: List<Node>, idx: Int, v: Int) -> Int {
+  let mut ns = nodes;
+  let mut e = ns[idx];
+  e.next = v;
+  0
+}
+
+# Avanza il cursore (condiviso via alias let mut).
+fn adv(c: Cur) -> Int {
+  let mut m = c;
+  m.pos = m.pos + 1;
+  0
+}
+
+# Consumatori condizionali. In Nullang ogni `if` è un'espressione e PRETENDE
+# `else` (non esiste l'if-statement senza else): quindi un "consuma-se-c'è" va
+# incapsulato in una funzione con else, poi chiamato come statement.
+fn eat_punct(toks: List<Token>, src: String, c: Cur, s: String) -> Int {
+  if at_punct(toks, src, c, s) { adv(c); 1 } else { 0 }
+}
+
+fn eat_op(toks: List<Token>, src: String, c: Cur, s: String) -> Int {
+  if at_op(toks, src, c, s) { adv(c); 1 } else { 0 }
+}
+
+fn eat_ident(toks: List<Token>, c: Cur) -> Int {
+  if cur_kind(toks, c) == 1 { adv(c); 1 } else { 0 }
+}
+
+# Salta un'annotazione di tipo `: T` (anche `: List<Token>`): consuma fino al `=`.
+fn skip_type_anno(toks: List<Token>, src: String, c: Cur) -> Int {
+  if at_op(toks, src, c, ":") {
+    let mut sk = true;
+    while sk {
+      if eof(toks, c) { sk = false; }
+      else { if at_op(toks, src, c, "=") { sk = false; } else { adv(c); } }
+    }
+    1
+  } else { 0 }
+}
+
+fn eof(toks: List<Token>, c: Cur) -> Bool { c.pos >= list_len(toks) }
+
+fn cur_kind(toks: List<Token>, c: Cur) -> Int {
+  if c.pos >= list_len(toks) { 0 - 1 } else { let t = toks[c.pos]; t.kind }
+}
+
+fn tok_lex(toks: List<Token>, src: String, i: Int) -> String {
+  if i < 0 { "?" }
+  else { if i >= list_len(toks) { "?" }
+  else { let t = toks[i]; substr(src, t.start, t.len) } }
+}
+
+fn cur_lex(toks: List<Token>, src: String, c: Cur) -> String {
+  tok_lex(toks, src, c.pos)
+}
+
+# Lessema dell'operatore corrente, "" se il token corrente non è un operatore.
+fn cur_op(toks: List<Token>, src: String, c: Cur) -> String {
+  if c.pos >= list_len(toks) { "" }
+  else { let t = toks[c.pos];
+    if t.kind == 4 { substr(src, t.start, t.len) } else { "" } }
+}
+
+fn at_punct(toks: List<Token>, src: String, c: Cur, s: String) -> Bool {
+  if c.pos >= list_len(toks) { false }
+  else { let t = toks[c.pos];
+    if t.kind == 3 { substr(src, t.start, t.len) == s } else { false } }
+}
+
+fn at_op(toks: List<Token>, src: String, c: Cur, s: String) -> Bool {
+  if c.pos >= list_len(toks) { false }
+  else { let t = toks[c.pos];
+    if t.kind == 4 { substr(src, t.start, t.len) == s } else { false } }
+}
+
+# Una keyword (kind 2) O un ident (kind 1) col lessema dato. `return` non è una
+# keyword del lexer ma va riconosciuto come tale dal parser — questo li unifica.
+fn word_is(toks: List<Token>, src: String, c: Cur, s: String) -> Bool {
+  if c.pos >= list_len(toks) { false }
+  else { let t = toks[c.pos];
+    if t.kind == 2 || t.kind == 1 { substr(src, t.start, t.len) == s } else { false } }
+}
+
+# Precedenza binaria; 0 = "non è un operatore binario" (ferma il climbing).
+fn prec(op: String) -> Int {
+  if op == "||" { 1 }
+  else { if op == "&&" { 2 }
+  else { if op == "==" || op == "!=" || op == "<" || op == ">"
+       || op == "<=" || op == ">=" { 3 }
+  else { if op == "+" || op == "-" { 4 }
+  else { if op == "*" || op == "/" { 5 }
+  else { 0 } } } } }
+}
+
+# ============================================================================
+# Parser — discesa ricorsiva + precedence-climbing.
+#   nostruct: dentro la condizione di if/while una `Ident {` è il BLOCCO, non
+#   un letterale-struct. Il flag spegne il parsing dei letterali-struct lì,
+#   esattamente come fanno Rust e i parser di linguaggi a blocchi.
+# ============================================================================
+
+fn parse_primary(toks: List<Token>, src: String, nodes: List<Node>, c: Cur, nostruct: Bool) -> Int {
+  let mut ns = nodes;
+  if eof(toks, c) { mk(ns, nd_num(), none(), none(), none(), 0 - 1) }
+  else {
+    let k = cur_kind(toks, c);
+    let tk = c.pos;
+    if k == 0 { adv(c); mk(ns, nd_num(), none(), none(), none(), tk) }
+    else { if k == 5 { adv(c); mk(ns, nd_str(), none(), none(), none(), tk) }
+    else { if k == 2 {
+      let lx = cur_lex(toks, src, c);
+      if lx == "true" || lx == "false" {
+        adv(c); mk(ns, nd_bool(), none(), none(), none(), tk)
+      } else { if lx == "if" {
+        # `if` È un'espressione in Nullang (`let x = if c {a} else {b}`): qui sta
+        # come primary, non solo come statement. Stessa forma, stesso nodo nd_if.
+        parse_if(toks, src, ns, c)
+      } else { if lx == "match" {
+        # `match` È un'espressione (Direzione B), come `if`.
+        parse_match(toks, src, ns, c)
+      } else {
+        adv(c); mk(ns, nd_id(), none(), none(), none(), tk)
+      } } }
+    }
+    else { if k == 1 {
+      adv(c);
+      if at_punct(toks, src, c, "{") && nostruct == false {
+        let head = parse_struct_fields(toks, src, ns, c);
+        mk(ns, nd_struct(), head, none(), none(), tk)
+      } else {
+        mk(ns, nd_id(), none(), none(), none(), tk)
+      }
+    }
+    else { if at_punct(toks, src, c, "(") {
+      adv(c);
+      let e = parse_expr(toks, src, ns, c, 0, false);
+      eat_punct(toks, src, c, ")");
+      e
+    }
+    else { if at_punct(toks, src, c, "[") {
+      adv(c);
+      parse_list_lit(toks, src, ns, c)
+    }
+    else { if at_op(toks, src, c, ".") {
+      # `.sym` o `.sym(arg)` — costruzione di un valore enum (Direzione B). In
+      # posizione primary (niente espressione che precede) il `.` non è un accesso
+      # a campo ma un simbolo. a = arg-espr (o none), tok = nome del simbolo.
+      adv(c);
+      let symtk = c.pos;
+      eat_ident(toks, c);
+      let arg = if at_punct(toks, src, c, "(") {
+        adv(c);
+        let aa = parse_expr(toks, src, ns, c, 0, false);
+        eat_punct(toks, src, c, ")");
+        aa
+      } else { none() };
+      mk(ns, nd_symbol(), arg, none(), none(), symtk)
+    } else {
+      adv(c); mk(ns, nd_num(), none(), none(), none(), tk)
+    } } } } } } }
+  }
+}
+
+# Letterale-lista `[a, b, c]` (il `[` è già consumato). a = testa della catena di
+# elementi (incatenati via next), none() se vuota.
+fn parse_list_lit(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  if at_punct(toks, src, c, "]") { adv(c); mk(ns, nd_list(), none(), none(), none(), 0 - 1) }
+  else {
+    let head = parse_expr(toks, src, ns, c, 0, false);
+    let mut tail = head;
+    let mut going = true;
+    while going {
+      if at_punct(toks, src, c, ",") {
+        adv(c);
+        if at_punct(toks, src, c, "]") { going = false; }
+        else {
+          let nx = parse_expr(toks, src, ns, c, 0, false);
+          set_next(ns, tail, nx);
+          tail = nx;
+        }
+      } else { going = false; }
+    }
+    eat_punct(toks, src, c, "]");
+    mk(ns, nd_list(), head, none(), none(), 0 - 1)
+  }
+}
+
+# `name : expr` — un inizializzatore di campo struct.
+fn parse_field_init(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  let nametk = c.pos;
+  eat_ident(toks, c);
+  eat_op(toks, src, c, ":");
+  let val = parse_expr(toks, src, ns, c, 0, false);
+  mk(ns, nd_finit(), val, none(), none(), nametk)
+}
+
+# Il `{` corrente apre i campi; ritorna l'indice del primo finit (o none()).
+fn parse_struct_fields(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  eat_punct(toks, src, c, "{");
+  if at_punct(toks, src, c, "}") { adv(c); none() }
+  else {
+    let head = parse_field_init(toks, src, ns, c);
+    let mut tail = head;
+    let mut going = true;
+    while going {
+      if at_punct(toks, src, c, ",") {
+        adv(c);
+        if at_punct(toks, src, c, "}") { going = false; }
+        else {
+          let nx = parse_field_init(toks, src, ns, c);
+          set_next(ns, tail, nx);
+          tail = nx;
+        }
+      } else { going = false; }
+    }
+    eat_punct(toks, src, c, "}");
+    head
+  }
+}
+
+# Argomenti di chiamata dopo il `(` consumato; ritorna la testa o none().
+fn parse_args(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  if at_punct(toks, src, c, ")") { adv(c); none() }
+  else {
+    let head = parse_expr(toks, src, ns, c, 0, false);
+    let mut tail = head;
+    let mut going = true;
+    while going {
+      if at_punct(toks, src, c, ",") {
+        adv(c);
+        let nx = parse_expr(toks, src, ns, c, 0, false);
+        set_next(ns, tail, nx);
+        tail = nx;
+      } else { going = false; }
+    }
+    eat_punct(toks, src, c, ")");
+    head
+  }
+}
+
+# Postfix: chiamata f(...), indice x[i], accesso campo a.b — incatenati.
+fn parse_postfix(toks: List<Token>, src: String, nodes: List<Node>, c: Cur, nostruct: Bool) -> Int {
+  let mut ns = nodes;
+  let mut e = parse_primary(toks, src, ns, c, nostruct);
+  let mut going = true;
+  while going {
+    if at_punct(toks, src, c, "(") {
+      adv(c);
+      let args = parse_args(toks, src, ns, c);
+      e = mk(ns, nd_call(), e, args, none(), 0 - 1);
+    }
+    else { if at_punct(toks, src, c, "[") {
+      adv(c);
+      let ix = parse_expr(toks, src, ns, c, 0, false);
+      eat_punct(toks, src, c, "]");
+      e = mk(ns, nd_index(), e, ix, none(), 0 - 1);
+    }
+    else { if at_op(toks, src, c, ".") {
+      adv(c);
+      let nametk = c.pos;
+      eat_ident(toks, c);
+      e = mk(ns, nd_field(), e, none(), none(), nametk);
+    }
+    else { going = false; } } }
+  }
+  e
+}
+
+# Prefisso: meno unario (lega più stretto di ogni binario).
+fn parse_unary(toks: List<Token>, src: String, nodes: List<Node>, c: Cur, nostruct: Bool) -> Int {
+  let mut ns = nodes;
+  if at_op(toks, src, c, "-") {
+    let tk = c.pos;
+    adv(c);
+    let operand = parse_unary(toks, src, ns, c, nostruct);
+    mk(ns, nd_unary(), operand, none(), none(), tk)
+  } else {
+    parse_postfix(toks, src, ns, c, nostruct)
+  }
+}
+
+# Espressione: precedence-climbing. minprec = la precedenza minima che questo
+# livello accetta; left-assoc passando p+1 alla ricorsione.
+fn parse_expr(toks: List<Token>, src: String, nodes: List<Node>, c: Cur, minprec: Int, nostruct: Bool) -> Int {
+  let mut ns = nodes;
+  let mut left = parse_unary(toks, src, ns, c, nostruct);
+  let mut going = true;
+  while going {
+    let op = cur_op(toks, src, c);
+    let p = prec(op);
+    if p == 0 { going = false; }
+    else { if p < minprec { going = false; }
+    else {
+      let optk = c.pos;
+      adv(c);
+      let right = parse_expr(toks, src, ns, c, p + 1, nostruct);
+      left = mk(ns, nd_bin(), left, right, none(), optk);
+    } }
+  }
+  left
+}
+
+# `if COND { then } else { else }`. In Nullang l'if è un'espressione (ha un
+# valore, pretende l'else) E può stare come statement: un solo parser per
+# entrambi. cond con nostruct=true (la `Ident {` dopo la condizione è il blocco,
+# non un letterale-struct). `else if` ricorre su sé stesso. tok = -1, a=cond,
+# b=then-block, c=else (block, altro nd_if, o none() se l'else è omesso).
+fn parse_if(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  adv(c);
+  let cond = parse_expr(toks, src, ns, c, 0, true);
+  let thenb = parse_block(toks, src, ns, c);
+  let elseb = if word_is(toks, src, c, "else") {
+    adv(c);
+    if word_is(toks, src, c, "if") { parse_if(toks, src, ns, c) }
+    else { parse_block(toks, src, ns, c) }
+  } else { none() };
+  mk(ns, nd_if(), cond, thenb, elseb, 0 - 1)
+}
+
+# `match SCRUT { .v1 => e, .v2(b) => e }` (Direzione B). Espressione, come `if`.
+# scrut con nostruct=true (il `{` dopo è il blocco del match). a=scrutinee,
+# b=catena di arm (nd_arm via next). Almeno un arm.
+fn parse_match(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  adv(c);
+  let scrut = parse_expr(toks, src, ns, c, 0, true);
+  eat_punct(toks, src, c, "{");
+  let head = parse_arm(toks, src, ns, c);
+  let mut tail = head;
+  let mut going = true;
+  while going {
+    if at_punct(toks, src, c, ",") {
+      adv(c);
+      if at_punct(toks, src, c, "}") { going = false; }
+      else {
+        let nx = parse_arm(toks, src, ns, c);
+        set_next(ns, tail, nx);
+        tail = nx;
+      }
+    } else { going = false; }
+  }
+  eat_punct(toks, src, c, "}");
+  mk(ns, nd_match(), scrut, head, none(), 0 - 1)
+}
+
+# Un arm: `.sym => body` o `.sym(binder) => body`. tok=nome simbolo, a=token del
+# binder (o none), b=corpo. Il corpo è una qualunque espressione.
+fn parse_arm(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  eat_op(toks, src, c, ".");
+  let symtk = c.pos;
+  eat_ident(toks, c);
+  let bindtk = if at_punct(toks, src, c, "(") {
+    adv(c);
+    let bt = c.pos;
+    eat_ident(toks, c);
+    eat_punct(toks, src, c, ")");
+    bt
+  } else { 0 - 1 };
+  eat_op(toks, src, c, "=>");
+  let body = parse_expr(toks, src, ns, c, 0, false);
+  mk(ns, nd_arm(), bindtk, body, none(), symtk)
+}
+
+# Il `{` corrente apre un blocco; ne raccoglie gli statement in una catena.
+fn parse_block(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  eat_punct(toks, src, c, "{");
+  let mut head = none();
+  let mut tail = none();
+  let mut going = true;
+  while going {
+    if eof(toks, c) { going = false; }
+    else { if at_punct(toks, src, c, "}") { adv(c); going = false; }
+    else {
+      let s = parse_stmt(toks, src, ns, c);
+      if head == none() { head = s; tail = s; }
+      else { set_next(ns, tail, s); tail = s; }
+    } }
+  }
+  mk(ns, nd_block(), head, none(), none(), 0 - 1)
+}
+
+fn parse_stmt(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  if word_is(toks, src, c, "let") {
+    adv(c);
+    let ismut = if word_is(toks, src, c, "mut") { adv(c); 1 } else { 0 };
+    let nametk = c.pos;
+    eat_ident(toks, c);
+    # Token del tipo annotato (per il codegen: l'element-type di List<T> su un
+    # literal vuoto). -1 se il `let` non ha annotazione (tipo inferito).
+    let annotok = if at_op(toks, src, c, ":") { c.pos + 1 } else { 0 - 1 };
+    skip_type_anno(toks, src, c);
+    eat_op(toks, src, c, "=");
+    let val = parse_expr(toks, src, ns, c, 0, false);
+    eat_punct(toks, src, c, ";");
+    mk(ns, nd_let(), val, annotok, ismut, nametk)
+  }
+  else { if word_is(toks, src, c, "if") {
+    parse_if(toks, src, ns, c)
+  }
+  else { if word_is(toks, src, c, "while") {
+    adv(c);
+    let cond = parse_expr(toks, src, ns, c, 0, true);
+    let body = parse_block(toks, src, ns, c);
+    mk(ns, nd_while(), cond, body, none(), 0 - 1)
+  }
+  else { if word_is(toks, src, c, "return") {
+    adv(c);
+    let val = parse_expr(toks, src, ns, c, 0, false);
+    eat_punct(toks, src, c, ";");
+    mk(ns, nd_return(), val, none(), none(), 0 - 1)
+  }
+  else { if at_punct(toks, src, c, "{") {
+    parse_block(toks, src, ns, c)
+  }
+  else {
+    let e = parse_expr(toks, src, ns, c, 0, false);
+    if at_op(toks, src, c, "=") {
+      adv(c);
+      let val = parse_expr(toks, src, ns, c, 0, false);
+      eat_punct(toks, src, c, ";");
+      mk(ns, nd_assign(), e, val, none(), 0 - 1)
+    } else {
+      eat_punct(toks, src, c, ";");
+      mk(ns, nd_expr(), e, none(), none(), 0 - 1)
+    }
+  } } } } }
+}
+
+# ============================================================================
+# Dichiarazioni top-level — `fn` e `type`. È la grammatica di cui è fatto QUESTO
+# file: per mangiare la propria coda il parser deve leggerle. Le annotazioni di
+# tipo (`: T`, `-> T`) e le clausole d'effetto (`uses !cap`) non hanno ancora un
+# AST proprio — il check semantico è di un'altra fase — quindi qui si SALTANO
+# in modo robusto, fermandosi al confine giusto. Il nome resta, la forma resta.
+# ============================================================================
+
+# Salta un'espressione di tipo (anche generica `List<Token>`, `Map<K, V>`)
+# fino al terminatore `endp` o a una virgola, a profondità di `<...>` zero.
+# Limite noto: `>>` di un generico annidato lessa come un solo operatore e qui
+# non chiuderebbe due livelli — non capita in questo file (nessun annidamento).
+fn skip_type(toks: List<Token>, src: String, c: Cur, endp: String) -> Int {
+  let mut depth = 0;
+  let mut going = true;
+  while going {
+    if eof(toks, c) { going = false; }
+    else { if depth == 0 && at_punct(toks, src, c, ",") { going = false; }
+    else { if depth == 0 && at_punct(toks, src, c, endp) { going = false; }
+    else {
+      let o = cur_op(toks, src, c);
+      let d = if o == "<" { 1 } else { if o == ">" { 0 - 1 } else { 0 } };
+      let nd2 = depth + d;
+      depth = if nd2 < 0 { 0 } else { nd2 };
+      adv(c);
+    } } }
+  }
+  0
+}
+
+# `: T` opzionale che precede `endp` (`)` per i parametri, `}` per i campi-tipo).
+fn skip_anno(toks: List<Token>, src: String, c: Cur, endp: String) -> Int {
+  if at_op(toks, src, c, ":") { adv(c); skip_type(toks, src, c, endp) } else { 0 }
+}
+
+# `-> T` opzionale: il tipo di ritorno corre fino al `{` del corpo o a `uses`.
+fn skip_return_type(toks: List<Token>, src: String, c: Cur) -> Int {
+  if at_op(toks, src, c, "->") {
+    adv(c);
+    let mut going = true;
+    while going {
+      if eof(toks, c) { going = false; }
+      else { if at_punct(toks, src, c, "{") { going = false; }
+      else { if word_is(toks, src, c, "uses") { going = false; }
+      else { adv(c); } } }
+    }
+    1
+  } else { 0 }
+}
+
+# `uses !cap, !cap2` opzionale: la clausola d'effetto corre fino al `{` del corpo.
+fn skip_uses(toks: List<Token>, src: String, c: Cur) -> Int {
+  if word_is(toks, src, c, "uses") {
+    adv(c);
+    let mut going = true;
+    while going {
+      if eof(toks, c) { going = false; }
+      else { if at_punct(toks, src, c, "{") { going = false; } else { adv(c); } }
+    }
+    1
+  } else { 0 }
+}
+
+# Codici di tipo: il codegen ha bisogno del tipo che il parser altrimenti
+# scarterebbe. Non un AST di tipi completo (differito) — solo quel tanto che
+# serve a mappare su C: 0=Int 1=Bool 2=String 3=World 4=List 5=altro(struct).
+fn tc_int()   -> Int { 0 }
+fn tc_bool()  -> Int { 1 }
+fn tc_str()   -> Int { 2 }
+fn tc_world() -> Int { 3 }
+fn tc_list()  -> Int { 4 }
+fn tc_other() -> Int { 5 }
+# Banda dei codici-tipo per gli enum TAGGED (Stadio 2): code = 100000 + eid.
+# Alta apposta per non collidere con struct (10..1000) né List (>=1000); c_type
+# la controlla per PRIMA. Gli enum payload-free restano tc_int (sono `long`).
+fn tc_enum_base() -> Int { 100000 }
+
+# Mappa un lessema-tipo sul suo codice. `List<T>` → tc_list, nome struct → other.
+fn classify_type_lex(lx: String) -> Int {
+  if lx == "World" { tc_world() }
+  else { if lx == "Int" { tc_int() }
+  else { if lx == "Bool" { tc_bool() }
+  else { if lx == "String" { tc_str() }
+  else { if lx == "List" { tc_list() }
+  else { tc_other() } } } } }
+}
+
+# Codice del tipo che segue un `:` (annotazione di parametro/campo), guardando il
+# suo primo token senza consumarlo (skip_anno consuma poi tutto).
+fn type_code_after_colon(toks: List<Token>, src: String, c: Cur) -> Int {
+  if at_op(toks, src, c, ":") { classify_type_lex(tok_lex(toks, src, c.pos + 1)) }
+  else { tc_int() }
+}
+
+# Un parametro `name: T`. Il nome è il nodo; in `a` il codice di tipo (per il
+# check rapido di World), in `b` il TOKEN del nome-tipo (per risolvere gli
+# struct nel codegen). Il resto dell'annotazione si salta.
+fn parse_param(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  let nametk = c.pos;
+  eat_ident(toks, c);
+  let tc = type_code_after_colon(toks, src, c);
+  let typetok = if at_op(toks, src, c, ":") { c.pos + 1 } else { 0 - 1 };
+  skip_anno(toks, src, c, ")");
+  mk(ns, nd_param(), tc, typetok, none(), nametk)
+}
+
+# La lista parametri dopo `fn name`: il `(...)` con parametri incatenati via next.
+fn parse_params(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  eat_punct(toks, src, c, "(");
+  if at_punct(toks, src, c, ")") { adv(c); none() }
+  else {
+    let head = parse_param(toks, src, ns, c);
+    let mut tail = head;
+    let mut going = true;
+    while going {
+      if at_punct(toks, src, c, ",") {
+        adv(c);
+        let nx = parse_param(toks, src, ns, c);
+        set_next(ns, tail, nx);
+        tail = nx;
+      } else { going = false; }
+    }
+    eat_punct(toks, src, c, ")");
+    head
+  }
+}
+
+# `fn name(params) -> T uses !cap { body }`. tok=nome, a=catena parametri,
+# b=blocco corpo, c=TOKEN del nome-tipo di ritorno (risolto dal codegen, così
+# anche i ritorni-struct mantengono l'identità). `uses` saltato.
+fn parse_fn(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  adv(c);
+  let nametk = c.pos;
+  eat_ident(toks, c);
+  let params = parse_params(toks, src, ns, c);
+  let rtok = if at_op(toks, src, c, "->") { c.pos + 1 } else { 0 - 1 };
+  skip_return_type(toks, src, c);
+  skip_uses(toks, src, c);
+  let body = parse_block(toks, src, ns, c);
+  mk(ns, nd_fn(), params, body, rtok, nametk)
+}
+
+# Un campo-tipo `name: T` — gemello di parse_param ma terminato da `}`. In `a` il
+# codice di tipo, in `b` il TOKEN del nome-tipo (per il codegen degli struct).
+fn parse_type_field(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  let nametk = c.pos;
+  eat_ident(toks, c);
+  let tc = type_code_after_colon(toks, src, c);
+  let typetok = if at_op(toks, src, c, ":") { c.pos + 1 } else { 0 - 1 };
+  skip_anno(toks, src, c, "}");
+  mk(ns, nd_tfield(), tc, typetok, none(), nametk)
+}
+
+# Il `{ ... }` di una `type`: campi `name: T` separati da virgola, incatenati.
+fn parse_type_fields(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  eat_punct(toks, src, c, "{");
+  if at_punct(toks, src, c, "}") { adv(c); none() }
+  else {
+    let head = parse_type_field(toks, src, ns, c);
+    let mut tail = head;
+    let mut going = true;
+    while going {
+      if at_punct(toks, src, c, ",") {
+        adv(c);
+        if at_punct(toks, src, c, "}") { going = false; }
+        else {
+          let nx = parse_type_field(toks, src, ns, c);
+          set_next(ns, tail, nx);
+          tail = nx;
+        }
+      } else { going = false; }
+    }
+    eat_punct(toks, src, c, "}");
+    head
+  }
+}
+
+# `type Name = { fields };`. tok=nome, a=catena campi.
+fn parse_type_decl(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  adv(c);
+  let nametk = c.pos;
+  eat_ident(toks, c);
+  eat_op(toks, src, c, "=");
+  let head = parse_type_fields(toks, src, ns, c);
+  eat_punct(toks, src, c, ";");
+  mk(ns, nd_type(), head, none(), none(), nametk)
+}
+
+# `.name` o `.name(T)` — una variante d'enum. tok=nome variante, a=token del tipo
+# payload (o none = variante bare). Payload mono-token (Int/Bool/String/struct).
+fn parse_variant(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  eat_op(toks, src, c, ".");
+  let nametk = c.pos;
+  eat_ident(toks, c);
+  let ptok = if at_punct(toks, src, c, "(") {
+    adv(c);
+    let pt = c.pos;
+    eat_ident(toks, c);
+    eat_punct(toks, src, c, ")");
+    pt
+  } else { 0 - 1 };
+  mk(ns, nd_evar(), ptok, none(), none(), nametk)
+}
+
+# `enum Name = .v1(T) | .v2 | ...;` (Direzione B). tok=nome, a=catena varianti.
+fn parse_enum_decl(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  adv(c);
+  let nametk = c.pos;
+  eat_ident(toks, c);
+  eat_op(toks, src, c, "=");
+  let head = parse_variant(toks, src, ns, c);
+  let mut tail = head;
+  let mut going = true;
+  while going {
+    if at_op(toks, src, c, "|") {
+      adv(c);
+      let nx = parse_variant(toks, src, ns, c);
+      set_next(ns, tail, nx);
+      tail = nx;
+    } else { going = false; }
+  }
+  eat_punct(toks, src, c, ";");
+  mk(ns, nd_enum(), head, none(), none(), nametk)
+}
+
+# Un item top-level: `fn`, `type`, o (per i frammenti di prova) uno statement.
+fn parse_item(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  if word_is(toks, src, c, "fn") { parse_fn(toks, src, ns, c) }
+  else { if word_is(toks, src, c, "type") { parse_type_decl(toks, src, ns, c) }
+  else { if word_is(toks, src, c, "enum") { parse_enum_decl(toks, src, ns, c) }
+  else { parse_stmt(toks, src, ns, c) } } }
+}
+
+# Un programma = sequenza di item top-level, raccolti come un blocco.
+fn parse_program(toks: List<Token>, src: String, nodes: List<Node>, c: Cur) -> Int {
+  let mut ns = nodes;
+  let mut head = none();
+  let mut tail = none();
+  let mut going = true;
+  while going {
+    if eof(toks, c) { going = false; }
+    else {
+      let s = parse_item(toks, src, ns, c);
+      if head == none() { head = s; tail = s; }
+      else { set_next(ns, tail, s); tail = s; }
+    }
+  }
+  mk(ns, nd_block(), head, none(), none(), 0 - 1)
+}
+
+# ============================================================================
+# Tree-printer — la prova visiva che l'AST ha la forma giusta.
+# ============================================================================
+
+fn indent(n: Int) -> String {
+  let mut s = "";
+  let mut i = 0;
+  while i < n { s = concat(s, "  "); i = i + 1; }
+  s
+}
+
+# Stampa una catena di fratelli (figli a lunghezza variabile via `next`).
+fn print_chain(world: World, toks: List<Token>, src: String, ns: List<Node>, head: Int, depth: Int) -> Int uses !tty {
+  let mut cur = head;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      print_node(world, toks, src, ns, cur, depth);
+      let nd = ns[cur];
+      cur = nd.next;
+    }
+  }
+  0
+}
+
+# Ogni `if` è un'espressione con `else`: il dispatch sui kind è quindi una
+# catena if/else annidata (non una sfilza di if nudi), ogni ramo chiude su `0`
+# così il tipo è uniforme. Le foglie a figlio fisso ricorrono su print_node;
+# le liste (call args, campi struct, statement di blocco) su print_chain.
+fn print_node(world: World, toks: List<Token>, src: String, ns: List<Node>, idx: Int, depth: Int) -> Int uses !tty {
+  if idx < 0 { 0 }
+  else {
+    let nd = ns[idx];
+    let pad = indent(depth);
+    if nd.kind == nd_num() {
+      print(world, concat(pad, concat("num ", tok_lex(toks, src, nd.tok)))); 0
+    }
+    else { if nd.kind == nd_str() {
+      print(world, concat(pad, concat("str ", tok_lex(toks, src, nd.tok)))); 0
+    }
+    else { if nd.kind == nd_id() {
+      print(world, concat(pad, concat("id ", tok_lex(toks, src, nd.tok)))); 0
+    }
+    else { if nd.kind == nd_bool() {
+      print(world, concat(pad, concat("bool ", tok_lex(toks, src, nd.tok)))); 0
+    }
+    else { if nd.kind == nd_unary() {
+      print(world, concat(pad, concat("unary ", tok_lex(toks, src, nd.tok))));
+      print_node(world, toks, src, ns, nd.a, depth + 1); 0
+    }
+    else { if nd.kind == nd_bin() {
+      print(world, concat(pad, concat("binop ", tok_lex(toks, src, nd.tok))));
+      print_node(world, toks, src, ns, nd.a, depth + 1);
+      print_node(world, toks, src, ns, nd.b, depth + 1); 0
+    }
+    else { if nd.kind == nd_call() {
+      print(world, concat(pad, "call"));
+      print_node(world, toks, src, ns, nd.a, depth + 1);
+      print_chain(world, toks, src, ns, nd.b, depth + 1); 0
+    }
+    else { if nd.kind == nd_index() {
+      print(world, concat(pad, "index"));
+      print_node(world, toks, src, ns, nd.a, depth + 1);
+      print_node(world, toks, src, ns, nd.b, depth + 1); 0
+    }
+    else { if nd.kind == nd_field() {
+      print(world, concat(pad, concat("field .", tok_lex(toks, src, nd.tok))));
+      print_node(world, toks, src, ns, nd.a, depth + 1); 0
+    }
+    else { if nd.kind == nd_struct() {
+      print(world, concat(pad, concat("struct ", tok_lex(toks, src, nd.tok))));
+      print_chain(world, toks, src, ns, nd.a, depth + 1); 0
+    }
+    else { if nd.kind == nd_finit() {
+      print(world, concat(pad, concat("finit ", tok_lex(toks, src, nd.tok))));
+      print_node(world, toks, src, ns, nd.a, depth + 1); 0
+    }
+    else { if nd.kind == nd_let() {
+      let kw = if nd.c == 1 { "let mut " } else { "let " };
+      print(world, concat(pad, concat(kw, tok_lex(toks, src, nd.tok))));
+      print_node(world, toks, src, ns, nd.a, depth + 1); 0
+    }
+    else { if nd.kind == nd_assign() {
+      print(world, concat(pad, "assign"));
+      print_node(world, toks, src, ns, nd.a, depth + 1);
+      print_node(world, toks, src, ns, nd.b, depth + 1); 0
+    }
+    else { if nd.kind == nd_if() {
+      print(world, concat(pad, "if"));
+      print_node(world, toks, src, ns, nd.a, depth + 1);
+      print_node(world, toks, src, ns, nd.b, depth + 1);
+      if nd.c != none() { print_node(world, toks, src, ns, nd.c, depth + 1); 0 } else { 0 }
+    }
+    else { if nd.kind == nd_while() {
+      print(world, concat(pad, "while"));
+      print_node(world, toks, src, ns, nd.a, depth + 1);
+      print_node(world, toks, src, ns, nd.b, depth + 1); 0
+    }
+    else { if nd.kind == nd_return() {
+      print(world, concat(pad, "return"));
+      print_node(world, toks, src, ns, nd.a, depth + 1); 0
+    }
+    else { if nd.kind == nd_block() {
+      print(world, concat(pad, "block"));
+      print_chain(world, toks, src, ns, nd.a, depth + 1); 0
+    }
+    else { if nd.kind == nd_expr() {
+      print(world, concat(pad, "expr"));
+      print_node(world, toks, src, ns, nd.a, depth + 1); 0
+    }
+    else { if nd.kind == nd_fn() {
+      print(world, concat(pad, concat("fn ", tok_lex(toks, src, nd.tok))));
+      print_chain(world, toks, src, ns, nd.a, depth + 1);
+      print_node(world, toks, src, ns, nd.b, depth + 1); 0
+    }
+    else { if nd.kind == nd_type() {
+      print(world, concat(pad, concat("type ", tok_lex(toks, src, nd.tok))));
+      print_chain(world, toks, src, ns, nd.a, depth + 1); 0
+    }
+    else { if nd.kind == nd_param() {
+      print(world, concat(pad, concat("param ", tok_lex(toks, src, nd.tok)))); 0
+    }
+    else { if nd.kind == nd_tfield() {
+      print(world, concat(pad, concat("tfield ", tok_lex(toks, src, nd.tok)))); 0
+    }
+    else {
+      print(world, concat(pad, "?")); 0
+    } } } } } } } } } } } } } } } } } } } } } }
+  }
+}
+
+# ============================================================================
+# CODEGEN — AST → C (Wave 1). Il terzo stadio: cammina l'arena del parser e
+# emette C. Wave 1 è un SOTTOINSIEME Int-only (aritmetica, let/while/assign,
+# chiamate, `main` con `World` cancellato) — abbastanza da chiudere il giro
+# AST→C→ELF tutto guidato da Nullang. String/List/struct/if-espressione sono le
+# onde successive. Mangling come il codegen Rust: fn/parametri/locali con
+# prefisso `nlu_`, `main` resta `main`, builtin sarebbero `nullang_*`.
+# ============================================================================
+
+# Wave 2: il preludio porta gli helper C dei builtin String/IO usati — copiati
+# verbatim dal codegen Rust così il C generato coincide (un giorno: stesso
+# preludio al fixpoint). Cresce per onde insieme a `is_builtin`. Embeddato come
+# string literal multi-riga (escape `"`→\" e `\`→\\); più avanti, quando sarà
+# completo, conviene leggerlo da un template condiviso via read_file (DRY).
+fn c_prelude() -> String {
+"/* generato da selfhost-codegen (Nullang) */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <time.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netdb.h>
+
+typedef struct { long len; long cap; long* data; } nl_list_s;
+typedef nl_list_s* nl_list;
+static nl_list nl_list_new(void) {
+  nl_list l = malloc(sizeof(nl_list_s));
+  l->len = 0; l->cap = 0; l->data = 0;
+  return l;
+}
+static void nl_list_push(nl_list l, long v) {
+  if (l->len == l->cap) {
+    long nc = l->cap ? l->cap * 2 : 4;
+    l->data = realloc(l->data, (size_t)nc * sizeof(long));
+    l->cap = nc;
+  }
+  l->data[l->len++] = v;
+}
+static long nl_list_get(nl_list l, long i) {
+  return (i >= 0 && i < l->len) ? l->data[i] : 0;
+}
+static void nl_list_set(nl_list l, long i, long v) {
+  if (i >= 0 && i < l->len) l->data[i] = v;
+}
+static long nl_list_len(nl_list l) { return l->len; }
+
+static void nullang_print(const char* s) { fputs(s, stdout); fputs(\"\\n\", stdout); }
+
+static const char* nullang_concat(const char* a, const char* b) {
+  size_t la = strlen(a), lb = strlen(b);
+  char* r = malloc(la + lb + 1);
+  memcpy(r, a, la);
+  memcpy(r + la, b, lb + 1);
+  return r;
+}
+
+static const char* nullang_str_of_int(long n) {
+  char* r = malloc(24);
+  snprintf(r, 24, \"%ld\", n);
+  return r;
+}
+
+static long nullang_str_len(const char* s) { return (long)strlen(s); }
+
+static const char* nullang_substr(const char* s, long start, long len) {
+  long n = (long)strlen(s);
+  if (start < 0) start = 0;
+  if (start > n) start = n;
+  if (len < 0) len = 0;
+  long avail = n - start;
+  if (len > avail) len = avail;
+  char* r = malloc((size_t)len + 1);
+  memcpy(r, s + start, (size_t)len);
+  r[len] = '\\0';
+  return r;
+}
+
+static const char* nullang_char_at(const char* s, long i) {
+  if (i < 0) return \"\";
+  for (long k = 0; k < i; k++) {
+    if (s[k] == '\\0') return \"\";
+  }
+  if (s[i] == '\\0') return \"\";
+  char* r = malloc(2);
+  r[0] = s[i];
+  r[1] = '\\0';
+  return r;
+}
+
+static long nullang_char_code(const char* s, long i) {
+  if (i < 0) return -1;
+  for (long k = 0; k < i; k++) {
+    if (s[k] == '\\0') return -1;
+  }
+  unsigned char c = (unsigned char)s[i];
+  if (c == 0) return -1;
+  return (long)c;
+}
+
+static long nullang_int_of_str(const char* s) {
+  long i = 0, sign = 1, n = 0;
+  if (s[i] == '-') { sign = -1; i++; }
+  while (s[i] >= '0' && s[i] <= '9') {
+    n = n * 10 + (s[i] - '0');
+    i++;
+  }
+  return sign * n;
+}
+
+static long nullang_index_of(const char* s, const char* sub) {
+  long m = (long)strlen(sub);
+  if (m == 0) return 0;
+  long n = (long)strlen(s);
+  for (long i = 0; i + m <= n; i++) {
+    if (memcmp(s + i, sub, (size_t)m) == 0) return i;
+  }
+  return -1;
+}
+
+static nl_list nullang_split(const char* s, const char* sep) {
+  nl_list l = nl_list_new();
+  long m = (long)strlen(sep);
+  long n = (long)strlen(s);
+  if (m == 0) {
+    char* whole = malloc((size_t)n + 1);
+    memcpy(whole, s, (size_t)n);
+    whole[n] = '\\0';
+    nl_list_push(l, (long)(intptr_t)whole);
+    return l;
+  }
+  long start = 0;
+  long i = 0;
+  while (i + m <= n) {
+    if (memcmp(s + i, sep, (size_t)m) == 0) {
+      long seglen = i - start;
+      char* seg = malloc((size_t)seglen + 1);
+      memcpy(seg, s + start, (size_t)seglen);
+      seg[seglen] = '\\0';
+      nl_list_push(l, (long)(intptr_t)seg);
+      i += m;
+      start = i;
+    } else {
+      i++;
+    }
+  }
+  long seglen = n - start;
+  char* seg = malloc((size_t)seglen + 1);
+  memcpy(seg, s + start, (size_t)seglen);
+  seg[seglen] = '\\0';
+  nl_list_push(l, (long)(intptr_t)seg);
+  return l;
+}
+
+static const char* nullang_read_file(const char* path) {
+  FILE* f = fopen(path, \"rb\");
+  if (!f) return \"\";
+  if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return \"\"; }
+  long sz = ftell(f);
+  if (sz < 0) { fclose(f); return \"\"; }
+  rewind(f);
+  char* buf = malloc((size_t)sz + 1);
+  size_t got = fread(buf, 1, (size_t)sz, f);
+  buf[got] = '\\0';
+  fclose(f);
+  return buf;
+}
+
+static void nullang_write_file(const char* path, const char* content) {
+  FILE* f = fopen(path, \"wb\");
+  if (!f) return;
+  fputs(content, f);
+  fclose(f);
+}
+
+static long nullang_now(void) { return (long)time((time_t*)0); }
+
+static const char* nullang_getenv(const char* name) {
+  const char* v = getenv(name);
+  return v ? v : \"\";
+}
+
+static const char* nullang_http_fetch(const char* url) {
+  const char* p = url;
+  if (strncmp(p, \"http://\", 7) == 0) p += 7;
+  char host[256]; char port[16]; int i = 0;
+  while (*p && *p != ':' && *p != '/' && i < 255) host[i++] = *p++;
+  host[i] = 0;
+  strcpy(port, \"80\");
+  if (*p == ':') { p++; int j = 0; while (*p && *p != '/' && j < 15) port[j++] = *p++; port[j] = 0; }
+  const char* path = (*p == '/') ? p : \"/\";
+
+  struct addrinfo hints; memset(&hints, 0, sizeof(hints));
+  hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
+  struct addrinfo* res = 0;
+  if (getaddrinfo(host, port, &hints, &res) != 0 || !res) return \"0\\n\";
+  int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+  if (fd < 0) { freeaddrinfo(res); return \"0\\n\"; }
+  if (connect(fd, res->ai_addr, res->ai_addrlen) != 0) { close(fd); freeaddrinfo(res); return \"0\\n\"; }
+  freeaddrinfo(res);
+
+  char req[1100];
+  int rn = snprintf(req, sizeof(req),
+    \"GET %s HTTP/1.0\\r\\nHost: %s\\r\\nConnection: close\\r\\n\\r\\n\", path, host);
+  if (rn < 0 || (size_t)rn >= sizeof(req)) { close(fd); return \"0\\n\"; }
+  for (int off = 0; off < rn; ) {
+    long w = write(fd, req + off, (size_t)(rn - off));
+    if (w <= 0) { close(fd); return \"0\\n\"; }
+    off += (int)w;
+  }
+
+  size_t cap = 8192, len = 0;
+  char* buf = (char*)malloc(cap);
+  if (!buf) { close(fd); return \"0\\n\"; }
+  for (;;) {
+    if (len + 4097 > cap) { cap *= 2; char* nb = (char*)realloc(buf, cap); if (!nb) break; buf = nb; }
+    long r = read(fd, buf + len, 4096);
+    if (r < 0) { close(fd); return \"0\\n\"; }
+    if (r == 0) break;
+    len += (size_t)r;
+  }
+  close(fd);
+  buf[len] = 0;
+
+  int status = 0;
+  char* sp = strchr(buf, ' ');
+  if (sp) status = atoi(sp + 1);
+  const char* body = \"\";
+  char* hdr_end = strstr(buf, \"\\r\\n\\r\\n\");
+  if (hdr_end) body = hdr_end + 4;
+
+  size_t blen = strlen(body);
+  char* out = (char*)malloc(32 + blen);
+  if (!out) return \"0\\n\";
+  int hn = sprintf(out, \"%d\\n\", status);
+  memcpy(out + hn, body, blen + 1);
+  return out;
+}
+
+static int nl_argc = 0;
+static char** nl_argv = 0;
+static long nullang_argc(void) { return (long)nl_argc; }
+static const char* nullang_argv(long i) {
+  return (i >= 0 && i < (long)nl_argc) ? nl_argv[i] : \"\";
+}
+
+"
+}
+
+# Il tipo C di un codice-tipo. Schema: code >= 1000 = List<T> (T = code-1000);
+# 10 <= code < 1000 = struct id (handle `nlstruct<id>`); altrimenti primitivo.
+fn c_type(code: Int) -> String {
+  if code >= tc_enum_base() { concat("nlenum", str_of_int(code - tc_enum_base())) }
+  else { if code >= 1000 { "nl_list" }
+  else { if code >= 10 { concat("nlstruct", str_of_int(code - 10)) }
+  else { if code == tc_str() { "const char*" }
+  else { if code == tc_list() { "nl_list" }
+  else { "long" } } } } }
+}
+
+# Box di un valore in uno slot-lista (64-bit): puntatori (String/struct/lista)
+# passano per `(long)(intptr_t)`, gli scalari (Int/Bool) diretti.
+fn box_slot(code: Int, e: String) -> String {
+  if code == tc_str() || code == tc_list() || code >= 10 { concat("(long)(intptr_t)", e) }
+  else { e }
+}
+
+# Unbox da uno slot-lista: ricasta al tipo C dell'elemento.
+fn unbox_slot(code: Int, s: String) -> String {
+  if code == tc_str() { concat("(const char*)(intptr_t)", s) }
+  else { if code == tc_list() || code >= 10 { concat("(", concat(c_type(code), concat(")(intptr_t)", s))) }
+  else { s } }
+}
+
+# --- Enum/match (Direzione B) ------------------------------------------------
+# Indice di un simbolo dentro la catena di varianti che inizia a `head`; -1 se
+# assente. La posizione È il tag (e, per gli enum payload-free, il valore C).
+fn vidx_in(toks: List<Token>, src: String, ns: List<Node>, head: Int, symname: String) -> Int {
+  let mut v = head;
+  let mut idx = 0;
+  let mut found = 0 - 1;
+  let mut going = true;
+  while going {
+    if v < 0 { going = false; }
+    else {
+      let ve = ns[v];
+      if tok_lex(toks, src, ve.tok) == symname { found = idx; going = false; }
+      else { idx = idx + 1; v = ve.next; }
+    }
+  }
+  found
+}
+
+# Indice globale di un simbolo: cerca in ogni enum top-level; -1 se di nessuno.
+fn sym_idx(toks: List<Token>, src: String, ns: List<Node>, root: Int, symname: String) -> Int {
+  let r = ns[root];
+  let mut cur = r.a;
+  let mut found = 0 - 1;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      if e.kind == nd_enum() {
+        let k = vidx_in(toks, src, ns, e.a, symname);
+        if k >= 0 { found = k; going = false; }
+        else { cur = e.next; }
+      } else { cur = e.next; }
+    }
+  }
+  found
+}
+
+# Corpo del primo arm di una catena di arm (per inferire il tipo del match).
+fn first_arm_body(ns: List<Node>, head: Int) -> Int {
+  if head < 0 { 0 - 1 } else { let a = ns[head]; a.b }
+}
+
+# --- Stadio 2: tagged enum -----------------------------------------------------
+# Id di un enum = posizione fra gli item `enum` top-level. -1 se non dichiarato.
+fn enum_id_of(toks: List<Token>, src: String, ns: List<Node>, root: Int, name: String) -> Int {
+  let r = ns[root];
+  let mut cur = r.a;
+  let mut id = 0;
+  let mut found = 0 - 1;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      if e.kind == nd_enum() {
+        if tok_lex(toks, src, e.tok) == name { found = id; going = false; }
+        else { id = id + 1; cur = e.next; }
+      } else { cur = e.next; }
+    }
+  }
+  found
+}
+
+# Il nodo nd_enum all'id `eid` (posizione fra gli nd_enum). -1 se fuori range.
+fn enum_node_at(ns: List<Node>, root: Int, eid: Int) -> Int {
+  let r = ns[root];
+  let mut cur = r.a;
+  let mut id = 0;
+  let mut found = 0 - 1;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      if e.kind == nd_enum() {
+        if id == eid { found = cur; going = false; }
+        else { id = id + 1; cur = e.next; }
+      } else { cur = e.next; }
+    }
+  }
+  found
+}
+
+# Id dell'enum che possiede il simbolo `symname`. -1 se di nessuno.
+fn sym_enum_id(toks: List<Token>, src: String, ns: List<Node>, root: Int, symname: String) -> Int {
+  let r = ns[root];
+  let mut cur = r.a;
+  let mut id = 0;
+  let mut found = 0 - 1;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      if e.kind == nd_enum() {
+        if vidx_in(toks, src, ns, e.a, symname) >= 0 { found = id; going = false; }
+        else { id = id + 1; cur = e.next; }
+      } else { cur = e.next; }
+    }
+  }
+  found
+}
+
+# La catena di varianti `head` ha almeno un payload (→ enum tagged)?
+fn enum_tagged_chain(ns: List<Node>, head: Int) -> Bool {
+  let mut v = head;
+  let mut tagged = false;
+  let mut going = true;
+  while going {
+    if v < 0 { going = false; }
+    else {
+      let ve = ns[v];
+      if ve.a >= 0 { tagged = true; going = false; }
+      else { v = ve.next; }
+    }
+  }
+  tagged
+}
+
+# Token del tipo payload della variante a indice `idx` nella catena `head`; -1 bare.
+fn variant_ptok(ns: List<Node>, head: Int, idx: Int) -> Int {
+  let mut v = head;
+  let mut i = 0;
+  let mut found = 0 - 1;
+  let mut going = true;
+  while going {
+    if v < 0 { going = false; }
+    else {
+      let ve = ns[v];
+      if i == idx { found = ve.a; going = false; }
+      else { i = i + 1; v = ve.next; }
+    }
+  }
+  found
+}
+
+# Codice-tipo di un enum dato il suo nome: tagged → 100000+eid; payload-free →
+# tc_int (è un long); -1 se il nome non è un enum.
+fn enum_type_code(toks: List<Token>, src: String, ns: List<Node>, root: Int, name: String) -> Int {
+  let eid = enum_id_of(toks, src, ns, root, name);
+  if eid < 0 { 0 - 1 }
+  else {
+    let en = enum_node_at(ns, root, eid);
+    let ennd = ns[en];
+    if enum_tagged_chain(ns, ennd.a) { tc_enum_base() + eid } else { tc_int() }
+  }
+}
+
+# Id di uno struct = posizione fra gli item `type` top-level (l'ordine di
+# dichiarazione). -1 se il nome non è uno struct dichiarato.
+fn struct_id(toks: List<Token>, src: String, ns: List<Node>, root: Int, name: String) -> Int {
+  let r = ns[root];
+  let mut cur = r.a;
+  let mut id = 0;
+  let mut found = 0 - 1;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      if e.kind == nd_type() {
+        if tok_lex(toks, src, e.tok) == name { found = id; going = false; }
+        else { id = id + 1; cur = e.next; }
+      } else { cur = e.next; }
+    }
+  }
+  found
+}
+
+# Codice di tipo da un TOKEN di nome-tipo: primitivo via classify_type_lex,
+# oppure 10+struct_id per uno struct noto, altrimenti tc_other.
+fn tc_of_typetok(toks: List<Token>, src: String, ns: List<Node>, root: Int, typetok: Int) -> Int {
+  if typetok < 0 { tc_int() }
+  else {
+    let lx = tok_lex(toks, src, typetok);
+    if lx == "List" {
+      # `List < T >` — l'element-type è due token più avanti. Codice 1000 + T.
+      1000 + tc_of_typetok(toks, src, ns, root, typetok + 2)
+    } else {
+      let base = classify_type_lex(lx);
+      if base == tc_other() {
+        let ec = enum_type_code(toks, src, ns, root, lx);
+        if ec >= 0 { ec }
+        else {
+          let sid = struct_id(toks, src, ns, root, lx);
+          if sid < 0 { tc_other() } else { 10 + sid }
+        }
+      } else { base }
+    }
+  }
+}
+
+# Il nodo `type` con un dato id (per leggerne i campi).
+fn struct_node(ns: List<Node>, root: Int, sid: Int) -> Int {
+  let r = ns[root];
+  let mut cur = r.a;
+  let mut id = 0;
+  let mut found = 0 - 1;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      if e.kind == nd_type() {
+        if id == sid { found = cur; going = false; }
+        else { id = id + 1; cur = e.next; }
+      } else { cur = e.next; }
+    }
+  }
+  found
+}
+
+# Codice di tipo di un campo `fieldname` di uno struct (code >= 10). tc_int se
+# non risolto.
+fn field_type(toks: List<Token>, src: String, ns: List<Node>, root: Int, structcode: Int, fieldname: String) -> Int {
+  if structcode < 10 { tc_int() }
+  else {
+    let tn = struct_node(ns, root, structcode - 10);
+    if tn < 0 { tc_int() }
+    else {
+      let t = ns[tn];
+      let mut f = t.a;
+      let mut ft = tc_int();
+      let mut going = true;
+      while going {
+        if f < 0 { going = false; }
+        else {
+          let fe = ns[f];
+          if tok_lex(toks, src, fe.tok) == fieldname {
+            ft = tc_of_typetok(toks, src, ns, root, fe.b);
+            going = false;
+          } else { f = fe.next; }
+        }
+      }
+      ft
+    }
+  }
+}
+
+# `nlu_` + lessema: il nome C di una fn/locale/parametro utente.
+fn mangle(toks: List<Token>, src: String, tok: Int) -> String {
+  concat("nlu_", tok_lex(toks, src, tok))
+}
+
+# I builtin che il codegen conosce: il loro nome C è `nullang_<name>` (uniforme
+# col codegen Rust). Set completo (preludio) per reggere il compilatore intero.
+fn is_builtin(name: String) -> Bool {
+  name == "print" || name == "concat" || name == "str_of_int"
+  || name == "str_len" || name == "substr" || name == "char_at"
+  || name == "char_code" || name == "int_of_str" || name == "index_of"
+  || name == "split" || name == "read_file" || name == "write_file"
+  || name == "argc" || name == "argv" || name == "now" || name == "getenv"
+  || name == "http_fetch"
+}
+
+# Tipo di ritorno di un builtin (per inferire il tipo di un `let`).
+fn builtin_ret_tc(name: String) -> Int {
+  if name == "concat" || name == "str_of_int" || name == "substr"
+     || name == "char_at" || name == "read_file" || name == "argv"
+     || name == "getenv" || name == "http_fetch" {
+    tc_str()
+  } else { if name == "split" { 1000 + tc_str() }
+  else { tc_int() } }
+}
+
+# Cerca una fn utente per nome fra gli item top-level e ne ritorna il codice del
+# tipo di ritorno (campo `c` di nd_fn). Default tc_int se non trovata.
+fn find_fn_ret(toks: List<Token>, src: String, ns: List<Node>, root: Int, name: String) -> Int {
+  let r = ns[root];
+  let mut cur = r.a;
+  let mut found = tc_int();
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      if e.kind == nd_fn() && tok_lex(toks, src, e.tok) == name {
+        found = tc_of_typetok(toks, src, ns, root, e.c);
+        going = false;
+      } else { cur = e.next; }
+    }
+  }
+  found
+}
+
+# Ambiente di tipi (Wave 4): mappa nome→codice per i locali in scope. Una
+# variabile è identificata dal LESSEMA (token diversi, stesso nome): si confronta
+# tok_lex, non l'indice. Lista piatta per funzione (parametri + let incontrati),
+# sfruttata a riferimento — env_push muta in modo condiviso attraverso emit_*.
+type Binding = { nametk: Int, tc: Int };
+
+fn env_push(env: List<Binding>, nametk: Int, tc: Int) -> Int {
+  let mut e = env;
+  push(e, Binding { nametk: nametk, tc: tc });
+  0
+}
+
+fn env_lookup(toks: List<Token>, src: String, ns: List<Node>, env: List<Binding>, idtok: Int) -> Int {
+  let name = tok_lex(toks, src, idtok);
+  let n = list_len(env);
+  let mut i = 0;
+  let mut found = tc_int();
+  let mut going = true;
+  while going {
+    if i >= n { going = false; }
+    else {
+      let b = env[i];
+      if tok_lex(toks, src, b.nametk) == name { found = b.tc; going = false; }
+      else { i = i + 1; }
+    }
+  }
+  found
+}
+
+# Wave 5 — statement-hoisting. Alcune espressioni (l'if-espressione; in futuro i
+# letterali struct/lista) devono emettere statement PRIMA di sé, perché il C non
+# ha blocchi-valore. emit_expr quindi ritorna {pre, expr}: `pre` sono gli
+# statement da piazzare prima, `expr` l'espressione vera. I chiamanti accumulano
+# i `pre` dei figli in ordine di valutazione e li antepongono alla propria riga.
+type ExprC = { pre: String, expr: String };
+fn ec_pure(s: String) -> ExprC { ExprC { pre: "", expr: s } }
+
+# Contatore di temporanei, condiviso per riferimento (come Cur): nomi `_tN` unici.
+type Ctr = { n: Int };
+fn fresh(ctr: Ctr) -> Int {
+  let mut m = ctr;
+  let id = m.n;
+  m.n = m.n + 1;
+  id
+}
+
+# Modi di coda per l'ultimo statement di un blocco-valore: nessuno / `return` /
+# `tname = …` (per i rami di un if-espressione, che assegnano un temp).
+fn tm_none()   -> Int { 0 }
+fn tm_return() -> Int { 1 }
+fn tm_assign() -> Int { 2 }
+
+# Indice dell'ultimo statement di un blocco (il suo valore di coda).
+fn block_last(ns: List<Node>, blk: Int) -> Int {
+  let b = ns[blk];
+  let mut cur = b.a;
+  let mut last = 0 - 1;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else { last = cur; let e = ns[cur]; cur = e.next; }
+  }
+  last
+}
+
+# Tipo del valore di un blocco = tipo della sua espressione di coda.
+fn block_tail_type(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, blk: Int) -> Int {
+  let last = block_last(ns, blk);
+  if last < 0 { tc_int() }
+  else {
+    let e = ns[last];
+    if e.kind == nd_expr() { type_of_expr(toks, src, ns, root, env, e.a) }
+    else { if e.kind == nd_if() { type_of_expr(toks, src, ns, root, env, last) }
+    else { tc_int() } }
+  }
+}
+
+# Inferenza di tipo SUFFICIENTE per dichiarare un `let` e scegliere `==` vs
+# strcmp: literal sul loro tipo, `id` risolto nell'ambiente, call sul ritorno del
+# builtin/fn utente, if-espressione sul tipo del ramo, binop → long.
+fn type_of_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, idx: Int) -> Int {
+  if idx < 0 { tc_int() }
+  else {
+    let nd = ns[idx];
+    if nd.kind == nd_str() { tc_str() }
+    else { if nd.kind == nd_id() { env_lookup(toks, src, ns, env, nd.tok) }
+    else { if nd.kind == nd_if() { block_tail_type(toks, src, ns, root, env, nd.b) }
+    else { if nd.kind == nd_struct() {
+      let sid = struct_id(toks, src, ns, root, tok_lex(toks, src, nd.tok));
+      if sid < 0 { tc_other() } else { 10 + sid }
+    }
+    else { if nd.kind == nd_field() {
+      let bt = type_of_expr(toks, src, ns, root, env, nd.a);
+      field_type(toks, src, ns, root, bt, tok_lex(toks, src, nd.tok))
+    }
+    else { if nd.kind == nd_list() {
+      # Tipo della lista = 1000 + tipo del primo elemento (tc_int se vuota).
+      if nd.a < 0 { 1000 + tc_int() }
+      else { 1000 + type_of_expr(toks, src, ns, root, env, nd.a) }
+    }
+    else { if nd.kind == nd_index() {
+      # Indicizzare una List<T> dà T.
+      let bt = type_of_expr(toks, src, ns, root, env, nd.a);
+      if bt >= 1000 { bt - 1000 } else { tc_int() }
+    }
+    else { if nd.kind == nd_call() {
+      let cnode = ns[nd.a];
+      if cnode.kind == nd_id() {
+        let name = tok_lex(toks, src, cnode.tok);
+        if is_builtin(name) { builtin_ret_tc(name) }
+        else { find_fn_ret(toks, src, ns, root, name) }
+      } else { tc_int() }
+    }
+    else { if nd.kind == nd_symbol() {
+      # Tagged → codice enum (100000+eid); payload-free → intero.
+      let eid = sym_enum_id(toks, src, ns, root, tok_lex(toks, src, nd.tok));
+      if eid < 0 { tc_int() }
+      else {
+        let en = enum_node_at(ns, root, eid);
+        let ennd = ns[en];
+        if enum_tagged_chain(ns, ennd.a) { tc_enum_base() + eid } else { tc_int() }
+      }
+    }
+    else { if nd.kind == nd_match() {
+      # Il tipo del match = tipo del corpo del primo arm.
+      type_of_expr(toks, src, ns, root, env, first_arm_body(ns, nd.b))
+    }
+    else { tc_int() } } } } } } } } } }
+  }
+}
+
+# Le assegnazioni di campo di un letterale-struct: `tname->nlf_<campo> = <val>;`
+# per ogni finit della catena, con l'eventuale `pre` del valore anteposto.
+fn emit_finits(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, ctr: Ctr, tname: String, head: Int) -> String {
+  let mut cur = head;
+  let mut out = "";
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let fe = ns[cur];
+      let vc = emit_expr(toks, src, ns, root, env, ctr, fe.a);
+      out = concat(out, concat(vc.pre, concat("  ", concat(tname,
+        concat("->nlf_", concat(tok_lex(toks, src, fe.tok),
+        concat(" = ", concat(vc.expr, ";\n"))))))));
+      cur = fe.next;
+    }
+  }
+  out
+}
+
+# Ri-escapa un lessema-stringa per C: Nullang ammette newline REALI dentro un
+# literal (vedi c_prelude), il C no. I caratteri di controllo grezzi diventano
+# escape; le sequenze già escapate (\" \\ \n scritte col backslash) passano
+# invariate carattere per carattere. Le virgolette esterne fanno parte del lessema.
+fn c_string_escape(s: String) -> String {
+  let n = str_len(s);
+  let mut out = "";
+  let mut i = 0;
+  while i < n {
+    let ch = char_at(s, i);
+    let piece = if ch == "\n" { "\\n" }
+      else { if ch == "\t" { "\\t" }
+      else { if ch == "\r" { "\\r" }
+      else { ch } } };
+    out = concat(out, piece);
+    i = i + 1;
+  }
+  out
+}
+
+# Espressione → {pre, expr}. Le precedenze sono già nell'albero: ogni binop si
+# para con le parentesi. `ctr` per i temp dell'if-espressione e dei letterali.
+fn emit_expr(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, ctr: Ctr, idx: Int) -> ExprC {
+  if idx < 0 { ec_pure("0") }
+  else {
+    let nd = ns[idx];
+    if nd.kind == nd_num() { ec_pure(tok_lex(toks, src, nd.tok)) }
+    else { if nd.kind == nd_id() { ec_pure(mangle(toks, src, nd.tok)) }
+    else { if nd.kind == nd_bool() {
+      ec_pure(if tok_lex(toks, src, nd.tok) == "true" { "1" } else { "0" })
+    }
+    else { if nd.kind == nd_str() { ec_pure(c_string_escape(tok_lex(toks, src, nd.tok))) }
+    else { if nd.kind == nd_unary() {
+      let c = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+      ExprC { pre: c.pre, expr: concat("(-", concat(c.expr, ")")) }
+    }
+    else { if nd.kind == nd_bin() {
+      let op = tok_lex(toks, src, nd.tok);
+      let lc = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+      let rc = emit_expr(toks, src, ns, root, env, ctr, nd.b);
+      let lt = type_of_expr(toks, src, ns, root, env, nd.a);
+      let rt = type_of_expr(toks, src, ns, root, env, nd.b);
+      let streq = (op == "==" || op == "!=") && (lt == tc_str() || rt == tc_str());
+      let e = if streq {
+        # Uguaglianza di String: strcmp, non `==` di puntatori.
+        let tl = if op == "==" { ") == 0)" } else { ") != 0)" };
+        concat("(strcmp(", concat(lc.expr, concat(", ", concat(rc.expr, tl))))
+      } else {
+        concat("(", concat(lc.expr, concat(" ", concat(op, concat(" ", concat(rc.expr, ")"))))))
+      };
+      ExprC { pre: concat(lc.pre, rc.pre), expr: e }
+    }
+    else { if nd.kind == nd_call() {
+      let cnode = ns[nd.a];
+      if cnode.kind == nd_id() {
+        let name = tok_lex(toks, src, cnode.tok);
+        # Intrinseci di lista: mappano sul runtime nl_list_* con box del valore.
+        if name == "list_len" {
+          let c0 = emit_expr(toks, src, ns, root, env, ctr, nd.b);
+          ExprC { pre: c0.pre, expr: concat("nl_list_len(", concat(c0.expr, ")")) }
+        }
+        else { if name == "push" {
+          let a0 = nd.b; let n0 = ns[a0]; let a1 = n0.next;
+          let c0 = emit_expr(toks, src, ns, root, env, ctr, a0);
+          let c1 = emit_expr(toks, src, ns, root, env, ctr, a1);
+          let vcode = type_of_expr(toks, src, ns, root, env, a1);
+          ExprC { pre: concat(c0.pre, c1.pre),
+            expr: concat("nl_list_push(", concat(c0.expr, concat(", ", concat(box_slot(vcode, c1.expr), ")")))) }
+        }
+        else { if name == "set" {
+          let a0 = nd.b; let n0 = ns[a0]; let a1 = n0.next; let n1 = ns[a1]; let a2 = n1.next;
+          let c0 = emit_expr(toks, src, ns, root, env, ctr, a0);
+          let c1 = emit_expr(toks, src, ns, root, env, ctr, a1);
+          let c2 = emit_expr(toks, src, ns, root, env, ctr, a2);
+          let vcode = type_of_expr(toks, src, ns, root, env, a2);
+          ExprC { pre: concat(c0.pre, concat(c1.pre, c2.pre)),
+            expr: concat("nl_list_set(", concat(c0.expr, concat(", ", concat(c1.expr,
+              concat(", ", concat(box_slot(vcode, c2.expr), ")")))))) }
+        }
+        else {
+          let bi = is_builtin(name);
+          let cname = if bi { concat("nullang_", name) } else { concat("nlu_", name) };
+          # Gli argomenti World vengono droppati da emit_args (regola uniforme).
+          let ac = emit_args(toks, src, ns, root, env, ctr, nd.b);
+          ExprC { pre: ac.pre, expr: concat(cname, concat("(", concat(ac.expr, ")"))) }
+        } } }
+      } else {
+        # Callee non-identificatore (raro: Nullang non ha fn di prima classe).
+        let cc = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+        let ac = emit_args(toks, src, ns, root, env, ctr, nd.b);
+        ExprC { pre: concat(cc.pre, ac.pre), expr: concat(cc.expr, concat("(", concat(ac.expr, ")"))) }
+      }
+    }
+    else { if nd.kind == nd_if() {
+      # if-ESPRESSIONE: si abbassa a un temp + if-statement. Alloca `_tN` del tipo
+      # del ramo, emette l'if nei `pre` con tm_assign (entrambi i rami fanno
+      # `_tN = <coda>;`), e l'espressione È `_tN`.
+      let id = fresh(ctr);
+      let tname = concat("_t", str_of_int(id));
+      let bt = block_tail_type(toks, src, ns, root, env, nd.b);
+      let cc = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+      let thenb = emit_block(toks, src, ns, root, env, ctr, nd.b, tm_assign(), tname);
+      let elsepart = emit_else(toks, src, ns, root, env, ctr, nd.c, tm_assign(), tname);
+      let decl = concat("  ", concat(c_type(bt), concat(" ", concat(tname, ";\n"))));
+      let body = concat("  if (", concat(cc.expr, concat(") {\n", concat(thenb, concat("  }", concat(elsepart, "\n"))))));
+      ExprC { pre: concat(cc.pre, concat(decl, body)), expr: tname }
+    }
+    else { if nd.kind == nd_field() {
+      # Accesso a campo (lettura): `(base)->nlf_<campo>`. Espressione pura.
+      let bc = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+      ExprC { pre: bc.pre, expr: concat("(", concat(bc.expr, concat(")->nlf_", tok_lex(toks, src, nd.tok)))) }
+    }
+    else { if nd.kind == nd_struct() {
+      # Letterale-struct: alloca un handle su heap, assegna i campi, ritorna il
+      # temp. (Reference semantics come il Rust; le malloc non si liberano, §11.)
+      let sid = struct_id(toks, src, ns, root, tok_lex(toks, src, nd.tok));
+      let cty = c_type(10 + sid);
+      let id = fresh(ctr);
+      let tname = concat("_s", str_of_int(id));
+      let decl = concat("  ", concat(cty, concat(" ", concat(tname,
+        concat(" = malloc(sizeof(struct ", concat(cty, "_s));\n"))))));
+      let fields = emit_finits(toks, src, ns, root, env, ctr, tname, nd.a);
+      ExprC { pre: concat(decl, fields), expr: tname }
+    }
+    else { if nd.kind == nd_list() {
+      # Letterale-lista: alloca, push di ogni elemento (boxato), ritorna il temp.
+      let id = fresh(ctr);
+      let lname = concat("_l", str_of_int(id));
+      let decl = concat("  nl_list ", concat(lname, " = nl_list_new();\n"));
+      let pushes = emit_list_elems(toks, src, ns, root, env, ctr, lname, nd.a);
+      ExprC { pre: concat(decl, pushes), expr: lname }
+    }
+    else { if nd.kind == nd_index() {
+      # Indicizzazione (lettura): nl_list_get + unbox al tipo dell'elemento.
+      let bc = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+      let ic = emit_expr(toks, src, ns, root, env, ctr, nd.b);
+      let bt = type_of_expr(toks, src, ns, root, env, nd.a);
+      let elem = if bt >= 1000 { bt - 1000 } else { tc_int() };
+      let raw = concat("nl_list_get(", concat(bc.expr, concat(", ", concat(ic.expr, ")"))));
+      ExprC { pre: concat(bc.pre, ic.pre), expr: unbox_slot(elem, raw) }
+    }
+    else { if nd.kind == nd_symbol() {
+      let sym = tok_lex(toks, src, nd.tok);
+      let eid = sym_enum_id(toks, src, ns, root, sym);
+      let idx = sym_idx(toks, src, ns, root, sym);
+      let en = enum_node_at(ns, root, eid);
+      let ennd = ns[en];
+      if enum_tagged_chain(ns, ennd.a) {
+        # Tagged: compound literal `((nlenum<eid>){ .tag = idx, .u._v<idx> = arg })`.
+        # ABI identica al seme Rust. Variante bare di un enum tagged = solo .tag.
+        let sname = concat("nlenum", str_of_int(eid));
+        if nd.a >= 0 {
+          let ac = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+          ExprC { pre: ac.pre, expr: concat("((", concat(sname, concat("){ .tag = ",
+            concat(str_of_int(idx), concat(", .u._v", concat(str_of_int(idx),
+            concat(" = ", concat(ac.expr, " })")))))))) }
+        } else {
+          ec_pure(concat("((", concat(sname, concat("){ .tag = ", concat(str_of_int(idx), " })")))))
+        }
+      } else {
+        # Payload-free → indice intero nudo (Stadio 1).
+        ec_pure(str_of_int(idx))
+      }
+    }
+    else { if nd.kind == nd_match() {
+      # match-ESPRESSIONE: temp `_mN` del tipo del primo arm + switch nei `pre`,
+      # expr = temp (stesso schema dell'if-espressione). Tagged: bind lo scrutinee
+      # a un `_svN`, switch su `.tag`, e ogni arm lega il payload. Payload-free:
+      # switch sul valore intero (Stadio 1).
+      let id = fresh(ctr);
+      let tn = concat("_m", str_of_int(id));
+      let sc = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+      let st = type_of_expr(toks, src, ns, root, env, nd.a);
+      if st >= tc_enum_base() {
+        let eid = st - tc_enum_base();
+        # Il binder del primo arm va in scope PRIMA di inferire il tipo-risultato
+        # (il corpo può riferirlo, es. `.ok(body) => body`).
+        bind_first_arm_payload(toks, src, ns, root, env, nd.b, eid);
+        let bt = type_of_expr(toks, src, ns, root, env, first_arm_body(ns, nd.b));
+        let decl = concat("  ", concat(c_type(bt), concat(" ", concat(tn, ";\n"))));
+        let svid = fresh(ctr);
+        let sv = concat("_sv", str_of_int(svid));
+        let svdecl = concat("  ", concat(c_type(st), concat(" ", concat(sv, concat(" = ", concat(sc.expr, ";\n"))))));
+        let sw = concat("  switch (", concat(sv, ".tag) {\n"));
+        let cases = emit_arms_tagged(toks, src, ns, root, env, ctr, nd.b, tn, sv, eid);
+        ExprC { pre: concat(sc.pre, concat(decl, concat(svdecl, concat(sw, concat(cases, "  default: break;\n  }\n"))))), expr: tn }
+      } else {
+        let bt = type_of_expr(toks, src, ns, root, env, first_arm_body(ns, nd.b));
+        let decl = concat("  ", concat(c_type(bt), concat(" ", concat(tn, ";\n"))));
+        let sw = concat("  switch (", concat(sc.expr, ") {\n"));
+        let cases = emit_arms(toks, src, ns, root, env, ctr, nd.b, tn);
+        ExprC { pre: concat(sc.pre, concat(decl, concat(sw, concat(cases, "  default: break;\n  }\n")))), expr: tn }
+      }
+    }
+    else { ec_pure("/*?*/0") } } } } } } } } } } } } } }
+  }
+}
+
+# Gli arm di un match (Stadio 1, payload-free): per ogni arm `case <idx>: { corpo
+# → assegnato a tn; break; }`. L'idx del simbolo È il tag/valore intero.
+fn emit_arms(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, ctr: Ctr, head: Int, tn: String) -> String {
+  let mut cur = head;
+  let mut out = "";
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let arm = ns[cur];
+      let idx = sym_idx(toks, src, ns, root, tok_lex(toks, src, arm.tok));
+      let bc = emit_expr(toks, src, ns, root, env, ctr, arm.b);
+      let casehd = concat("  case ", concat(str_of_int(idx), ": {\n"));
+      let assign = concat(bc.pre, concat("  ", concat(tn, concat(" = ", concat(bc.expr, ";\n")))));
+      out = concat(out, concat(casehd, concat(assign, "  break;\n  }\n")));
+      cur = arm.next;
+    }
+  }
+  out
+}
+
+# Spinge nell'env il binder del PRIMO arm (col suo tipo payload), così l'inferenza
+# del tipo-risultato del match vede il binder se il corpo lo riferisce (es.
+# `.ok(body) => body`). emit_arms_tagged lo ri-spingerà: innocuo (env_lookup =
+# primo match, stesso tipo). No-op se il primo arm è bare o senza binder.
+fn bind_first_arm_payload(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, head: Int, eid: Int) -> Int {
+  if head < 0 { 0 }
+  else {
+    let arm = ns[head];
+    if arm.a >= 0 {
+      let en = enum_node_at(ns, root, eid);
+      let ennd = ns[en];
+      let idx = vidx_in(toks, src, ns, ennd.a, tok_lex(toks, src, arm.tok));
+      let ptok = variant_ptok(ns, ennd.a, idx);
+      if ptok >= 0 { env_push(env, arm.a, tc_of_typetok(toks, src, ns, root, ptok)); 0 }
+      else { 0 }
+    } else { 0 }
+  }
+}
+
+# Gli arm di un match su enum TAGGED: `case <idx>: { <pty> binder = sv.u._v<idx>;
+# corpo→tn; break; }`. Lega il payload nell'env (per token) prima di emettere il
+# corpo — convenzione "nomi unici per fn" come per i `let` (env_lookup = 1° match).
+fn emit_arms_tagged(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, ctr: Ctr, head: Int, tn: String, sv: String, eid: Int) -> String {
+  let en = enum_node_at(ns, root, eid);
+  let ennd = ns[en];
+  let vhead = ennd.a;
+  let mut cur = head;
+  let mut out = "";
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let arm = ns[cur];
+      let idx = vidx_in(toks, src, ns, vhead, tok_lex(toks, src, arm.tok));
+      let ptok = variant_ptok(ns, vhead, idx);
+      let bind = if arm.a >= 0 {
+        if ptok >= 0 {
+          let pc = tc_of_typetok(toks, src, ns, root, ptok);
+          env_push(env, arm.a, pc);
+          concat("  ", concat(c_type(pc), concat(" ", concat(mangle(toks, src, arm.a),
+            concat(" = ", concat(sv, concat(".u._v", concat(str_of_int(idx), ";\n"))))))))
+        } else { "" }
+      } else { "" };
+      let bc = emit_expr(toks, src, ns, root, env, ctr, arm.b);
+      let casehd = concat("  case ", concat(str_of_int(idx), ": {\n"));
+      let assign = concat(bc.pre, concat("  ", concat(tn, concat(" = ", concat(bc.expr, ";\n")))));
+      out = concat(out, concat(casehd, concat(bind, concat(assign, "  break;\n  }\n"))));
+      cur = arm.next;
+    }
+  }
+  out
+}
+
+# Push di ogni elemento di un letterale-lista nel temp `lname`, boxando ciascuno
+# secondo il proprio tipo. I `pre` dei valori (es. struct annidati) sono anteposti.
+fn emit_list_elems(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, ctr: Ctr, lname: String, head: Int) -> String {
+  let mut cur = head;
+  let mut out = "";
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      let vc = emit_expr(toks, src, ns, root, env, ctr, cur);
+      let code = type_of_expr(toks, src, ns, root, env, cur);
+      out = concat(out, concat(vc.pre, concat("  nl_list_push(", concat(lname,
+        concat(", ", concat(box_slot(code, vc.expr), ");\n"))))));
+      cur = e.next;
+    }
+  }
+  out
+}
+
+# Catena di argomenti (via `next`) → {pre = unione dei pre, expr = "a, b, c"}.
+# Gli argomenti di tipo World si DROPPANO (World è cancellato a runtime): vale
+# sia per i builtin (print/read_file/write_file) sia per le fn utente che
+# prendono World — l'unica regola, uniforme.
+fn emit_args(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, ctr: Ctr, head: Int) -> ExprC {
+  let mut cur = head;
+  let mut pre = "";
+  let mut out = "";
+  let mut first = true;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      if type_of_expr(toks, src, ns, root, env, cur) == tc_world() {
+        pre = pre; out = out;
+      } else {
+        let ec = emit_expr(toks, src, ns, root, env, ctr, cur);
+        pre = concat(pre, ec.pre);
+        out = if first { ec.expr } else { concat(out, concat(", ", ec.expr)) };
+        first = false;
+      }
+      cur = e.next;
+    }
+  }
+  ExprC { pre: pre, expr: out }
+}
+
+# Il ramo `else` di un if: può essere assente, un blocco, oppure un altro `if`
+# (catena `else if` — il parser lo lega come nd_if, non come blocco). Si avvolge
+# in `{ }` e si emette di conseguenza, propagando il tailmode.
+fn emit_else(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, ctr: Ctr, elsenode: Int, tailmode: Int, tname: String) -> String {
+  if elsenode < 0 { "" }
+  else {
+    let ec = ns[elsenode];
+    let inner = if ec.kind == nd_if() {
+      concat(emit_stmt(toks, src, ns, root, env, ctr, elsenode, tailmode, tname), "\n")
+    } else {
+      emit_block(toks, src, ns, root, env, ctr, elsenode, tailmode, tname)
+    };
+    concat(" else {\n", concat(inner, "  }"))
+  }
+}
+
+# Statement → C. `tailmode` decide cosa fa l'espressione di coda di un blocco-
+# valore: tm_return → `return …`, tm_assign → `tname = …`, tm_none → `…;`.
+fn emit_stmt(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, ctr: Ctr, idx: Int, tailmode: Int, tname: String) -> String {
+  let nd = ns[idx];
+  if nd.kind == nd_let() {
+    # Tipo dichiarato: dall'annotazione se c'è (così List<T> vuota tiene T),
+    # altrimenti inferito dall'inizializzatore.
+    let declcode = if nd.b >= 0 { tc_of_typetok(toks, src, ns, root, nd.b) }
+      else { type_of_expr(toks, src, ns, root, env, nd.a) };
+    let ct = c_type(declcode);
+    let ec = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+    concat(ec.pre, concat("  ", concat(ct, concat(" ", concat(mangle(toks, src, nd.tok),
+      concat(" = ", concat(ec.expr, ";")))))))
+  }
+  else { if nd.kind == nd_assign() {
+    let lc = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+    let rc = emit_expr(toks, src, ns, root, env, ctr, nd.b);
+    concat(lc.pre, concat(rc.pre, concat("  ", concat(lc.expr,
+      concat(" = ", concat(rc.expr, ";"))))))
+  }
+  else { if nd.kind == nd_return() {
+    let ec = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+    concat(ec.pre, concat("  return ", concat(ec.expr, ";")))
+  }
+  else { if nd.kind == nd_while() {
+    let cc = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+    concat(cc.pre, concat("  while (", concat(cc.expr,
+      concat(") {\n", concat(emit_block(toks, src, ns, root, env, ctr, nd.b, tm_none(), ""), "  }")))))
+  }
+  else { if nd.kind == nd_if() {
+    # Un if-statement in coda propaga il tailmode ai rami (così `return`/assegnano).
+    let cc = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+    let elsepart = emit_else(toks, src, ns, root, env, ctr, nd.c, tailmode, tname);
+    concat(cc.pre, concat("  if (", concat(cc.expr,
+      concat(") {\n", concat(emit_block(toks, src, ns, root, env, ctr, nd.b, tailmode, tname),
+      concat("  }", elsepart))))))
+  }
+  else { if nd.kind == nd_expr() {
+    let ec = emit_expr(toks, src, ns, root, env, ctr, nd.a);
+    let line = if tailmode == tm_return() { concat("  return ", concat(ec.expr, ";")) }
+      else { if tailmode == tm_assign() { concat("  ", concat(tname, concat(" = ", concat(ec.expr, ";")))) }
+      else { concat("  ", concat(ec.expr, ";")) } };
+    concat(ec.pre, line)
+  }
+  else { concat("  /*?stmt*/;", "") } } } } } }
+}
+
+# Il corpo di un blocco (nd_block) → C. Il `tailmode` si applica solo all'ULTIMO
+# statement. Ogni `let` registra il proprio binding nell'ambiente (condiviso).
+fn emit_block(toks: List<Token>, src: String, ns: List<Node>, root: Int, env: List<Binding>, ctr: Ctr, blk: Int, tailmode: Int, tname: String) -> String {
+  let b = ns[blk];
+  let mut cur = b.a;
+  let mut out = "";
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      let tm = if e.next < 0 { tailmode } else { tm_none() };
+      out = concat(out, concat(emit_stmt(toks, src, ns, root, env, ctr, cur, tm, tname), "\n"));
+      if e.kind == nd_let() {
+        let lc = if e.b >= 0 { tc_of_typetok(toks, src, ns, root, e.b) }
+          else { type_of_expr(toks, src, ns, root, env, e.a) };
+        env_push(env, e.tok, lc); 0
+      } else { 0 };
+      cur = e.next;
+    }
+  }
+  out
+}
+
+# I parametri C di una fn: salta World (cancellato), mangla gli altri risolvendo
+# il tipo dal token (così gli struct prendono `nlstruct<id>`). "void" se vuoto.
+fn emit_params(toks: List<Token>, src: String, ns: List<Node>, root: Int, head: Int) -> String {
+  let mut cur = head;
+  let mut out = "";
+  let mut any = false;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      let rc = tc_of_typetok(toks, src, ns, root, e.b);
+      if rc == tc_world() { out = out; }
+      else {
+        let piece = concat(c_type(rc), concat(" ", mangle(toks, src, e.tok)));
+        out = if any { concat(out, concat(", ", piece)) } else { piece };
+        any = true;
+      }
+      cur = e.next;
+    }
+  }
+  if any { out } else { "void" }
+}
+
+# La firma C di una fn (senza `;` né `{`). `main` è speciale: resta `main`, tipo
+# `int`, parametri ignorati (niente ancora argc/argv). Le altre risolvono il tipo
+# di ritorno dal token salvato dal parser (campo `c`).
+fn c_sig(toks: List<Token>, src: String, ns: List<Node>, root: Int, fnidx: Int) -> String {
+  let nd = ns[fnidx];
+  let nm = tok_lex(toks, src, nd.tok);
+  if nm == "main" { "int main(int argc, char** argv)" }
+  else {
+    concat(c_type(tc_of_typetok(toks, src, ns, root, nd.c)), concat(" nlu_", concat(nm,
+      concat("(", concat(emit_params(toks, src, ns, root, nd.a), ")")))))
+  }
+}
+
+# Definizione completa di una fn: firma + corpo. L'ambiente parte dai parametri
+# (nome→codice di tipo, risolto dal token così gli struct mantengono l'identità);
+# i let lo estendono dentro emit_block. Il valore finale del corpo è il `return`.
+fn emit_fn(toks: List<Token>, src: String, ns: List<Node>, root: Int, fnidx: Int) -> String {
+  let nd = ns[fnidx];
+  let mut env: List<Binding> = [];
+  let mut p = nd.a;
+  let mut gp = true;
+  while gp {
+    if p < 0 { gp = false; }
+    else { let pe = ns[p]; env_push(env, pe.tok, tc_of_typetok(toks, src, ns, root, pe.b)); p = pe.next; }
+  }
+  let ctr = Ctr { n: 0 };
+  # `main` cattura argc/argv per i builtin argc()/argv() (World cancellato).
+  let shim = if tok_lex(toks, src, nd.tok) == "main" { "  nl_argc = argc; nl_argv = argv;\n" } else { "" };
+  concat(c_sig(toks, src, ns, root, fnidx),
+    concat(" {\n", concat(shim, concat(emit_block(toks, src, ns, root, env, ctr, nd.b, tm_return(), ""), "}\n"))))
+}
+
+# Emette i typedef degli struct: prima i forward dei handle (`typedef struct
+# nlstruct<id>_s* nlstruct<id>;` — così i campi possono riferirsi ad altri
+# handle, anche self), poi i corpi `struct nlstruct<id>_s { <tipo> nlf_<campo>; }`.
+fn emit_structs(toks: List<Token>, src: String, ns: List<Node>, root: Int) -> String {
+  let r = ns[root];
+  let mut out = "";
+  let mut cur = r.a;
+  let mut id = 0;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      if e.kind == nd_type() {
+        let nm = concat("nlstruct", str_of_int(id));
+        out = concat(out, concat("typedef struct ", concat(nm, concat("_s* ", concat(nm, ";\n")))));
+        id = id + 1; 0
+      } else { 0 };
+      cur = e.next;
+    }
+  }
+  let mut cur2 = r.a;
+  let mut id2 = 0;
+  let mut g2 = true;
+  while g2 {
+    if cur2 < 0 { g2 = false; }
+    else {
+      let e = ns[cur2];
+      if e.kind == nd_type() {
+        let nm = concat("nlstruct", str_of_int(id2));
+        out = concat(out, concat("struct ", concat(nm, "_s {\n")));
+        let mut f = e.a;
+        let mut gf = true;
+        while gf {
+          if f < 0 { gf = false; }
+          else {
+            let fe = ns[f];
+            let fty = c_type(tc_of_typetok(toks, src, ns, root, fe.b));
+            out = concat(out, concat("  ", concat(fty, concat(" nlf_",
+              concat(tok_lex(toks, src, fe.tok), ";\n")))));
+            f = fe.next;
+          }
+        }
+        out = concat(out, "};\n");
+        id2 = id2 + 1; 0
+      } else { 0 };
+      cur2 = e.next;
+    }
+  }
+  concat(out, "\n")
+}
+
+# I membri union di un enum tagged: `<tipo> _v<idx>;` per ogni variante CON
+# payload (le bare non occupano slot). idx = posizione della variante.
+fn emit_union_members(toks: List<Token>, src: String, ns: List<Node>, root: Int, head: Int) -> String {
+  let mut v = head;
+  let mut idx = 0;
+  let mut out = "";
+  let mut going = true;
+  while going {
+    if v < 0 { going = false; }
+    else {
+      let ve = ns[v];
+      if ve.a >= 0 {
+        let pty = c_type(tc_of_typetok(toks, src, ns, root, ve.a));
+        out = concat(out, concat("    ", concat(pty, concat(" _v", concat(str_of_int(idx), ";\n")))));
+        idx = idx + 1; v = ve.next;
+      } else { idx = idx + 1; v = ve.next; }
+    }
+  }
+  out
+}
+
+# Typedef dei soli enum TAGGED: `typedef struct { long tag; union { ... } u; }
+# nlenum<eid>;`. ABI identica al seme Rust. id conta TUTTI gli nd_enum (anche i
+# payload-free, che non emettono typedef ma consumano un eid — coerente con
+# enum_id_of). Vengono dopo gli struct, così un payload può essere un handle struct.
+fn emit_enums(toks: List<Token>, src: String, ns: List<Node>, root: Int) -> String {
+  let r = ns[root];
+  let mut out = "";
+  let mut cur = r.a;
+  let mut id = 0;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      if e.kind == nd_enum() {
+        if enum_tagged_chain(ns, e.a) {
+          let nm = concat("nlenum", str_of_int(id));
+          out = concat(out, concat("typedef struct {\n  long tag;\n  union {\n",
+            concat(emit_union_members(toks, src, ns, root, e.a),
+            concat("  } u;\n} ", concat(nm, ";\n")))));
+          id = id + 1; cur = e.next;
+        } else { id = id + 1; cur = e.next; }
+      } else { cur = e.next; }
+    }
+  }
+  concat(out, "\n")
+}
+
+# Programma → C: preludio, typedef struct, typedef enum, forward-decl di ogni fn
+# (tranne main), poi i corpi. Passate sulla catena di item top-level.
+fn gen(toks: List<Token>, src: String, ns: List<Node>, root: Int) -> String {
+  let r = ns[root];
+  let mut out = concat(c_prelude(), concat(emit_structs(toks, src, ns, root), emit_enums(toks, src, ns, root)));
+  let mut cur = r.a;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      out = if e.kind == nd_fn() && tok_lex(toks, src, e.tok) != "main" {
+        concat(out, concat(c_sig(toks, src, ns, root, cur), ";\n"))
+      } else { out };
+      cur = e.next;
+    }
+  }
+  out = concat(out, "\n");
+  let mut cur2 = r.a;
+  let mut g2 = true;
+  while g2 {
+    if cur2 < 0 { g2 = false; }
+    else {
+      let e = ns[cur2];
+      out = if e.kind == nd_fn() {
+        concat(out, concat(emit_fn(toks, src, ns, root, cur2), "\n"))
+      } else { out };
+      cur2 = e.next;
+    }
+  }
+  out
+}
+
+# ============================================================================
+# Driver
+# ============================================================================
+
+fn show(world: World, snippet: String) -> Int uses !tty {
+  print(world, "");
+  print(world, concat("=== ", concat(snippet, " ===")));
+  let toks = lex(snippet);
+  let mut nodes: List<Node> = [];
+  let cur = Cur { pos: 0 };
+  let root = parse_program(toks, snippet, nodes, cur);
+  print(world, concat("tokens: ", concat(str_of_int(list_len(toks)),
+        concat("  nodes: ", str_of_int(list_len(nodes))))));
+  print_node(world, toks, snippet, nodes, root, 0);
+  0
+}
+
+# Lunghezza di una catena di fratelli (per contare gli item top-level).
+fn count_chain(ns: List<Node>, head: Int) -> Int {
+  let mut cur = head;
+  let mut n = 0;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else { n = n + 1; let e = ns[cur]; cur = e.next; }
+  }
+  n
+}
+
+# Indice degli item top-level recuperati: `fn nome` / `type Nome`. La prova
+# strutturale che la forma del file è stata ricostruita, senza dumpare l'albero.
+fn print_toc(world: World, toks: List<Token>, src: String, ns: List<Node>, root: Int) -> Int uses !tty {
+  let r = ns[root];
+  let mut cur = r.a;
+  let mut going = true;
+  while going {
+    if cur < 0 { going = false; }
+    else {
+      let e = ns[cur];
+      let label = if e.kind == nd_fn() { "fn   " }
+        else { if e.kind == nd_type() { "type " } else { "stmt " } };
+      print(world, concat("  ", concat(label, tok_lex(toks, src, e.tok))));
+      cur = e.next;
+    }
+  }
+  0
+}
+
+# Il percorso del sorgente da ingerire: argv(1) se passato, altrimenti il file
+# stesso, relativo alla cwd da cui gira `nullang run` (la radice di bootstrap).
+fn src_path() -> String {
+  if argc() > 1 { argv(1) } else { "system/nullang/examples/selfhost-parser.null" }
+}
+
+# MANGIA LA PROPRIA CODA. Legge l'intero sorgente, lo lessa, lo parsa in un AST,
+# e ne stampa l'indice degli item top-level. Se questo gira sul proprio file,
+# il parser di Nullang ha appena letto sé stesso.
+fn ingest(world: World, path: String) -> Int uses !tty, !fs.read, !fs.write {
+  print(world, "");
+  print(world, concat("=== mangia la propria coda: ", concat(path, " ===")));
+  let src = read_file(world, path);
+  let toks = lex(src);
+  let mut nodes: List<Node> = [];
+  let cur = Cur { pos: 0 };
+  let root = parse_program(toks, src, nodes, cur);
+  let r = nodes[root];
+  print(world, concat("sorgente: ", concat(str_of_int(str_len(src)),
+        concat(" byte   tokens: ", str_of_int(list_len(toks))))));
+  print(world, concat("nodi AST: ", concat(str_of_int(list_len(nodes)),
+        concat("   item top-level: ", str_of_int(count_chain(nodes, r.a))))));
+  print_toc(world, toks, src, nodes, root);
+  # FIXPOINT: emette il C del PROPRIO sorgente. Se gcc lo compila e il binario
+  # si comporta come questo compilatore, il self-host è raggiunto. Il path di
+  # uscita è argv(2) se dato (lo usa il bootstrap a stadi), altrimenti /tmp.
+  let c = gen(toks, src, nodes, root);
+  let outp = if argc() > 2 { argv(2) } else { "/tmp/nlcg-self.c" };
+  write_file(world, outp, c);
+  print(world, concat("C di sé stesso: ", concat(str_of_int(str_len(c)),
+        concat(" byte → ", outp))));
+  0
+}
+
+# Codegen wave 1 end-to-end: lessa+parsa il target, emette C, lo stampa e lo
+# scrive su disco perché l'host (gcc) chiuda il giro AST→C→ELF.
+fn codegen_show(world: World, label: String, outpath: String, target: String) -> Int uses !tty, !fs.write {
+  print(world, "");
+  print(world, concat("=== ", concat(label, " ===")));
+  let toks = lex(target);
+  let mut nodes: List<Node> = [];
+  let cur = Cur { pos: 0 };
+  let root = parse_program(toks, target, nodes, cur);
+  let c = gen(toks, target, nodes, root);
+  print(world, c);
+  write_file(world, outpath, c);
+  print(world, concat("(C scritto in ", concat(outpath, " — compilalo con gcc)")));
+  0
+}
+
+fn main(world: World) -> Int uses !tty, !fs.read, !fs.write {
+  print(world, "selfhost-parser — Nullang che si dà una forma ad albero");
+
+  # Precedenza: deve venire ((1 + (2*3)) - 4).
+  show(world, "1 + 2 * 3 - 4");
+  # Unario più stretto del binario: ((-a) + b).
+  show(world, "0 - a + b");
+  # Chiamate annidate + binop dentro un argomento.
+  show(world, "i < n && is_digit(char_at(src, i))");
+  show(world, "substr(src, start, i - start)");
+  # Letterale-struct con valori-campo che sono chiamate ed espressioni.
+  show(world, "Token { kind: k_number(), start: start, len: i - start }");
+  # Accesso campo incatenato.
+  show(world, "t.start + t.len");
+  # Indicizzazione.
+  show(world, "xs[j]");
+  # Statement: let mut con inizializzatore.
+  show(world, "let mut i = start + 1;");
+  # while con condizione (nessun letterale-struct catturato per errore).
+  show(world, "while i < n { i = i + 1; }");
+  # if/else, condizione poi blocchi.
+  show(world, "if c == \"a\" { i = i + 1; } else { i = i + 2; }");
+
+  # --- DICHIARAZIONI: la grammatica di cui è fatto questo stesso file. ---
+  # type-decl: campi nome:Tipo (i tipi si saltano, i nomi restano).
+  show(world, "type Token = { kind: Int, start: Int, len: Int };");
+  # fn minima: nessun parametro, corpo a espressione singola.
+  show(world, "fn none() -> Int { 0 - 1 }");
+  # fn con parametri tipati e corpo multi-statement (cursore condiviso).
+  show(world, "fn adv(c: Cur) -> Int { let mut m = c; m.pos = m.pos + 1; 0 }");
+  # fn con tipi generici nei parametri + letterale-struct nel corpo.
+  show(world, "fn mk(nodes: List<Node>, kind: Int, tok: Int) -> Int { let mut ns = nodes; push(ns, Node { kind: kind, tok: tok }); list_len(ns) }");
+  # fn con clausola d'effetto `uses` (saltata, ma non rompe il parsing).
+  show(world, "fn main(world: World) -> Int uses !tty, !fs.read { print(world, \"hi\"); 0 }");
+
+  # --- E ORA la propria coda: parsa l'intero file sorgente. ---
+  ingest(world, src_path());
+
+  # --- CODEGEN wave 1: AST → C, compilabile. fact(5)=120 (exit code). ---
+  codegen_show(world, "codegen wave 1: AST → C (Int-only)", "/tmp/nlcg-w1.c",
+    "fn fact(n: Int) -> Int { let mut acc = 1; let mut i = 1; while i < n + 1 { acc = acc * i; i = i + 1; } acc } fn main(world: World) -> Int uses !tty { fact(5) }");
+
+  # --- CODEGEN wave 2: String + builtin (print/concat/str_of_int), World droppato. ---
+  codegen_show(world, "codegen wave 2: String + builtin", "/tmp/nlcg-w2.c",
+    "fn sq(n: Int) -> Int { n * n } fn main(world: World) -> Int uses !tty { print(world, \"codegen Nullang: vivo\"); print(world, concat(\"sq(7) = \", str_of_int(sq(7)))); 0 }");
+
+  # --- CODEGEN wave 3: type-inference. fn -> String, let-String, == → strcmp. ---
+  codegen_show(world, "codegen wave 3: type-inference + strcmp", "/tmp/nlcg-w3.c",
+    "fn greet(name: String) -> String { concat(\"ciao, \", name) } fn main(world: World) -> Int uses !tty { let msg = greet(\"Nullang\"); print(world, msg); print(world, concat(\"lunghezza = \", str_of_int(str_len(msg)))); let first = substr(msg, 0, 1); if first == \"c\" { print(world, \"inizia per c\"); } else { print(world, \"no\"); } 0 }");
+
+  # --- CODEGEN wave 4: scope di variabili. let y = x (String), a == b (due var String). ---
+  codegen_show(world, "codegen wave 4: scope di variabili", "/tmp/nlcg-w4.c",
+    "fn greet(name: String) -> String { concat(\"ciao \", name) } fn same(a: String, b: String) -> Int { let mut r = 0; if a == b { r = 1; } else { r = 0; } r } fn main(world: World) -> Int uses !tty { let x = greet(\"X\"); let y = x; print(world, y); print(world, str_of_int(same(\"foo\", \"foo\"))); print(world, str_of_int(same(\"foo\", \"bar\"))); 0 }");
+
+  # --- CODEGEN wave 5: if-ESPRESSIONE (hoisting). let = if, corpo-if con else-if, if in argomento. ---
+  codegen_show(world, "codegen wave 5: if-espressione (hoisting)", "/tmp/nlcg-w5.c",
+    "fn classify(n: Int) -> String { if n < 0 { \"neg\" } else { if n == 0 { \"zero\" } else { \"pos\" } } } fn main(world: World) -> Int uses !tty { let label = if 5 < 10 { \"minore\" } else { \"no\" }; print(world, label); print(world, classify(0 - 3)); print(world, classify(0)); print(world, classify(7)); print(world, concat(\"scelta: \", if 1 == 1 { \"uno\" } else { \"altro\" })); 0 }");
+
+  # --- CODEGEN wave 6a: STRUCT. type-decl → typedef, letterale-struct, accesso a campo. ---
+  codegen_show(world, "codegen wave 6a: struct", "/tmp/nlcg-w6.c",
+    "type Point = { x: Int, y: Int }; fn mkpoint(a: Int, b: Int) -> Point { Point { x: a, y: b } } fn main(world: World) -> Int uses !tty { let p = mkpoint(3, 4); print(world, concat(\"x = \", str_of_int(p.x))); print(world, concat(\"y = \", str_of_int(p.y))); print(world, concat(\"somma = \", str_of_int(p.x + p.y))); 0 }");
+
+  # --- CODEGEN wave 6b: LISTE. literal, push/list_len, index, while-sum, lista di struct. ---
+  codegen_show(world, "codegen wave 6b: liste", "/tmp/nlcg-w7.c",
+    "type Box = { v: Int }; fn main(world: World) -> Int uses !tty { let mut xs: List<Int> = []; push(xs, 10); push(xs, 20); push(xs, 30); print(world, concat(\"len = \", str_of_int(list_len(xs)))); print(world, concat(\"xs[1] = \", str_of_int(xs[1]))); let mut sum = 0; let mut i = 0; while i < list_len(xs) { sum = sum + xs[i]; i = i + 1; } print(world, concat(\"sum = \", str_of_int(sum))); let bs: List<Box> = [Box { v: 7 }, Box { v: 9 }]; print(world, concat(\"bs[0].v = \", str_of_int(bs[0].v))); 0 }");
+  0
+}

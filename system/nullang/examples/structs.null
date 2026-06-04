@@ -1,0 +1,45 @@
+# struct — nominal record with reference semantics (SPEC §11, v0.4).
+# Exercises: type decl, named-field construction, field read p.x, field write
+# p.x = v (let mut), reference semantics (a copy is the same handle), a struct
+# field holding another struct, and a chained field write p.a.b = v.
+
+type Point = { x: Int, y: Int };
+type Line  = { from: Point, to: Point, label: String };
+
+fn manhattan(a: Point, b: Point) -> Int {
+  let dx = if a.x > b.x { a.x - b.x } else { b.x - a.x };
+  let dy = if a.y > b.y { a.y - b.y } else { b.y - a.y };
+  dx + dy
+}
+
+fn main(world: World) -> Int uses !tty {
+  # Construct, read.
+  let mut p = Point { x: 1, y: 2 };
+  print(world, str_of_int(p.x));            # 1
+  print(world, str_of_int(p.y));            # 2
+
+  # Field write through a let mut binding.
+  p.x = 99;
+  p.y = p.y + 8;
+  print(world, str_of_int(p.x));            # 99
+  print(world, str_of_int(p.y));            # 10
+
+  # Reference semantics: q is the same handle as p, so the write shows through.
+  let q = p;
+  p.x = 7;
+  print(world, str_of_int(q.x));            # 7
+
+  # A struct field holding another struct; chained read and write.
+  let mut seg = Line {
+    from: Point { x: 0, y: 0 },
+    to: Point { x: 3, y: 4 },
+    label: "diag"
+  };
+  print(world, seg.label);                  # diag
+  print(world, str_of_int(seg.to.x));       # 3
+  seg.to.x = 30;                            # chained field write
+  print(world, str_of_int(seg.to.x));       # 30
+  print(world, str_of_int(manhattan(seg.from, seg.to)));  # 30 + 4 = 34
+
+  0
+}

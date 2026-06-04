@@ -1,0 +1,33 @@
+# http-get.null — la superficie pubblica di `!net`, costruita in Nullang puro
+# sopra il primitivo `http_fetch` (SPEC §5). Dimostra la filosofia di Direzione
+# B: l'EFFETTO di rete è un builtin C minimale; l'ERGONOMIA (struct, status,
+# body) è codice di libreria — così tutto attraversa il gate self-host (struct
+# + builtin String, nessun enum).
+#
+# `http_fetch(world, url) -> String` ritorna "<status>\n<body>"; status 0 su
+# errore di trasporto (0 non è mai uno status HTTP reale → sentinella pulita).
+# Finché Nullang non ha un sistema di moduli, questo `HttpResponse`+`http_get`
+# è lo snippet canonico da copiare nei programmi.
+#
+# Uso (richiede !net concesso, altrimenti netns vuota → status 0):
+#   nv-rebuild run http-get            # come servizio con requires=[!net !tty]
+#   nullang run examples/http-get.null http://127.0.0.1:8080/
+
+type HttpResponse = { status: Int, body: String };
+
+fn http_get(world: World, url: String) -> HttpResponse uses !net {
+  let raw = http_fetch(world, url);
+  let nl = index_of(raw, "\n");
+  HttpResponse {
+    status: int_of_str(substr(raw, 0, nl)),
+    body: substr(raw, nl + 1, str_len(raw))
+  }
+}
+
+fn main(world: World) -> Int uses !net, !tty {
+  let url = argv(1);
+  let resp = http_get(world, url);
+  print(world, concat("status: ", str_of_int(resp.status)));
+  print(world, resp.body);
+  if resp.status == 200 { 0 } else { 1 }
+}

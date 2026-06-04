@@ -1,3 +1,13 @@
-cosign.key
-cosign.private
-/Containerfile
+# Nix build outputs
+result
+result-*
+.direnv/
+
+# Zero compiler cache
+.zero/
+
+# Rust build artifacts (system/*/target/)
+**/target/
+
+# Claude Code worktrees (sub-agent isolation)
+.claude/worktrees/

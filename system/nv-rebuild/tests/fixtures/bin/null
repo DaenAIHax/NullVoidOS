@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Stub for `null` — the .null evaluator.
+#
+# Environment variables consumed:
+#   NV_FIXTURE_MANIFEST_JSON — path to a JSON file containing a pre-baked
+#       SystemManifest to return from `null eval`. Required for `eval`.
+#   NV_FIXTURE_NULL_FAIL — if set to "1", `null eval` exits 1 with an error.
+#
+# Usage inside tests: set NV_FIXTURE_MANIFEST_JSON to a temp file written by
+# the test; `null eval <whatever>` prints its contents to stdout.
+
+CMD="${1:-}"
+shift || true
+
+case "$CMD" in
+  eval)
+    if [ "${NV_FIXTURE_NULL_FAIL:-0}" = "1" ]; then
+      echo '{"level":"error","code":"TYP001","file":"system.null","line":1,"col":1,"message":"injected failure","fix":""}' >&2
+      exit 1
+    fi
+    if [ -z "${NV_FIXTURE_MANIFEST_JSON:-}" ]; then
+      echo "stub null: NV_FIXTURE_MANIFEST_JSON not set" >&2
+      exit 1
+    fi
+    cat "$NV_FIXTURE_MANIFEST_JSON"
+    ;;
+  check)
+    exit 0
+    ;;
+  *)
+    echo "stub null: unknown subcommand '$CMD'" >&2
+    exit 1
+    ;;
+esac

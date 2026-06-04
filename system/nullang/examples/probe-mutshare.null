@@ -1,0 +1,48 @@
+# probe-mutshare.null — deriska il fulcro del parser:
+# stato mutabile condiviso (arena List + cursore struct) attraverso chiamate
+# ricorsive, dato che i parametri non sono `let mut`. La via: ri-legare il
+# parametro a un `let mut` locale — alias dello stesso handle heap (semantica
+# a riferimento), che rende push/field-write legali e CONDIVISI col chiamante.
+
+type Cur = { pos: Int };
+
+# Muta un campo struct passato come parametro, via alias let mut.
+fn bump(c: Cur) -> Int {
+  let mut m = c;
+  m.pos = m.pos + 1;
+  m.pos
+}
+
+# Pusha su una List passata come parametro, via alias let mut.
+fn emit(xs: List<Int>, v: Int) -> Int {
+  let mut a = xs;
+  push(a, v);
+  list_len(a)
+}
+
+# Ricorsione che muta lo stato condiviso a ogni livello.
+fn descend(c: Cur, xs: List<Int>, depth: Int) -> Int {
+  if depth == 0 {
+    0
+  } else {
+    let p = bump(c);
+    let n = emit(xs, p);
+    descend(c, xs, depth - 1)
+  }
+}
+
+fn main(world: World) -> Int uses !tty {
+  let c = Cur { pos: 0 };
+  let mut xs: List<Int> = [];
+  descend(c, xs, 5);
+
+  # Se la condivisione funziona: cur.pos == 5 e xs == [1,2,3,4,5].
+  print(world, concat("cur.pos = ", str_of_int(c.pos)));
+  print(world, concat("len = ", str_of_int(list_len(xs))));
+  let mut i = 0;
+  while i < list_len(xs) {
+    print(world, concat("  xs[", concat(str_of_int(i), concat("] = ", str_of_int(xs[i])))));
+    i = i + 1;
+  }
+  0
+}
