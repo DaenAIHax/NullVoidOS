@@ -182,6 +182,18 @@ let
       CREDS_OK="no (9P mount failed)"
     fi
 
+    # Outbox — the agent's RW return channel to the host (DESIGN.md "separate
+    # writable scratch"). A dedicated host dir, RW, kept separate from the RO
+    # credentials share: the agent drops artifacts (diffs/patches/files) in
+    # /root/outbox and the host reads them byte-exact, instead of lossy
+    # console copy-paste. Plain scratch, inspected as data by the host gate.
+    OUTBOX_OK=no
+    mkdir -p /root/outbox
+    if mount -t 9p -o trans=virtio,version=9p2000.L,msize=131072 \
+         outbox /root/outbox 2>/dev/null; then
+      OUTBOX_OK=yes
+    fi
+
     # Loopback + DHCP on eth0 (QEMU user networking, gateway 10.0.2.2).
     ifconfig lo up 2>/dev/null
     udhcpc -i eth0 -q -t 5 -T 2 -s /etc/udhcpc/default.script \
@@ -259,6 +271,7 @@ let
     echo "ssh:      $SSH_OK ($([ "$SSH_OK" = yes ] && echo 'host:2222 -> guest:22' || echo 'disabled'))"
     echo "egress:   general NAT (egress perimeter not yet enforced)"
     echo "creds:    RO from host, guest-local copy on /var (host not writable)"
+    echo "outbox:   $OUTBOX_OK  (write artifacts to /root/outbox -> host reads them)"
     echo ""
     echo "Type 'claude' to start the agent."
     echo "From host:  ssh -p 2222 root@localhost  (multi-shell)"

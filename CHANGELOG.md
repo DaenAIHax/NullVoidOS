@@ -8,6 +8,19 @@ applicable.
 
 ## [Unreleased]
 
+### boot-vm: outbox — canale di ritorno RW agente→host (2026-06-04)
+
+Aggiunto un secondo share 9P **RW** dedicato (`outbox`), mappato da
+`~/.cache/nullvoid/outbox` (host) a `/root/outbox` (guest), **separato dallo
+share credenziali RO**. È il "separate writable scratch" previsto in DESIGN.md
+("Trust model & sandboxing"): col perimetro filesystem chiuso, l'agente non
+aveva un modo integro di consegnare artefatti all'host — la copia-incolla dalla
+console seriale li corrompe. Ora l'agente scrive diff/patch/file in
+`/root/outbox` e l'host li legge **byte-esatti**. È scratch ispezionato come
+dato (mai eseguito dall'host), quindi non riapre il percorso d'attacco
+credenziali/config; l'host resta il gate che rivede prima di applicare
+(modello propose/dispose). Primo uso reale: vedi la entry `nullang io-result`.
+
 ### boot-vm: chiusa la porta filesystem dell'host; egress rinviato (2026-06-04)
 
 Hardening del perimetro `perimeter-as-jail` (DESIGN.md "Trust model &

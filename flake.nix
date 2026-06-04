@@ -125,6 +125,16 @@
                   "$VAR_QCOW2" 8G
               fi
 
+              # Outbox — the agent's RW return channel (DESIGN.md "separate
+              # writable scratch"). A dedicated host dir shared RW into the
+              # guest, kept SEPARATE from the RO ~/.claude share: the agent
+              # drops artifacts here (diffs, patches, files) and the host
+              # reads them byte-exact, instead of lossy console copy-paste.
+              # It is plain scratch — inspected as data, never executed by the
+              # host — so it does not reopen the credential/config attack path.
+              OUTBOX_DIR="$VAR_DIR/outbox"
+              mkdir -p "$OUTBOX_DIR"
+
               # Host SSH public key forwarded into the VM via a RO 9P
               # share. The init script copies it into the agent's
               # authorized_keys so `ssh -p 2222 root@localhost` works
@@ -148,6 +158,7 @@
               echo "======================================================"
               echo " Booting NullVoidOS Phase 0 (a) in QEMU"
               echo " Credentials (RO 9P share): $CRED_DIR"
+              echo " Outbox (RW 9P share):      $OUTBOX_DIR  (guest: /root/outbox)"
               echo " Persistent /var:           $VAR_QCOW2"
               if [ -n "$SSH_PUB_DIR" ]; then
                 echo " SSH key share (RO):        $SSH_PUB_DIR"
@@ -196,6 +207,7 @@
                 -device virtio-net-pci,netdev=net0 \
                 -drive "file=$VAR_QCOW2,if=virtio,format=qcow2,cache=writeback" \
                 -virtfs "local,path=$CRED_DIR,mount_tag=claudefs,security_model=mapped-xattr,readonly=on" \
+                -virtfs "local,path=$OUTBOX_DIR,mount_tag=outbox,security_model=mapped-xattr" \
                 $SSH_VIRTFS \
                 -nographic \
                 -no-reboot \
