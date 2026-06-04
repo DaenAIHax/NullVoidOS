@@ -8,6 +8,28 @@ applicable.
 
 ## [Unreleased]
 
+### boot-vm: chiusa la porta filesystem dell'host; egress rinviato (2026-06-04)
+
+Hardening del perimetro `perimeter-as-jail` (DESIGN.md "Trust model &
+sandboxing"). **Porta filesystem — CHIUSA**: lo share 9P `claudefs` di
+`~/.claude` passa a `readonly=on` (a livello hypervisor il guest non può più
+riscrivere la config Claude dell'host → niente iniezione di hook/MCP che
+girerebbero sull'HOST). Il guest tiene il proprio `.claude` guest-local su
+`/var`: a ogni boot copia solo le credenziali dallo share RO, mentre
+sessioni/history/config restano su `/var` e non toccano l'host. Login in-VM
+verificato funzionante con lo share RO.
+
+**Porta egress — ANCORA APERTA, rinviata.** Tentata una allow-list
+(tinyproxy `api.anthropic.com` only) raggiunta dal guest via slirp
+`restrict=on` + `guestfwd`: il proxy funziona perfettamente dall'host
+(`curl -x` → 405), ma `guestfwd` perde i pacchetti del flusso TLS del guest
+(≈20s di ritrasmissioni sulla riga CONNECT → reset). MTU 1280, rimozione di
+`restrict`, e disabilitazione degli offload virtio-net non hanno risolto →
+il meccanismo proxy-over-guestfwd è stato rimosso e l'egress torna a NAT
+slirp generale. La chiusura "vera" richiede un meccanismo diverso (modello
+locale per air-gap reale, oppure rete bridged in un netns + firewall host):
+task dedicato. Accettato per ora su alpha single-user.
+
 ### Repo a direzione unica — `bootstrap/` promosso alla root (2026-06-04)
 
 Going-public: il vecchio progetto legacy (cybersecurity workbench

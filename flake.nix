@@ -147,7 +147,7 @@
               echo ""
               echo "======================================================"
               echo " Booting NullVoidOS Phase 0 (a) in QEMU"
-              echo " Credentials (RW 9P share): $CRED_DIR"
+              echo " Credentials (RO 9P share): $CRED_DIR"
               echo " Persistent /var:           $VAR_QCOW2"
               if [ -n "$SSH_PUB_DIR" ]; then
                 echo " SSH key share (RO):        $SSH_PUB_DIR"
@@ -166,19 +166,19 @@
               # because the nixpkgs glibc + bundled Node abort with
               # "Illegal instruction" on the default `qemu64` CPU.
               #
-              # THREAT-MODEL (DESIGN.md "Trust model & sandboxing"): the
-              # qemu invocation below has two known sharp edges, accepted
-              # for single-user alpha but the first things to tighten
-              # before any untrusted / multi-tenant use:
-              #   (1) -netdev user gives the guest general NAT egress, not
-              #       a single whitelisted hole — replace with an egress
-              #       proxy scoped to the model endpoint.
-              #   (2) the claudefs -virtfs share of ~/.claude is RW, so a
-              #       god-inside agent can read host credentials AND write
-              #       back into the host's Claude config (inject MCP
-              #       servers/hooks that later run on the HOST). The
-              #       perimeter-as-jail model needs a CLEAN perimeter —
-              #       narrow this to RO creds + a separate writable scratch.
+              # THREAT-MODEL (DESIGN.md "Trust model & sandboxing"):
+              #   FILESYSTEM edge — CLOSED. The claudefs share is readonly=on
+              #     (below), so a god-inside agent can READ the host
+              #     credentials but CANNOT write back into the host's Claude
+              #     config (no MCP/hook injection onto the HOST). The guest
+              #     keeps its own .claude on /var (see initramfs init).
+              #   EGRESS edge — STILL OPEN. net0 is general slirp NAT. An
+              #     allow-list proxy over slirp guestfwd was attempted but
+              #     guestfwd dropped the guest's TLS flow (severe packet loss
+              #     → resets), so it is deferred. Closing egress for real
+              #     needs a different mechanism (local model for true air-gap,
+              #     or a bridged netns + host firewall). Accepted for now on a
+              #     single-user laptop alpha.
               if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
                 ACCEL_ARGS="-accel kvm -cpu host"
                 echo "  accel: KVM (-cpu host)"
@@ -195,7 +195,7 @@
                 -netdev user,id=net0,hostfwd=tcp::2222-:22 \
                 -device virtio-net-pci,netdev=net0 \
                 -drive "file=$VAR_QCOW2,if=virtio,format=qcow2,cache=writeback" \
-                -virtfs "local,path=$CRED_DIR,mount_tag=claudefs,security_model=mapped-xattr" \
+                -virtfs "local,path=$CRED_DIR,mount_tag=claudefs,security_model=mapped-xattr,readonly=on" \
                 $SSH_VIRTFS \
                 -nographic \
                 -no-reboot \

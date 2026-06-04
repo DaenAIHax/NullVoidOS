@@ -138,32 +138,48 @@ let
       while true; do sleep 1; done
     fi
 
-    # 9P share: host's ~/.claude/ → /root/.claude/ (RW).
-    # Carries the Max-subscription credentials so `claude` inside the
-    # VM authenticates without our owning an API key. Mounted RW so
-    # claude-code can refresh the OAuth tokens in-place (Phase 0 plan
-    # contingency 5 — the VM may mutate the host directory).
-    mkdir -p /root/.claude
-    if mount -t 9p -o trans=virtio,version=9p2000.L,msize=131072 \
-         claudefs /root/.claude 2>/dev/null; then
-      CREDS_OK=yes
+    # 9P share: host's ~/.claude/ mounted READ-ONLY at /mnt/claude-ro.
+    # THREAT-MODEL (DESIGN.md "Trust model & sandboxing"): the share is
+    # readonly=on at the hypervisor (the -virtfs line in flake.nix), so a
+    # god-inside agent CANNOT write back into the host's Claude config — no
+    # MCP/hook injection that would later run on the HOST. The agent's own
+    # Claude home is guest-local on /var: at each boot we copy ONLY the
+    # credentials out of the RO share (so a fresh host `claude login` is
+    # picked up), while sessions/history/config live on /var and never
+    # touch the host. Closes sharp edge (2) of the perimeter-as-jail model.
+    CREDS_OK=no
+    mkdir -p /mnt/claude-ro
+    if mount -t 9p -o trans=virtio,version=9p2000.L,ro,msize=131072 \
+         claudefs /mnt/claude-ro 2>/dev/null; then
+      if [ "$VAR_OK" = yes ]; then
+        CLAUDE_DIR=/var/lib/nv-claude
+        CLAUDE_CFG=/var/lib/nv-claude.json
+      else
+        CLAUDE_DIR=/root/.claude.local
+        CLAUDE_CFG=/root/.claude.json.local
+      fi
+      mkdir -p "$CLAUDE_DIR"
+      # Refresh credentials from the RO host share every boot (the host is
+      # the source of truth for login; the guest then refreshes its own
+      # copy in place during the session, going nowhere near the host).
+      if [ -f /mnt/claude-ro/.credentials.json ]; then
+        cp /mnt/claude-ro/.credentials.json "$CLAUDE_DIR/.credentials.json"
+        CREDS_OK=yes
+      fi
+      # ~/.claude.json (project trust + MCP + model prefs) lives in $HOME,
+      # not in .claude/. Seed it guest-local once from the share's latest
+      # backup; thereafter it persists on /var.
+      if [ ! -f "$CLAUDE_CFG" ]; then
+        LATEST_CFG=$(ls -1t /mnt/claude-ro/backups/.claude.json.backup.* \
+                       2>/dev/null | head -1)
+        [ -n "$LATEST_CFG" ] && cp "$LATEST_CFG" "$CLAUDE_CFG"
+      fi
+      umount /mnt/claude-ro 2>/dev/null || true
+      # Expose the guest-local copies at the paths Claude Code expects.
+      ln -snf "$CLAUDE_DIR" /root/.claude
+      ln -snf "$CLAUDE_CFG" /root/.claude.json
     else
       CREDS_OK="no (9P mount failed)"
-    fi
-
-    # ~/.claude.json (Claude Code's config file with project trust + MCP
-    # servers + model prefs) lives in $HOME, not in $HOME/.claude/, so
-    # the 9P share above doesn't carry it. Without it `claude` aborts
-    # before reading the credentials. Seed it from the most recent
-    # backup in .claude/backups/, which is what Claude Code suggests in
-    # its own error message.
-    if [ "$CREDS_OK" = yes ] && [ ! -f /root/.claude.json ]; then
-      LATEST_CFG=$(ls -1t /root/.claude/backups/.claude.json.backup.* \
-                     2>/dev/null | head -1)
-      if [ -n "$LATEST_CFG" ]; then
-        cp "$LATEST_CFG" /root/.claude.json
-        echo "seeded /root/.claude.json from $LATEST_CFG"
-      fi
     fi
 
     # Loopback + DHCP on eth0 (QEMU user networking, gateway 10.0.2.2).
@@ -214,6 +230,13 @@ let
     # so this is a no-op until the agent activates a real generation.
     export PATH=/run/current/bin:/bin
 
+    # Egress is general slirp NAT for now (DESIGN.md "Trust model"): the
+    # allow-list proxy over guestfwd dropped the guest's TLS flow, so the
+    # egress edge stays open on this single-user laptop alpha. Keep the
+    # non-essential-traffic switch off as a courtesy (smaller footprint),
+    # but it is NOT a containment boundary.
+    export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+
     echo ""
     echo "================================================="
     echo " NullVoidOS bootstrap -- Phase 0 (a) lab edition"
@@ -234,6 +257,8 @@ let
     echo "creds:    $CREDS_OK"
     echo "/var:     $VAR_OK ($(df -h /var 2>/dev/null | awk 'NR==2 {print $4" free"}'))"
     echo "ssh:      $SSH_OK ($([ "$SSH_OK" = yes ] && echo 'host:2222 -> guest:22' || echo 'disabled'))"
+    echo "egress:   general NAT (egress perimeter not yet enforced)"
+    echo "creds:    RO from host, guest-local copy on /var (host not writable)"
     echo ""
     echo "Type 'claude' to start the agent."
     echo "From host:  ssh -p 2222 root@localhost  (multi-shell)"
