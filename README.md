@@ -1,98 +1,73 @@
-# NullVoidOS &nbsp; [![bluebuild build badge](https://github.com/daenaihax/nullvoidos/actions/workflows/build.yml/badge.svg)](https://github.com/daenaihax/nullvoidos/actions/workflows/build.yml)
+# NullVoidOS — Agent-Primary OS (Bootstrap)
 
-> ⚠️ **Experimental / Testing Phase**
->
-> NullVoidOS is currently under active development and testing.
-> Features, workflows, and interfaces may change or break.
-> This project is intended for testing, experimentation, and early adopters only.
+[![self-host fixpoint](https://github.com/DaenAIHax/NullVoidOS/actions/workflows/selfhost.yml/badge.svg)](https://github.com/DaenAIHax/NullVoidOS/actions/workflows/selfhost.yml)
 
-<img width="1280" height="800" alt="Desktop" src="https://github.com/user-attachments/assets/bf59068f-0f95-4d83-bbd3-f249d6b4bd68" />
+> Experimental research alpha. Not production. The demo goal is a bootable VM
+> whose **primary user is an AI agent**, not a human.
 
+The question this repo asks: *what does an operating system look like when an
+autonomous agent is the primary user from boot moment 0?* — and what has to be
+true for that to be safe.
 
-## Mission
+## The trust loop
 
-NullVoidOS aims to provide a unified, container-centric cybersecurity workbench
-that simplifies complex security workflows without sacrificing native tooling
-or operational control.
+The thesis is a closed loop: **autonomy ⊗ enforcement ⊗ audit.**
 
-The project focuses on:
+1. **Autonomy is real.** Inside the VM an agent extended its own toolchain:
+   it self-hosted a compiler to a byte-identical fixpoint, and authored its
+   own system services. Not a scripted demo — an agent modifying the system
+   it runs on.
+2. **Every action runs behind a kernel capability perimeter.** Services
+   declare what they need (`!net`, `!fs.read`, `!proc.spawn`, `!rand`); the
+   supervisor enforces exactly that set at runtime via network namespaces,
+   Landlock, and seccomp. The *declared* capability set **is** the *enforced*
+   set — and that is falsifiable (see below).
+3. **Audit is the next layer** — and it is exactly why
+   [Cullis](https://github.com/DaenAIHax) exists. Autonomy without a trust
+   perimeter is a liability; the perimeter without an inspectable audit trail
+   is only half the loop. The kernel experiment and the product are the same
+   idea at different altitudes.
 
-- Consolidating offensive, forensic, and incident response toolsets into a single environment
-- Reducing reliance on multiple heavyweight virtual machines
-- Preserving native workflows and existing muscle memory
-- Treating the host system as immutable infrastructure, not a workspace
-- Enabling reproducible, resettable security environments for professional use
+## Reproduce it yourself (no trust required)
 
-## Design Philosophy
+Two commands, two acts. Both are host-side and run to a hard pass/fail gate.
+Requirements: Nix with flakes; `/dev/kvm` recommended for the VM (falls back
+to slow TCG).
 
-NullVoidOS is built around a small set of explicit design principles:
+**Act 1 — autonomy.** Certify the self-hosting compiler reaches a
+byte-identical fixpoint (the Rust seed becomes removable):
 
-- Containers are used to organize toolsets, not to hide them
-- Native workflows are preferred over abstraction layers
-- The host system is treated as infrastructure, not as a working environment
-- Security domains are isolated by design, not by convention
-- Reproducibility and resetability are first-class concerns
-- Convenience must not weaken the host security model
+```sh
+nix develop --command bash system/nullang/selfhost-bootstrap.sh
+# → PUNTO FISSO RAGGIUNTO — self0.c == self1.c == self2.c
+```
 
-## Architecture (High-Level)
+**Act 2 — enforcement.** Boot a headless VM that runs the capability tests and
+powers off with a machine-readable verdict. It mounts **nothing** from your
+host (no `~/.claude`, no `~/.ssh`):
 
-NullVoidOS follows a layered architecture with clear separation of concerns:
+```sh
+nix run .#verify-capabilities
+# → NVTEST-VERDICT: PASS (3/3) — net=PASS fs=PASS procrand=PASS
+```
 
-- A Fedora Atomic–based immutable host system acting as infrastructure
-- Root-enabled containers providing isolated security toolsets
-- Host-level orchestration for lifecycle management and updates
-- VM-first deployment model to reduce risk and simplify recovery
+Each slice ships the *same* binary as two services differing only in their
+declared capabilities; one reaches the resource, the other is confined. That
+is the test that enforcement is real, not advisory.
 
-## Scope and Limitations
+## What's real today vs. what's next
 
-NullVoidOS is intentionally scoped to a specific set of use cases and
-operational assumptions.
+| Piece | Status |
+|---|---|
+| Self-hosting compiler (byte-identical fixpoint) | ✅ reproducible — `selfhost-bootstrap.sh` |
+| Runtime capability enforcement (netns / Landlock / seccomp) | ✅ reproducible — `nix run .#verify-capabilities` |
+| Declarative system loop (`system.null` → packages → activation) | ✅ working (Phase 1) |
+| **Dynamic, inspectable audit trail of effects → Cullis** | ⏳ **next layer** — today the supervisor announces capabilities pre-launch; a structured effect log is the MVP that closes the loop |
 
-### In Scope
-- Professional cybersecurity workflows (offensive security, DFIR, incident response)
-- Expert users comfortable with terminal-based environments
-- VM-based or dedicated hardware deployments
-- Disposable and resettable working environments
+We don't claim the audit layer is built. Naming the hard part precisely is the
+point: it's the bridge from this kernel experiment to the product.
 
-### Out of Scope
-- Daily desktop usage
-- Personal computing or general-purpose workloads
-- Beginner-friendly abstractions or guided workflows
-- Strong isolation against a malicious local user
+## Read next
 
-## Installation & Usage
-
-NullVoidOS is installed by rebasing an existing Fedora Atomic system.
-
-The installation process provides only the immutable base system.
-All security environments and toolsets are provisioned explicitly
-by the user after installation.
-
-### Documentation
-
-- **[Installation Guide](docs/INSTALLATION.md)**  
-  Base system installation and rebase instructions.
-
-- **[Commands Reference](docs/COMMANDS.md)**  
-  User-facing commands for provisioning security environments,
-  command resolution, privileged execution, and container lifecycle management.
-
-## Upstream Documentation
-
-NullVoidOS is built on top of Fedora Atomic technologies and relies on
-upstream tooling for system management and updates.
-
-For detailed documentation on the underlying platform, refer to:
-
-- Fedora Atomic Desktops documentation  
-  https://docs.fedoraproject.org/en-US/fedora-silverblue/
-
-- rpm-ostree documentation  
-  https://coreos.github.io/rpm-ostree/
-
-- Distrobox documentation  
-  https://distrobox.it/
-
-These resources describe system-level commands and workflows that are
-outside the scope of NullVoidOS-specific tooling.
-
+[`DESIGN.md`](./DESIGN.md) — full thesis, architecture, phase plan, and the
+locked decisions. [`CHANGELOG.md`](./CHANGELOG.md) — what was built, when.

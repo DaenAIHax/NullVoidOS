@@ -1,0 +1,34 @@
+name: self-host fixpoint
+
+# Atto 1 del loop di fiducia: certifica che il compilatore-in-Nullang
+# raggiunge un punto fisso byte-identico (il seme Rust diventa rimovibile).
+# È puramente host-side, quindi gira sui runner GitHub-hosted senza KVM.
+#
+# Atto 2 (`nix run .#verify-capabilities`) avvia una VM e richiede /dev/kvm:
+# non disponibile sui runner hosted, quindi non è in CI. Riproducibile in
+# locale — vedi README.
+
+on:
+  push:
+    branches: [lfs-bootstrap, develop, main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  selfhost-fixpoint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Nix build cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build the Rust seed (.#nullang)
+        run: nix build .#nullang
+
+      - name: Certify the self-host fixpoint
+        run: nix develop --command bash system/nullang/selfhost-bootstrap.sh
