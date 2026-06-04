@@ -38,6 +38,8 @@ const PRELUDE: &str = "\
 #include <stdint.h>
 #include <time.h>
 #include <unistd.h>
+#include <errno.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 #include <netdb.h>
 
@@ -302,6 +304,89 @@ static void nullang_write_file(const char* path, const char* content) {
   if (!f) return;
   fputs(content, f);
   fclose(f);
+}
+
+/* Structured-error file I/O. Same effect gating as read_file/write_file
+   (`!fs.read` / `!fs.write`, World-erased), but instead of swallowing the
+   failure into \"\"/no-op, they surface the OS errno so a Nullang wrapper can
+   build an `IoError` enum over them. Same pattern as http_get over
+   http_fetch: the effect stays a tiny C builtin, the structured shape
+   (`IoError` + `ReadResult`) is library code (examples/io-result.null).
+
+   `read_file_io(path)` returns a FRAMED string \"<errno>\\n<body>\":
+   the errno is decimal ASCII (no newline in it), then a single '\\n', then
+   the file contents verbatim. errno is 0 on success, or the OS errno
+   otherwise (ENOENT=2 / EACCES=13 / EISDIR=21 / anything else → Other).
+   The frame boundary is the FIRST '\\n', so file contents may contain
+   newlines without ambiguity — the same trick http_fetch uses. Allocations
+   are not freed (short-lived programs, §11 arena deferral). */
+/* Helper: stamp a \"<errno>\\n\" frame with an empty body and return it. Used by
+   every error path of nullang_read_file_io so the body shape is uniform. The
+   buffer is malloc'd; if malloc itself fails we fall back to a static literal
+   for ENOMEM so the caller never receives NULL. */
+static const char* nullang_io_err_frame(int e) {
+  char* r = malloc(32);
+  if (!r) return \"12\\n\"; /* ENOMEM = 12 — frame stays well-formed */
+  snprintf(r, 32, \"%d\\n\", e);
+  return r;
+}
+
+static const char* nullang_read_file_io(const char* path) {
+  FILE* f = fopen(path, \"rb\");
+  if (!f) return nullang_io_err_frame(errno);
+  /* Classify directories BEFORE sizing the file. On glibc, fopen(\"/some/dir\",
+     \"rb\") succeeds but fseek(SEEK_END)+ftell returns LONG_MAX, so the naive
+     malloc(sz+32) overflows and returns NULL — and snprintf(NULL,...) segfaults.
+     fstat + S_ISDIR surfaces EISDIR (21) directly, the IoError case the wrapper
+     already knows. Same guard catches anything that is not a regular file
+     (FIFOs, sockets, char devices) and routes them through the same EISDIR/
+     errno path so a malformed read can never reach the size arithmetic. */
+  struct stat st;
+  if (fstat(fileno(f), &st) != 0) {
+    int e = errno; fclose(f);
+    return nullang_io_err_frame(e);
+  }
+  if (S_ISDIR(st.st_mode)) {
+    fclose(f);
+    return nullang_io_err_frame(EISDIR);
+  }
+  if (fseek(f, 0, SEEK_END) != 0) {
+    int e = errno; fclose(f);
+    return nullang_io_err_frame(e);
+  }
+  long sz = ftell(f);
+  if (sz < 0) {
+    int e = errno; fclose(f);
+    return nullang_io_err_frame(e);
+  }
+  rewind(f);
+  /* Headroom for the \"<errno>\\n\" frame (max errno is small, 32 is ample)
+     plus the body plus the trailing NUL. malloc-NULL guarded so a transient
+     OOM degrades to a clean ENOMEM frame instead of a NULL deref. */
+  char* buf = malloc((size_t)sz + 32);
+  if (!buf) { fclose(f); return nullang_io_err_frame(ENOMEM); }
+  int hn = snprintf(buf, 32, \"0\\n\");
+  size_t got = fread(buf + hn, 1, (size_t)sz, f);
+  buf[hn + got] = '\\0';
+  fclose(f);
+  return buf;
+}
+
+/* `write_file_io(path, content)` returns 0 on success or the OS errno
+   otherwise. A bare Int is enough — there is no body to ferry back — and
+   the Nullang wrapper turns it into an `IoError` via the same
+   `io_error_of(code)` mapper as the read side. */
+static long nullang_write_file_io(const char* path, const char* content) {
+  FILE* f = fopen(path, \"wb\");
+  if (!f) return (long)errno;
+  size_t n = strlen(content);
+  size_t w = fwrite(content, 1, n, f);
+  if (w != n) {
+    int e = errno; fclose(f);
+    return e ? (long)e : 5L; /* EIO fallback if errno was cleared */
+  }
+  if (fclose(f) != 0) return (long)errno;
+  return 0;
 }
 
 /* !time (SPEC §5). World erased: no C parameter. Returns Unix seconds as a

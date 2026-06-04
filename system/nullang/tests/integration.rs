@@ -613,6 +613,173 @@ fn main(world: World) -> Int uses !fs.read, !fs.write, !tty {
 }
 
 #[test]
+fn read_file_io_is_fs_read_effectful_and_world_erased() {
+    // read_file_io is the structured-error sibling of read_file: same `!fs.read`
+    // capability, same World erasure, but returns a FRAMED "<errno>\n<body>"
+    // String so a Nullang wrapper can build a ReadResult/IoError over it
+    // (examples/io-result.null). Same pattern as http_get over http_fetch.
+    let src = r#"
+fn main(world: World) -> Int uses !fs.read {
+  let raw = read_file_io(world, "/etc/hostname");
+  str_len(raw)
+}
+"#;
+    let c = compile_to_c(src, "rio.null").expect("read_file_io should compile with !fs.read");
+    assert!(c.contains("static const char* nullang_read_file_io(const char* path)"));
+    // World erased: only the path reaches the C call.
+    assert!(c.contains("nullang_read_file_io(\"/etc/hostname\")"));
+    // The framing pre-includes errno.h so snprintf("%d\n", errno) can stamp
+    // the prefix without a parallel declaration.
+    assert!(c.contains("#include <errno.h>"));
+}
+
+#[test]
+fn read_file_io_without_fs_read_is_rejected() {
+    // Same EFF001 discipline as the existing read_file — missing `!fs.read`
+    // on the caller is the static error, with the add-uses-clause repair.
+    let src = r#"
+fn main(world: World) -> Int uses !tty {
+  let raw = read_file_io(world, "/etc/hostname");
+  str_len(raw)
+}
+"#;
+    let err = compile_to_c(src, "rio-bad.null").expect_err("read_file_io needs !fs.read");
+    assert_eq!(format!("{:?}", err.code), "Eff001");
+    assert_eq!(err.repair.expect("repair").id, "add-uses-clause");
+}
+
+#[test]
+fn write_file_io_is_fs_write_effectful_and_returns_int() {
+    // write_file_io returns the OS errno (0 == success) as an Int, so the
+    // call drives an arithmetic comparison directly (no framing to parse).
+    // Same `!fs.write` capability as the existing write_file.
+    let src = r#"
+fn main(world: World) -> Int uses !fs.write {
+  let code = write_file_io(world, "/tmp/x", "data");
+  code
+}
+"#;
+    let c = compile_to_c(src, "wio.null").expect("write_file_io should compile with !fs.write");
+    assert!(c.contains("static long nullang_write_file_io(const char* path, const char* content)"));
+    // World erased: only path + content reach the C call.
+    assert!(c.contains("nullang_write_file_io(\"/tmp/x\", \"data\")"));
+}
+
+#[test]
+fn write_file_io_without_fs_write_is_rejected() {
+    let src = r#"
+fn main(world: World) -> Int uses !tty {
+  write_file_io(world, "/tmp/x", "data")
+}
+"#;
+    let err = compile_to_c(src, "wio-bad.null").expect_err("write_file_io needs !fs.write");
+    assert_eq!(format!("{:?}", err.code), "Eff001");
+    assert_eq!(err.repair.expect("repair").id, "add-uses-clause");
+}
+
+#[test]
+fn read_file_io_classifies_directories_before_sizing() {
+    // Regression: on glibc, fopen("/some/dir", "rb") SUCCEEDS, then fseek+ftell
+    // after SEEK_END returns LONG_MAX, so the naive malloc(sz+32) returns NULL
+    // and the next snprintf(NULL, ...) segfaults. The PRELUDE must classify
+    // directories with fstat + S_ISDIR up-front and surface EISDIR (21)
+    // directly, the IoError case the wrapper already decodes.
+    let src = r#"
+fn main(world: World) -> Int uses !fs.read {
+  let raw = read_file_io(world, "/tmp");
+  str_len(raw)
+}
+"#;
+    let c = compile_to_c(src, "rio-dir.null").expect("read_file_io on a dir compiles");
+    // The guard is in the PRELUDE — present in every emit. Asserting on the
+    // string is the cheapest regression check: if anyone removes the stat path,
+    // every translation unit loses the guard and this test fails.
+    assert!(c.contains("#include <sys/stat.h>"));
+    assert!(c.contains("S_ISDIR(st.st_mode)"));
+    assert!(c.contains("EISDIR"));
+    // The error-frame helper is the single allocation/format path: NULL from
+    // malloc must NOT reach snprintf, so the helper has to exist verbatim.
+    assert!(c.contains("nullang_io_err_frame"));
+}
+
+#[test]
+fn read_file_io_on_directory_runs_without_segfault() {
+    // End-to-end probe of the directory-classification guard: emit C, drive
+    // `cc` to build, run the ELF, and confirm exit code 21 (EISDIR). The
+    // previous version SIGSEGV'd here (signal 11 → exit code 139); the guard
+    // turns it into a clean .err(21). Static tests alone missed this because
+    // they never ran the compiled output.
+    let src = r#"
+fn main(world: World) -> Int uses !fs.read {
+  let raw = read_file_io(world, "/tmp");
+  let nl = index_of(raw, "\n");
+  int_of_str(substr(raw, 0, nl))
+}
+"#;
+    let c = compile_to_c(src, "rio-run.null").expect("compiles to C");
+    let dir = std::env::temp_dir().join("nullang-rio-segfault-test");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let cpath = dir.join("rio.c");
+    let bin = dir.join("rio");
+    std::fs::write(&cpath, &c).expect("write C");
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+    let cc_status = std::process::Command::new(&cc)
+        .arg("-O2").arg("-o").arg(&bin).arg(&cpath)
+        .status()
+        .expect("invoke cc");
+    assert!(cc_status.success(), "cc must build the probe");
+    let run_status = std::process::Command::new(&bin).status().expect("run probe");
+    // exit code is the errno frame digits: 21 == EISDIR. A segfault would be
+    // None (signal-terminated) or 139; a transport failure would be some other
+    // errno. Insist on EISDIR so the directory branch is exercised end-to-end.
+    assert_eq!(
+        run_status.code(),
+        Some(21),
+        "directory read should yield EISDIR (21), got {:?}",
+        run_status
+    );
+}
+
+#[test]
+fn read_result_wrapper_compiles_over_read_file_io() {
+    // The library-side `ReadResult` + `IoError` surface, exactly as it ships in
+    // examples/io-result.null. Same shape as http_get over http_fetch: a user
+    // enum that unpacks the framed builtin into a tagged result the caller can
+    // match. ReadResult.err carries an Int (raw errno) because enum payloads
+    // are restricted to Int/Bool/String — IoError is decoded separately.
+    let src = r#"
+enum IoError = .not_found | .permission_denied | .is_directory | .other;
+enum ReadResult = .ok(String) | .err(Int);
+fn io_error_of(code: Int) -> IoError {
+  if code == 2 { .not_found }
+  else { if code == 13 { .permission_denied }
+  else { if code == 21 { .is_directory }
+  else { .other } } }
+}
+fn read_file_safe(world: World, path: String) -> ReadResult uses !fs.read {
+  let raw = read_file_io(world, path);
+  let nl = index_of(raw, "\n");
+  let code = int_of_str(substr(raw, 0, nl));
+  if code == 0 { .ok(substr(raw, nl + 1, str_len(raw))) }
+  else { .err(code) }
+}
+fn main(world: World) -> Int uses !fs.read, !tty {
+  match read_file_safe(world, "/etc/hostname") {
+    .ok(_)     => 0,
+    .err(code) => code,
+  }
+}
+"#;
+    let c = compile_to_c(src, "iores.null").expect("ReadResult wrapper compiles");
+    // The wrapper bottoms out in the framed primitive...
+    assert!(c.contains("nullang_read_file_io"));
+    // ...and the tagged ReadResult lowers to a {tag, union} struct that the
+    // match dispatches on — proving the structured-error surface is end-to-end.
+    assert!(c.contains(".tag = "));
+    assert!(c.contains("switch ("));
+}
+
+#[test]
 fn argv_builtins_compile_and_need_no_effect() {
     // argc/argv are pure (no World, no `uses`): a CLI tool reads its args
     // without declaring a capability. Gate for `cat <file>`/`sed`-likes.
